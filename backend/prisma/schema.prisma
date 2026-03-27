@@ -1,0 +1,41 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum TaskStatus {
+  pending
+  running
+  success
+  failed
+}
+
+model Workflow {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  definition  Json
+  tasks       Task[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Task {
+  id               String     @id @default(cuid())
+  workflowId       String
+  workflow         Workflow   @relation(fields: [workflowId], references: [id])
+  status           TaskStatus @default(pending)
+  workflowSnapshot Json
+  errorMessage     String?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+  startedAt        DateTime?
+  completedAt      DateTime?
+
+  @@index([workflowId])
+  @@index([status])
+}
