@@ -1,5 +1,6 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
 import { CreateWorkflowDto } from './dto/create-workflow.dto';
+import { UpdateWorkflowDto } from './dto/update-workflow.dto';
 import { WorkflowService } from './workflow.service';
 
 @Controller('workflows')
@@ -19,5 +20,10 @@ export class WorkflowController {
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.workflowService.findOne(id);
+  }
+
+  @Patch(':id')
+  update(@Param('id') id: string, @Body() updateWorkflowDto: UpdateWorkflowDto) {
+    return this.workflowService.update(id, updateWorkflowDto);
   }
 }

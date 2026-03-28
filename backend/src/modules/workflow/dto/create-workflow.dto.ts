@@ -1,4 +1,12 @@
-import { ArrayMinSize, IsArray, IsOptional, IsString, ValidateNested } from 'class-validator';
+import {
+  ArrayMinSize,
+  IsArray,
+  IsNumber,
+  IsObject,
+  IsOptional,
+  IsString,
+  ValidateNested,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 class WorkflowNodeDto {
@@ -8,12 +16,64 @@ class WorkflowNodeDto {
   [key: string]: unknown;
 }
 
-class WorkflowDefinitionDto {
+class WorkflowCanvasNodePositionDto {
+  @IsNumber()
+  x!: number;
+
+  @IsNumber()
+  y!: number;
+}
+
+class WorkflowCanvasNodeDto {
+  @IsString()
+  id!: string;
+
+  @IsOptional()
+  @IsString()
+  type?: string;
+
+  @ValidateNested()
+  @Type(() => WorkflowCanvasNodePositionDto)
+  position!: WorkflowCanvasNodePositionDto;
+
+  @IsObject()
+  data!: Record<string, unknown>;
+}
+
+class WorkflowCanvasEdgeDto {
+  @IsString()
+  id!: string;
+
+  @IsString()
+  source!: string;
+
+  @IsString()
+  target!: string;
+}
+
+class WorkflowCanvasDto {
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => WorkflowCanvasNodeDto)
+  nodes!: WorkflowCanvasNodeDto[];
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => WorkflowCanvasEdgeDto)
+  edges!: WorkflowCanvasEdgeDto[];
+}
+
+export class WorkflowDefinitionDto {
   @IsArray()
   @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => WorkflowNodeDto)
   nodes!: WorkflowNodeDto[];
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => WorkflowCanvasDto)
+  canvas?: WorkflowCanvasDto;
 }
 
 export class CreateWorkflowDto {

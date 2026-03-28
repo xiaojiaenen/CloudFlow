@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Edge, Node } from "@xyflow/react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { io, Socket } from "socket.io-client";
-import { Settings } from "lucide-react";
+import { Save, Settings } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Sidebar } from "@/src/components/Sidebar";
 import { Header } from "@/src/components/Header";
 import { WorkflowCanvas } from "@/src/components/WorkflowCanvas";
@@ -19,16 +20,23 @@ import {
   buildWorkflowDefinition,
   cancelTask,
   CanvasNodeData,
+  createDefaultCanvasGraph,
   createWorkflow,
   ExecutionNodeStatus,
+  getWorkflow,
   getWsBaseUrl,
+  hydrateCanvasFromWorkflow,
   runTask,
   sanitizeCanvasEdges,
   sanitizeCanvasNodes,
   SanitizedCanvasEdge,
   SanitizedCanvasNode,
   TaskEvent,
+  updateWorkflow,
+  WorkflowRecord,
 } from "@/src/lib/cloudflow";
+
+const WORKFLOW_SAVED_EVENT = "cloudflow:workflow-saved";
 
 function toLogTimestamp(timestamp?: string) {
   if (!timestamp) {
@@ -48,21 +56,27 @@ function toLogTimestamp(timestamp?: string) {
   });
 }
 
-function buildIdleNodeStatuses(nodes: Node<CanvasNodeData>[]) {
+function buildIdleNodeStatuses(nodes: Array<Node<CanvasNodeData> | SanitizedCanvasNode>) {
   return nodes.reduce<Record<string, ExecutionNodeStatus>>((acc, node) => {
     acc[node.id] = "idle";
     return acc;
   }, {});
 }
 
-function getPrimaryPageUrl(nodes: Node<CanvasNodeData>[]) {
+function getPrimaryPageUrl(nodes: Array<Node<CanvasNodeData> | SanitizedCanvasNode>) {
   const pageNode = nodes.find((node) => node.data.type === "open_page");
   return typeof pageNode?.data.url === "string" ? pageNode.data.url : "";
 }
 
 export default function Workspace() {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const workflowId = searchParams.get("workflowId");
+
   const [isRunning, setIsRunning] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
+  const [isSavingWorkflow, setIsSavingWorkflow] = useState(false);
+  const [isLoadingWorkflow, setIsLoadingWorkflow] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -71,12 +85,33 @@ export default function Workspace() {
   const [flowNodes, setFlowNodes] = useState<SanitizedCanvasNode[]>([]);
   const [flowEdges, setFlowEdges] = useState<SanitizedCanvasEdge[]>([]);
   const [nodeStatuses, setNodeStatuses] = useState<Record<string, ExecutionNodeStatus>>({});
+  const [workflowName, setWorkflowName] = useState("未命名工作流");
+  const [workflowDescription, setWorkflowDescription] = useState("由前端画布编辑的工作流");
+  const [canvasVersion, setCanvasVersion] = useState(0);
 
   const socketRef = useRef<Socket | null>(null);
   const activeNodeIdRef = useRef<string | null>(null);
   const lastFlowSnapshotRef = useRef<string>("");
 
   const pageUrl = useMemo(() => getPrimaryPageUrl(flowNodes), [flowNodes]);
+
+  const resetCanvasWithWorkflow = useCallback((workflow?: WorkflowRecord | null) => {
+    const graph = workflow ? hydrateCanvasFromWorkflow(workflow.definition) : createDefaultCanvasGraph();
+    const snapshot = JSON.stringify({
+      nodes: graph.nodes,
+      edges: graph.edges,
+    });
+
+    setWorkflowName(workflow?.name ?? "未命名工作流");
+    setWorkflowDescription(workflow?.description ?? "由前端画布编辑的工作流");
+    setFlowNodes(graph.nodes);
+    setFlowEdges(graph.edges);
+    setNodeStatuses(buildIdleNodeStatuses(graph.nodes));
+    setSelectedNodeId(null);
+    activeNodeIdRef.current = null;
+    lastFlowSnapshotRef.current = snapshot;
+    setCanvasVersion((value) => value + 1);
+  }, []);
 
   const addLog = useCallback(
     (
@@ -113,6 +148,44 @@ export default function Workspace() {
       }
     },
     [],
+  );
+
+  const persistWorkflow = useCallback(
+    async (options?: { silent?: boolean }) => {
+      if (flowNodes.length === 0) {
+        throw new Error("当前画布为空，无法保存工作流。");
+      }
+
+      const definition = buildWorkflowDefinition(flowNodes, flowEdges);
+      const payload = {
+        name: workflowName.trim() || "未命名工作流",
+        description: workflowDescription.trim() || "由前端画布编辑的工作流",
+        definition,
+      };
+
+      setIsSavingWorkflow(true);
+
+      try {
+        const workflow = workflowId
+          ? await updateWorkflow(workflowId, payload)
+          : await createWorkflow(payload);
+
+        if (!workflowId) {
+          navigate(`/?workflowId=${workflow.id}`, { replace: true });
+        }
+
+        window.dispatchEvent(new CustomEvent(WORKFLOW_SAVED_EVENT, { detail: workflow }));
+
+        if (!options?.silent) {
+          addLog("success", `工作流“${workflow.name}”已保存。`);
+        }
+
+        return workflow;
+      } finally {
+        setIsSavingWorkflow(false);
+      }
+    },
+    [addLog, flowEdges, flowNodes, navigate, workflowDescription, workflowId, workflowName],
   );
 
   useEffect(() => {
@@ -222,6 +295,29 @@ export default function Workspace() {
   }, [taskId]);
 
   useEffect(() => {
+    const loadWorkflow = async () => {
+      setIsLoadingWorkflow(true);
+
+      try {
+        if (!workflowId) {
+          resetCanvasWithWorkflow(null);
+          return;
+        }
+
+        const workflow = await getWorkflow(workflowId);
+        resetCanvasWithWorkflow(workflow);
+      } catch (error) {
+        addLog("error", error instanceof Error ? error.message : "读取工作流失败。");
+        resetCanvasWithWorkflow(null);
+      } finally {
+        setIsLoadingWorkflow(false);
+      }
+    };
+
+    void loadWorkflow();
+  }, [addLog, resetCanvasWithWorkflow, workflowId]);
+
+  useEffect(() => {
     setNodeStatuses((prev) => {
       const next = { ...prev };
 
@@ -277,13 +373,7 @@ export default function Workspace() {
     setNodeStatuses(buildIdleNodeStatuses(flowNodes));
 
     try {
-      const definition = buildWorkflowDefinition(flowNodes, flowEdges);
-      const workflow = await createWorkflow({
-        name: `CloudFlow 工作流 ${new Date().toLocaleString()}`,
-        description: "由前端画布自动生成并提交执行",
-        definition,
-      });
-
+      const workflow = await persistWorkflow({ silent: true });
       addLog("info", "工作流已保存，正在创建执行任务...");
 
       const task = await runTask(workflow.id);
@@ -295,7 +385,7 @@ export default function Workspace() {
       setIsCancelling(false);
       addLog("error", error instanceof Error ? error.message : "执行任务时发生未知错误。");
     }
-  }, [addLog, flowEdges, flowNodes, isCancelling, isRunning, taskId]);
+  }, [addLog, flowNodes, isCancelling, isRunning, persistWorkflow, taskId]);
 
   return (
     <div className="h-screen w-screen bg-[#09090b] text-zinc-50 flex overflow-hidden font-sans selection:bg-sky-500/30">
@@ -305,10 +395,35 @@ export default function Workspace() {
 
         <div className="flex items-center justify-between border-b border-white/[0.05] bg-zinc-950/50 backdrop-blur-md px-6 z-10">
           <Header isRunning={isRunning} isCancelling={isCancelling} onToggleRun={toggleRun} />
-          <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)} className="ml-4 h-8 gap-2">
-            <Settings className="w-3.5 h-3.5" />
-            全局配置
-          </Button>
+          <div className="ml-4 flex items-center gap-3">
+            <Input
+              value={workflowName}
+              onChange={(event) => setWorkflowName(event.target.value)}
+              className="h-8 w-56"
+              placeholder="输入工作流名称"
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void persistWorkflow()}
+              disabled={isSavingWorkflow || isLoadingWorkflow}
+              className="h-8 gap-2"
+            >
+              <Save className="w-3.5 h-3.5" />
+              {isSavingWorkflow ? "保存中..." : "保存"}
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)} className="h-8 gap-2">
+              <Settings className="w-3.5 h-3.5" />
+              全局配置
+            </Button>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between px-6 py-2 border-b border-white/[0.04] bg-zinc-950/30 z-10">
+          <div className="text-xs text-zinc-500">
+            {workflowId ? `当前工作流 ID: ${workflowId}` : "当前为未保存工作流"}
+          </div>
+          <div className="text-xs text-zinc-500">{isLoadingWorkflow ? "正在加载工作流..." : workflowDescription}</div>
         </div>
 
         <div className="flex-1 flex overflow-hidden relative">
@@ -316,8 +431,11 @@ export default function Workspace() {
             <NodePalette />
 
             <WorkflowCanvas
+              key={`${workflowId ?? "draft"}-${canvasVersion}`}
               isRunning={isRunning}
               nodeStatuses={nodeStatuses}
+              initialNodes={flowNodes}
+              initialEdges={flowEdges}
               onWorkflowChange={({ nodes, edges }) => {
                 const sanitizedNodes = sanitizeCanvasNodes(nodes);
                 const sanitizedEdges = sanitizeCanvasEdges(edges);

@@ -1,4 +1,5 @@
 import type { Edge, Node } from "@xyflow/react";
+import { getNodeDefinition } from "@/src/registry/nodes";
 
 export type ExecutionNodeStatus = "idle" | "running" | "success" | "error" | "cancelled";
 
@@ -8,10 +9,6 @@ export interface CanvasNodeData {
   params: string;
   status?: ExecutionNodeStatus;
   [key: string]: unknown;
-}
-
-export interface WorkflowApiDefinition {
-  nodes: Array<Record<string, unknown>>;
 }
 
 export interface SanitizedCanvasNode {
@@ -28,6 +25,16 @@ export interface SanitizedCanvasEdge {
   id: string;
   source: string;
   target: string;
+}
+
+export interface WorkflowCanvasSnapshot {
+  nodes: SanitizedCanvasNode[];
+  edges: SanitizedCanvasEdge[];
+}
+
+export interface WorkflowApiDefinition {
+  nodes: Array<Record<string, unknown>>;
+  canvas?: WorkflowCanvasSnapshot;
 }
 
 export interface WorkflowRecord {
@@ -78,12 +85,108 @@ const API_BASE_URL =
 const WS_BASE_URL =
   (import.meta.env.VITE_WS_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "http://localhost:3001";
 
+function buildNodeParams(data: Record<string, unknown>) {
+  return Object.entries(data)
+    .filter(
+      ([key, value]) =>
+        !["label", "type", "status", "params", "clientNodeId"].includes(key) &&
+        value !== undefined &&
+        value !== "",
+    )
+    .map(([key, value]) => `${key}: ${String(value)}`)
+    .join(", ");
+}
+
+function createNodeData(type: string, extra: Record<string, unknown> = {}): CanvasNodeData {
+  const defaultLabel = getNodeDefinition(type)?.label ?? type;
+  const data = {
+    label: defaultLabel,
+    type,
+    status: "idle" as const,
+    ...extra,
+  };
+
+  return {
+    ...data,
+    params: buildNodeParams(data),
+  };
+}
+
 export function getApiBaseUrl() {
   return API_BASE_URL;
 }
 
 export function getWsBaseUrl() {
   return WS_BASE_URL;
+}
+
+export function createDefaultCanvasGraph(): WorkflowCanvasSnapshot {
+  return {
+    nodes: [
+      {
+        id: "1",
+        type: "custom",
+        position: { x: 250, y: 50 },
+        data: createNodeData("open_page", {
+          label: "打开目标网页",
+          url: "data:text/html,%3C!doctype%20html%3E%3Chtml%3E%3Cbody%20style%3D%22font-family%3AArial%3Bpadding%3A40px%3Bbackground%3A%230f172a%3Bcolor%3Awhite%22%3E%3Ch1%3ECloudFlow%20Demo%3C%2Fh1%3E%3Cinput%20id%3D%22username%22%20placeholder%3D%22username%22%20style%3D%22display%3Ablock%3Bmargin-bottom%3A12px%3Bpadding%3A10px%3Bwidth%3A240px%22%20%2F%3E%3Cbutton%20id%3D%22login%22%20style%3D%22padding%3A10px%2016px%22%20onclick%3D%22document.getElementById(%27result%27).textContent%20%3D%20%27Login%20clicked%27%22%3ELogin%3C%2Fbutton%3E%3Cp%20id%3D%22result%22%20style%3D%22margin-top%3A16px%22%3EWaiting...%3C%2Fp%3E%3C%2Fbody%3E%3C%2Fhtml%3E",
+        }),
+      },
+      {
+        id: "2",
+        type: "custom",
+        position: { x: 250, y: 200 },
+        data: createNodeData("input", {
+          label: "输入账号",
+          selector: "#username",
+          value: "test",
+        }),
+      },
+      {
+        id: "3",
+        type: "custom",
+        position: { x: 250, y: 350 },
+        data: createNodeData("click", {
+          label: "点击登录按钮",
+          selector: "#login",
+        }),
+      },
+      {
+        id: "4",
+        type: "custom",
+        position: { x: 250, y: 500 },
+        data: createNodeData("wait", {
+          label: "等待页面稳定",
+          time: "1500",
+        }),
+      },
+    ],
+    edges: [
+      { id: "e1-2", source: "1", target: "2" },
+      { id: "e2-3", source: "2", target: "3" },
+      { id: "e3-4", source: "3", target: "4" },
+    ],
+  };
+}
+
+export async function listWorkflows() {
+  const response = await fetch(`${API_BASE_URL}/workflows`);
+
+  if (!response.ok) {
+    throw new Error(`读取工作流列表失败 (${response.status})`);
+  }
+
+  return (await response.json()) as WorkflowRecord[];
+}
+
+export async function getWorkflow(id: string) {
+  const response = await fetch(`${API_BASE_URL}/workflows/${id}`);
+
+  if (!response.ok) {
+    throw new Error(`读取工作流失败 (${response.status})`);
+  }
+
+  return (await response.json()) as WorkflowRecord;
 }
 
 export async function createWorkflow(payload: {
@@ -101,6 +204,29 @@ export async function createWorkflow(payload: {
 
   if (!response.ok) {
     throw new Error(`创建工作流失败 (${response.status})`);
+  }
+
+  return (await response.json()) as WorkflowRecord;
+}
+
+export async function updateWorkflow(
+  id: string,
+  payload: {
+    name?: string;
+    description?: string;
+    definition?: WorkflowApiDefinition;
+  },
+) {
+  const response = await fetch(`${API_BASE_URL}/workflows/${id}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(`保存工作流失败 (${response.status})`);
   }
 
   return (await response.json()) as WorkflowRecord;
@@ -212,22 +338,80 @@ export function buildWorkflowDefinition(nodes: Node<CanvasNodeData>[], edges: Ed
 
       return baseNode;
     }),
+    canvas: {
+      nodes: sanitizeCanvasNodes(nodes),
+      edges: sanitizeCanvasEdges(edges),
+    },
   };
 }
 
+export function hydrateCanvasFromWorkflow(definition?: WorkflowApiDefinition | null): WorkflowCanvasSnapshot {
+  if (definition?.canvas?.nodes?.length) {
+    return {
+      nodes: definition.canvas.nodes.map((node) => ({
+        ...node,
+        data: {
+          ...node.data,
+          params: buildNodeParams(node.data),
+          status: "idle",
+        } as CanvasNodeData,
+      })),
+      edges: definition.canvas.edges.map((edge) => ({ ...edge })),
+    };
+  }
+
+  if (!definition?.nodes?.length) {
+    return createDefaultCanvasGraph();
+  }
+
+  const nodes: SanitizedCanvasNode[] = definition.nodes.map((node, index) => {
+    const type = String(node.type ?? "unknown");
+    const nodeId = String(node.clientNodeId ?? index + 1);
+    const data = createNodeData(type, {
+      ...node,
+      type,
+    });
+
+    return {
+      id: nodeId,
+      type: "custom",
+      position: {
+        x: 250,
+        y: 50 + index * 150,
+      },
+      data,
+    };
+  });
+
+  const edges: SanitizedCanvasEdge[] = nodes.slice(1).map((node, index) => ({
+    id: `e${nodes[index].id}-${node.id}`,
+    source: nodes[index].id,
+    target: node.id,
+  }));
+
+  return { nodes, edges };
+}
+
 export function sanitizeCanvasNodes(nodes: Node<CanvasNodeData>[]): SanitizedCanvasNode[] {
-  return nodes.map((node) => ({
-    id: node.id,
-    type: node.type,
-    position: {
-      x: node.position.x,
-      y: node.position.y,
-    },
-    data: {
+  return nodes.map((node) => {
+    const data = {
       ...node.data,
       status: undefined,
-    },
-  }));
+    };
+
+    return {
+      id: node.id,
+      type: node.type,
+      position: {
+        x: node.position.x,
+        y: node.position.y,
+      },
+      data: {
+        ...data,
+        params: buildNodeParams(data),
+      },
+    };
+  });
 }
 
 export function sanitizeCanvasEdges(edges: Edge[]): SanitizedCanvasEdge[] {

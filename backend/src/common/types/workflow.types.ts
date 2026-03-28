@@ -1,5 +1,21 @@
 export type SupportedWorkflowNodeType = 'open_page' | 'click' | 'input' | 'wait';
 
+export interface WorkflowCanvasNode {
+  id: string;
+  type?: string;
+  position: {
+    x: number;
+    y: number;
+  };
+  data: Record<string, unknown>;
+}
+
+export interface WorkflowCanvasEdge {
+  id: string;
+  source: string;
+  target: string;
+}
+
 export interface BaseWorkflowNode {
   type: SupportedWorkflowNodeType;
   clientNodeId?: string;
@@ -31,4 +47,8 @@ export type WorkflowNode = OpenPageNode | ClickNode | InputNode | WaitNode;
 
 export interface WorkflowDefinition {
   nodes: WorkflowNode[];
+  canvas?: {
+    nodes: WorkflowCanvasNode[];
+    edges: WorkflowCanvasEdge[];
+  };
 }
