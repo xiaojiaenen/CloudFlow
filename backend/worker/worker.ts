@@ -201,6 +201,70 @@ async function executeNode(taskId: string, page: Page, node: WorkflowNode) {
 
       break;
     }
+    case 'scroll': {
+      const direction = node.direction ?? 'down';
+      const distance = Number(node.distance ?? 500);
+      await publishLog(taskId, `滚动页面，方向 ${direction}，距离 ${distance}px`, 'info', node.clientNodeId);
+
+      if (direction === 'bottom') {
+        await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
+      } else if (direction === 'top') {
+        await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
+      } else if (direction === 'up') {
+        await page.mouse.wheel(0, -distance);
+      } else {
+        await page.mouse.wheel(0, distance);
+      }
+
+      await page.waitForTimeout(400);
+      break;
+    }
+    case 'extract': {
+      const property = node.property ?? 'text';
+      await publishLog(taskId, `提取元素 ${node.selector} 的 ${property}`, 'info', node.clientNodeId);
+
+      const locator = page.locator(node.selector).first();
+      await locator.waitFor({ state: 'visible', timeout: 5000 });
+
+      let extractedValue = '';
+
+      if (property === 'html') {
+        extractedValue = await locator.evaluate((element) => element.innerHTML);
+      } else if (property === 'href') {
+        extractedValue = (await locator.getAttribute('href')) ?? '';
+      } else if (property === 'src') {
+        extractedValue = (await locator.getAttribute('src')) ?? '';
+      } else {
+        extractedValue = await locator.innerText();
+      }
+
+      const preview = extractedValue.length > 120 ? `${extractedValue.slice(0, 120)}...` : extractedValue;
+      await publishLog(taskId, `提取结果: ${preview || '[空值]'}`, 'success', node.clientNodeId);
+      break;
+    }
+    case 'screenshot': {
+      const scope = node.scope ?? 'viewport';
+      await publishLog(taskId, `执行截图，范围 ${scope === 'full' ? '整个页面' : '当前视口'}`, 'info', node.clientNodeId);
+
+      const buffer = await page.screenshot({
+        type: 'jpeg',
+        quality: 75,
+        fullPage: scope === 'full',
+      });
+
+      await publishEvent({
+        taskId,
+        type: 'screenshot',
+        data: {
+          imageBase64: buffer.toString('base64'),
+          mimeType: 'image/jpeg',
+          timestamp: new Date().toISOString(),
+        },
+      });
+
+      await publishLog(taskId, '截图已推送到前端。', 'success', node.clientNodeId);
+      break;
+    }
     default:
       throw new Error(`Unsupported workflow node: ${(node as WorkflowNode).type}`);
   }

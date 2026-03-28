@@ -56,6 +56,8 @@ export interface TaskRecord {
   updatedAt: string;
   startedAt?: string | null;
   completedAt?: string | null;
+  workflow?: WorkflowRecord;
+  workflowSnapshot?: WorkflowApiDefinition;
 }
 
 export interface TaskEvent {
@@ -120,7 +122,14 @@ export function getWsBaseUrl() {
   return WS_BASE_URL;
 }
 
-export function createDefaultCanvasGraph(): WorkflowCanvasSnapshot {
+export function createEmptyCanvasGraph(): WorkflowCanvasSnapshot {
+  return {
+    nodes: [],
+    edges: [],
+  };
+}
+
+export function createDemoCanvasGraph(): WorkflowCanvasSnapshot {
   return {
     nodes: [
       {
@@ -232,6 +241,26 @@ export async function updateWorkflow(
   return (await response.json()) as WorkflowRecord;
 }
 
+export async function listTasks() {
+  const response = await fetch(`${API_BASE_URL}/tasks`);
+
+  if (!response.ok) {
+    throw new Error(`读取任务列表失败 (${response.status})`);
+  }
+
+  return (await response.json()) as TaskRecord[];
+}
+
+export async function getTask(id: string) {
+  const response = await fetch(`${API_BASE_URL}/tasks/${id}`);
+
+  if (!response.ok) {
+    throw new Error(`读取任务详情失败 (${response.status})`);
+  }
+
+  return (await response.json()) as TaskRecord;
+}
+
 export async function runTask(workflowId: string) {
   const response = await fetch(`${API_BASE_URL}/tasks/run`, {
     method: "POST",
@@ -261,7 +290,7 @@ export async function cancelTask(taskId: string) {
 }
 
 export function buildWorkflowDefinition(nodes: Node<CanvasNodeData>[], edges: Edge[]): WorkflowApiDefinition {
-  const supportedTypes = new Set(["open_page", "click", "input", "wait"]);
+  const supportedTypes = new Set(["open_page", "click", "input", "wait", "scroll", "extract", "screenshot"]);
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const incomingCounts = new Map<string, number>();
   const outgoing = new Map<string, string[]>();
@@ -314,7 +343,7 @@ export function buildWorkflowDefinition(nodes: Node<CanvasNodeData>[], edges: Ed
   const unsupportedNodes = orderedNodes.filter((node) => !supportedTypes.has(String(node.data.type)));
   if (unsupportedNodes.length > 0) {
     const labels = unsupportedNodes.map((node) => node.data.label || node.id).join("、");
-    throw new Error(`当前后端仅支持打开网页、点击元素、输入文本、等待时间。请移除不支持的节点：${labels}`);
+    throw new Error(`当前后端仅支持打开网页、点击元素、输入文本、等待、滚动、提取和截图节点。请移除不支持的节点：${labels}`);
   }
 
   return {
@@ -334,6 +363,14 @@ export function buildWorkflowDefinition(nodes: Node<CanvasNodeData>[], edges: Ed
         baseNode.value = String(node.data.value ?? "");
       } else if (type === "wait") {
         baseNode.time = Number(node.data.time ?? 1000);
+      } else if (type === "scroll") {
+        baseNode.direction = String(node.data.direction ?? "down");
+        baseNode.distance = Number(node.data.distance ?? 500);
+      } else if (type === "extract") {
+        baseNode.selector = String(node.data.selector ?? "");
+        baseNode.property = String(node.data.property ?? "text");
+      } else if (type === "screenshot") {
+        baseNode.scope = String(node.data.scope ?? "viewport");
       }
 
       return baseNode;
@@ -361,7 +398,7 @@ export function hydrateCanvasFromWorkflow(definition?: WorkflowApiDefinition | n
   }
 
   if (!definition?.nodes?.length) {
-    return createDefaultCanvasGraph();
+    return createEmptyCanvasGraph();
   }
 
   const nodes: SanitizedCanvasNode[] = definition.nodes.map((node, index) => {

@@ -17,7 +17,8 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { cn } from "@/src/lib/utils";
 import {
   buildWorkflowDefinition,
-  createDefaultCanvasGraph,
+  createDemoCanvasGraph,
+  createEmptyCanvasGraph,
   createWorkflow,
   listWorkflows,
   WorkflowRecord,
@@ -78,21 +79,24 @@ export function Sidebar() {
   const isActive = (path: string) => location.pathname === path;
   const visibleWorkflows = useMemo(() => workflows.slice(0, 12), [workflows]);
 
-  const handleCreateWorkflow = async (event: FormEvent) => {
+  const handleCreateWorkflow = async (event: FormEvent, mode: "empty" | "demo" = "empty") => {
     event.preventDefault();
 
     if (!newWorkflowName.trim()) {
       return;
     }
 
-    const defaultGraph = createDefaultCanvasGraph();
+    const graph = mode === "demo" ? createDemoCanvasGraph() : createEmptyCanvasGraph();
 
     try {
       setIsCreatingWorkflow(true);
       const createdWorkflow = await createWorkflow({
         name: newWorkflowName.trim(),
-        description: "从前端工作区创建的工作流",
-        definition: buildWorkflowDefinition(defaultGraph.nodes, defaultGraph.edges),
+        description: mode === "demo" ? "从前端工作区创建的示例工作流" : "从前端工作区创建的空白工作流",
+        definition: {
+          ...buildWorkflowDefinition(graph.nodes, graph.edges),
+          canvas: graph,
+        },
       });
 
       window.dispatchEvent(new CustomEvent(WORKFLOW_SAVED_EVENT));
@@ -265,7 +269,7 @@ export function Sidebar() {
               </button>
             </div>
 
-            <form onSubmit={(event) => void handleCreateWorkflow(event)} className="p-5">
+            <form onSubmit={(event) => void handleCreateWorkflow(event, "empty")} className="p-5">
               <div className="space-y-4">
                 <div>
                   <label htmlFor="workflowName" className="block text-sm font-medium text-zinc-400 mb-1.5">
@@ -281,6 +285,9 @@ export function Sidebar() {
                     className="w-full bg-zinc-950 border border-white/[0.1] rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-sky-500/50 transition-all"
                   />
                 </div>
+                <div className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-3 text-xs text-zinc-400 leading-5">
+                  默认会创建空白画布。如果想快速体验执行链路，可以使用“创建示例”生成一套可直接运行的演示节点。
+                </div>
               </div>
 
               <div className="mt-6 flex items-center justify-end gap-3">
@@ -292,11 +299,19 @@ export function Sidebar() {
                   取消
                 </button>
                 <button
+                  type="button"
+                  onClick={(event) => void handleCreateWorkflow(event as unknown as FormEvent, "demo")}
+                  disabled={!newWorkflowName.trim() || isCreatingWorkflow}
+                  className="px-4 py-2 border border-white/10 bg-white/5 hover:bg-white/10 text-zinc-200 text-sm font-medium rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  创建示例
+                </button>
+                <button
                   type="submit"
                   disabled={!newWorkflowName.trim() || isCreatingWorkflow}
                   className="px-4 py-2 bg-sky-500 hover:bg-sky-400 text-white text-sm font-medium rounded-lg shadow-[0_0_15px_rgba(14,165,233,0.3)] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {isCreatingWorkflow ? "创建中..." : "创建"}
+                  {isCreatingWorkflow ? "创建中..." : "创建空白"}
                 </button>
               </div>
             </form>

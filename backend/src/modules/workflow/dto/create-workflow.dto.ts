@@ -1,12 +1,4 @@
-import {
-  ArrayMinSize,
-  IsArray,
-  IsNumber,
-  IsObject,
-  IsOptional,
-  IsString,
-  ValidateNested,
-} from 'class-validator';
+import { IsArray, IsNumber, IsObject, IsOptional, IsString, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 
 class WorkflowNodeDto {
@@ -65,7 +57,6 @@ class WorkflowCanvasDto {
 
 export class WorkflowDefinitionDto {
   @IsArray()
-  @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => WorkflowNodeDto)
   nodes!: WorkflowNodeDto[];

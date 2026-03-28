@@ -20,7 +20,7 @@ import {
   buildWorkflowDefinition,
   cancelTask,
   CanvasNodeData,
-  createDefaultCanvasGraph,
+  createEmptyCanvasGraph,
   createWorkflow,
   ExecutionNodeStatus,
   getWorkflow,
@@ -96,7 +96,7 @@ export default function Workspace() {
   const pageUrl = useMemo(() => getPrimaryPageUrl(flowNodes), [flowNodes]);
 
   const resetCanvasWithWorkflow = useCallback((workflow?: WorkflowRecord | null) => {
-    const graph = workflow ? hydrateCanvasFromWorkflow(workflow.definition) : createDefaultCanvasGraph();
+    const graph = workflow ? hydrateCanvasFromWorkflow(workflow.definition) : createEmptyCanvasGraph();
     const snapshot = JSON.stringify({
       nodes: graph.nodes,
       edges: graph.edges,
@@ -152,10 +152,6 @@ export default function Workspace() {
 
   const persistWorkflow = useCallback(
     async (options?: { silent?: boolean }) => {
-      if (flowNodes.length === 0) {
-        throw new Error("当前画布为空，无法保存工作流。");
-      }
-
       const definition = buildWorkflowDefinition(flowNodes, flowEdges);
       const payload = {
         name: workflowName.trim() || "未命名工作流",

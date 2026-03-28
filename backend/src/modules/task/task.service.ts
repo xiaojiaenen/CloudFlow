@@ -46,6 +46,18 @@ export class TaskService {
     return this.getTaskOrThrow(id);
   }
 
+  async findAll() {
+    return this.prismaService.task.findMany({
+      include: {
+        workflow: true,
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+      take: 50,
+    });
+  }
+
   async cancel(id: string) {
     const task = await this.getTaskOrThrow(id);
 

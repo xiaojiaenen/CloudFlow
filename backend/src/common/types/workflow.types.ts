@@ -1,4 +1,11 @@
-export type SupportedWorkflowNodeType = 'open_page' | 'click' | 'input' | 'wait';
+export type SupportedWorkflowNodeType =
+  | 'open_page'
+  | 'click'
+  | 'input'
+  | 'wait'
+  | 'scroll'
+  | 'extract'
+  | 'screenshot';
 
 export interface WorkflowCanvasNode {
   id: string;
@@ -43,7 +50,24 @@ export interface WaitNode extends BaseWorkflowNode {
   duration?: number;
 }
 
-export type WorkflowNode = OpenPageNode | ClickNode | InputNode | WaitNode;
+export interface ScrollNode extends BaseWorkflowNode {
+  type: 'scroll';
+  direction?: 'down' | 'up' | 'bottom' | 'top';
+  distance?: number;
+}
+
+export interface ExtractNode extends BaseWorkflowNode {
+  type: 'extract';
+  selector: string;
+  property?: 'text' | 'html' | 'href' | 'src';
+}
+
+export interface ScreenshotNode extends BaseWorkflowNode {
+  type: 'screenshot';
+  scope?: 'viewport' | 'full';
+}
+
+export type WorkflowNode = OpenPageNode | ClickNode | InputNode | WaitNode | ScrollNode | ExtractNode | ScreenshotNode;
 
 export interface WorkflowDefinition {
   nodes: WorkflowNode[];

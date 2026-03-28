@@ -16,7 +16,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import { CheckSquare, ClipboardPaste, Copy, Maximize, Play, Trash2 } from "lucide-react";
 import { NodeCard } from "./NodeCard";
-import { CanvasNodeData, createDefaultCanvasGraph, ExecutionNodeStatus } from "@/src/lib/cloudflow";
+import { CanvasNodeData, createEmptyCanvasGraph, ExecutionNodeStatus } from "@/src/lib/cloudflow";
 
 const nodeTypes = {
   custom: NodeCard,
@@ -42,7 +42,7 @@ function Flow({
   initialNodes,
   initialEdges,
 }: WorkflowCanvasProps) {
-  const defaultGraph = useMemo(() => createDefaultCanvasGraph(), []);
+  const defaultGraph = useMemo(() => createEmptyCanvasGraph(), []);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<CanvasNodeData>>(initialNodes ?? defaultGraph.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges ?? defaultGraph.edges);
   const { screenToFlowPosition, fitView } = useReactFlow();
