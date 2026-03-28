@@ -2,6 +2,7 @@ export type SupportedWorkflowNodeType = 'open_page' | 'click' | 'input' | 'wait'
 
 export interface BaseWorkflowNode {
   type: SupportedWorkflowNodeType;
+  clientNodeId?: string;
 }
 
 export interface OpenPageNode extends BaseWorkflowNode {

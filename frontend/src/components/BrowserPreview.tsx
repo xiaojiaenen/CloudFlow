@@ -2,9 +2,12 @@ import { Monitor, RefreshCw, Lock, ChevronLeft, ChevronRight } from "lucide-reac
 
 interface BrowserPreviewProps {
   isRunning: boolean;
+  screenshot?: string | null;
+  taskId?: string | null;
+  pageUrl?: string;
 }
 
-export function BrowserPreview({ isRunning }: BrowserPreviewProps) {
+export function BrowserPreview({ isRunning, screenshot, taskId, pageUrl }: BrowserPreviewProps) {
   return (
     <div className="h-1/2 border-b border-white/[0.08] bg-[#0A0A0A] flex flex-col">
       <div className="h-10 border-b border-white/[0.08] flex items-center justify-between px-4 bg-[#0A0A0A]">
@@ -31,18 +34,24 @@ export function BrowserPreview({ isRunning }: BrowserPreviewProps) {
             <div className="flex-1 bg-black rounded-md h-6 flex items-center px-3 border border-white/[0.04]">
               <Lock className="w-3 h-3 text-zinc-500 mr-2" />
               <span className="text-[11px] text-zinc-400 font-mono truncate">
-                {isRunning ? "https://amazon.com/s?k=MacBook" : "about:blank"}
+                {isRunning ? pageUrl || "执行中..." : "about:blank"}
               </span>
             </div>
           </div>
 
           {/* Browser Content */}
           <div className="flex-1 relative bg-[#050505]">
-            {isRunning ? (
+            {screenshot ? (
+              <img
+                src={`data:image/jpeg;base64,${screenshot}`}
+                alt="执行截图"
+                className="absolute inset-0 h-full w-full object-cover"
+              />
+            ) : isRunning ? (
               <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-500">
                 <RefreshCw className="w-6 h-6 animate-spin mb-4 opacity-40" />
                 <p className="text-sm font-medium text-zinc-300">正在执行工作流...</p>
-                <p className="text-[11px] mt-2 opacity-50 font-mono">Session ID: br_8f92a1b</p>
+                <p className="text-[11px] mt-2 opacity-50 font-mono">Task ID: {taskId || "waiting"}</p>
               </div>
             ) : (
               <div className="absolute inset-0 flex items-center justify-center text-zinc-600">

@@ -21,7 +21,7 @@ export interface NodeDefinition {
 
 export const nodeRegistry: NodeDefinition[] = [
   {
-    type: "navigate",
+    type: "open_page",
     label: "打开网页",
     category: "网页交互",
     icon: Globe,
@@ -43,7 +43,7 @@ export const nodeRegistry: NodeDefinition[] = [
     ]
   },
   {
-    type: "type",
+    type: "input",
     label: "输入文本",
     category: "网页交互",
     icon: Type,
@@ -51,7 +51,7 @@ export const nodeRegistry: NodeDefinition[] = [
     bgGradient: "from-emerald-500/10",
     fields: [
       { name: "selector", label: "CSS 选择器", type: "text", placeholder: "#id or .class" },
-      { name: "text", label: "输入文本", type: "text" }
+      { name: "value", label: "输入文本", type: "text" }
     ]
   },
   {

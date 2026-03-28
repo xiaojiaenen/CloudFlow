@@ -43,13 +43,19 @@ async function publishEvent(event: TaskExecutionEvent) {
   await publisher.publish(TASK_EVENTS_CHANNEL, JSON.stringify(event));
 }
 
-async function publishLog(taskId: string, message: string, level: TaskLogLevel = 'info') {
+async function publishLog(
+  taskId: string,
+  message: string,
+  level: TaskLogLevel = 'info',
+  nodeId?: string,
+) {
   await publishEvent({
     taskId,
     type: 'log',
     data: {
       message,
       level,
+      nodeId,
       timestamp: new Date().toISOString(),
     },
   });
@@ -105,20 +111,20 @@ function startScreenshotStream(taskId: string, page: Page) {
 async function executeNode(taskId: string, page: Page, node: WorkflowNode) {
   switch (node.type) {
     case 'open_page':
-      await publishLog(taskId, `打开页面 ${node.url}`);
+      await publishLog(taskId, `打开页面 ${node.url}`, 'info', node.clientNodeId);
       await page.goto(node.url, { waitUntil: 'domcontentloaded' });
       break;
     case 'click':
-      await publishLog(taskId, `点击元素 ${node.selector}`);
+      await publishLog(taskId, `点击元素 ${node.selector}`, 'info', node.clientNodeId);
       await page.locator(node.selector).click();
       break;
     case 'input':
-      await publishLog(taskId, `输入内容到 ${node.selector}`);
+      await publishLog(taskId, `输入内容到 ${node.selector}`, 'info', node.clientNodeId);
       await page.locator(node.selector).fill(node.value);
       break;
     case 'wait': {
       const duration = Number(node.time ?? node.duration ?? 1000);
-      await publishLog(taskId, `等待 ${duration}ms`);
+      await publishLog(taskId, `等待 ${duration}ms`, 'info', node.clientNodeId);
       await page.waitForTimeout(duration);
       break;
     }

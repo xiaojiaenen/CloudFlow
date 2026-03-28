@@ -3,10 +3,11 @@ import { cn } from "@/src/lib/utils";
 
 interface HeaderProps {
   isRunning: boolean;
+  runLabel?: string;
   onToggleRun: () => void;
 }
 
-export function Header({ isRunning, onToggleRun }: HeaderProps) {
+export function Header({ isRunning, runLabel = "执行工作流", onToggleRun }: HeaderProps) {
   return (
     <div className="h-14 flex items-center justify-between flex-1 z-10 relative">
       <div className="flex items-center gap-2 text-sm text-zinc-400">
@@ -50,7 +51,7 @@ export function Header({ isRunning, onToggleRun }: HeaderProps) {
           ) : (
             <>
               <Play className="w-4 h-4 fill-current" />
-              执行工作流
+              {runLabel}
             </>
           )}
         </button>

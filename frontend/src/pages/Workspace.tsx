@@ -1,4 +1,8 @@
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Edge, Node } from "@xyflow/react";
+import { ReactFlowProvider } from "@xyflow/react";
+import { io, Socket } from "socket.io-client";
+import { Settings } from "lucide-react";
 import { Sidebar } from "@/src/components/Sidebar";
 import { Header } from "@/src/components/Header";
 import { WorkflowCanvas } from "@/src/components/WorkflowCanvas";
@@ -11,76 +15,231 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/src/components/ui/Ta
 import { Switch } from "@/src/components/ui/Switch";
 import { Button } from "@/src/components/ui/Button";
 import { Input } from "@/src/components/ui/Input";
-import { Settings } from "lucide-react";
+import {
+  buildWorkflowDefinition,
+  CanvasNodeData,
+  createWorkflow,
+  ExecutionNodeStatus,
+  getWsBaseUrl,
+  runTask,
+  TaskEvent,
+} from "@/src/lib/cloudflow";
 
-import { ReactFlowProvider } from "@xyflow/react";
+function toLogTimestamp(timestamp?: string) {
+  if (!timestamp) {
+    return new Date().toLocaleTimeString([], {
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  }
+
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function buildIdleNodeStatuses(nodes: Node<CanvasNodeData>[]) {
+  return nodes.reduce<Record<string, ExecutionNodeStatus>>((acc, node) => {
+    acc[node.id] = "idle";
+    return acc;
+  }, {});
+}
+
+function getPrimaryPageUrl(nodes: Node<CanvasNodeData>[]) {
+  const pageNode = nodes.find((node) => node.data.type === "open_page");
+  return typeof pageNode?.data.url === "string" ? pageNode.data.url : "";
+}
 
 export default function Workspace() {
   const [isRunning, setIsRunning] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [taskId, setTaskId] = useState<string | null>(null);
+  const [screenshot, setScreenshot] = useState<string | null>(null);
+  const [flowNodes, setFlowNodes] = useState<Node<CanvasNodeData>[]>([]);
+  const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
+  const [nodeStatuses, setNodeStatuses] = useState<Record<string, ExecutionNodeStatus>>({});
 
-  const toggleRun = () => {
-    if (isRunning) {
-      setIsRunning(false);
-      addLog("warn", "用户已手动停止执行。");
-    } else {
-      setIsRunning(true);
-      setSelectedNodeId(null); // Hide config panel when running
-      setLogs([]);
-      addLog("info", "开始执行工作流...");
-      addLog("info", "正在初始化云端浏览器实例...");
-    }
-  };
+  const socketRef = useRef<Socket | null>(null);
+  const activeNodeIdRef = useRef<string | null>(null);
 
-  const addLog = (level: LogEntry["level"], message: string) => {
-    setLogs((prev) => [
-      ...prev,
-      {
-        id: Math.random().toString(36).substring(7),
-        timestamp: new Date().toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-        level,
-        message,
+  const pageUrl = useMemo(() => getPrimaryPageUrl(flowNodes), [flowNodes]);
+
+  const addLog = useCallback(
+    (
+      level: LogEntry["level"],
+      message: string,
+      options?: {
+        timestamp?: string;
+        nodeId?: string;
       },
-    ]);
-  };
+    ) => {
+      setLogs((prev) => [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          timestamp: toLogTimestamp(options?.timestamp),
+          level,
+          message,
+        },
+      ]);
+
+      if (options?.nodeId) {
+        setNodeStatuses((prev) => {
+          const next = { ...prev };
+          const previousNodeId = activeNodeIdRef.current;
+
+          if (previousNodeId && previousNodeId !== options.nodeId && next[previousNodeId] === "running") {
+            next[previousNodeId] = "success";
+          }
+
+          next[options.nodeId] = "running";
+          activeNodeIdRef.current = options.nodeId;
+          return next;
+        });
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
-    if (!isRunning) return;
+    const socket = io(`${getWsBaseUrl()}/tasks`, {
+      transports: ["websocket"],
+    });
 
-    const steps = [
-      { delay: 1500, level: "success", msg: "浏览器实例启动成功。" },
-      { delay: 3000, level: "info", msg: "正在导航至 https://amazon.com..." },
-      { delay: 5000, level: "success", msg: "页面加载完成。" },
-      { delay: 6500, level: "info", msg: "正在搜索框输入 'MacBook'..." },
-      { delay: 8000, level: "info", msg: "点击搜索按钮..." },
-      { delay: 10000, level: "success", msg: "搜索结果已渲染。" },
-      { delay: 12000, level: "info", msg: "正在提取商品价格列表..." },
-      { delay: 14000, level: "success", msg: "成功提取 24 条商品数据。" },
-      { delay: 15000, level: "info", msg: "正在同步至数据库..." },
-      { delay: 16000, level: "success", msg: "工作流执行完毕。" },
-    ];
+    socketRef.current = socket;
 
-    const timeouts = steps.map((step) =>
-      setTimeout(() => {
-        addLog(step.level as LogEntry["level"], step.msg);
-        if (step.msg.includes("完毕")) {
-          setIsRunning(false);
+    socket.on("task:event", (event: TaskEvent) => {
+      if (event.type === "log") {
+        const payload = event.data as Extract<TaskEvent["data"], { message: string }>;
+        addLog(payload.level, payload.message, {
+          timestamp: payload.timestamp,
+          nodeId: payload.nodeId,
+        });
+        return;
+      }
+
+      if (event.type === "screenshot") {
+        const payload = event.data as Extract<TaskEvent["data"], { imageBase64: string }>;
+        setScreenshot(payload.imageBase64);
+        return;
+      }
+
+      if (event.type === "status") {
+        const payload = event.data as Extract<TaskEvent["data"], { status: "pending" | "running" | "success" | "failed" }>;
+
+        if (payload.status === "running") {
+          setIsRunning(true);
+          return;
         }
-      }, step.delay)
-    );
+
+        if (payload.status === "success") {
+          const activeNodeId = activeNodeIdRef.current;
+          if (activeNodeId) {
+            setNodeStatuses((prev) => ({
+              ...prev,
+              [activeNodeId]: "success",
+            }));
+          }
+          setIsRunning(false);
+          activeNodeIdRef.current = null;
+          return;
+        }
+
+        if (payload.status === "failed") {
+          const activeNodeId = activeNodeIdRef.current;
+          if (activeNodeId) {
+            setNodeStatuses((prev) => ({
+              ...prev,
+              [activeNodeId]: "error",
+            }));
+          }
+          setIsRunning(false);
+          activeNodeIdRef.current = null;
+
+          if (payload.errorMessage) {
+            addLog("error", payload.errorMessage, {
+              timestamp: payload.timestamp,
+            });
+          }
+        }
+      }
+    });
+
+    socket.on("connect_error", () => {
+      addLog("error", "WebSocket 连接失败，请确认后端服务已经启动。");
+    });
 
     return () => {
-      timeouts.forEach(clearTimeout);
+      socket.disconnect();
+      socketRef.current = null;
     };
-  }, [isRunning]);
+  }, [addLog]);
+
+  useEffect(() => {
+    if (taskId) {
+      socketRef.current?.emit("task:subscribe", { taskId });
+
+      return () => {
+        socketRef.current?.emit("task:unsubscribe", { taskId });
+      };
+    }
+  }, [taskId]);
+
+  useEffect(() => {
+    if (!isRunning) {
+      setNodeStatuses(buildIdleNodeStatuses(flowNodes));
+    }
+  }, [flowNodes, isRunning]);
+
+  const toggleRun = useCallback(async () => {
+    if (isRunning) {
+      addLog("warn", "当前版本暂不支持中止已投递任务，请等待任务完成。");
+      return;
+    }
+
+    if (flowNodes.length === 0) {
+      addLog("error", "当前画布为空，无法执行工作流。");
+      return;
+    }
+
+    setSelectedNodeId(null);
+    setLogs([]);
+    setScreenshot(null);
+    setTaskId(null);
+    activeNodeIdRef.current = null;
+    setNodeStatuses(buildIdleNodeStatuses(flowNodes));
+
+    try {
+      const definition = buildWorkflowDefinition(flowNodes, flowEdges);
+      const workflow = await createWorkflow({
+        name: `CloudFlow 工作流 ${new Date().toLocaleString()}`,
+        description: "由前端画布自动生成并提交执行",
+        definition,
+      });
+
+      addLog("info", "工作流已保存，正在创建执行任务...");
+
+      const task = await runTask(workflow.id);
+      setTaskId(task.id);
+      setIsRunning(true);
+      addLog("info", `任务 ${task.id} 已入队，等待 Worker 执行...`);
+    } catch (error) {
+      setIsRunning(false);
+      addLog("error", error instanceof Error ? error.message : "执行任务时发生未知错误。");
+    }
+  }, [addLog, flowEdges, flowNodes, isRunning]);
 
   return (
     <div className="h-screen w-screen bg-[#09090b] text-zinc-50 flex overflow-hidden font-sans selection:bg-sky-500/30">
       <Sidebar />
       <div className="flex-1 flex flex-col min-w-0 bg-[#09090b] relative">
-        {/* Breathing Background for Workspace */}
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-sky-900/10 via-transparent to-transparent pointer-events-none"></div>
 
         <div className="flex items-center justify-between border-b border-white/[0.05] bg-zinc-950/50 backdrop-blur-md px-6 z-10">
@@ -94,14 +253,21 @@ export default function Workspace() {
         <div className="flex-1 flex overflow-hidden relative">
           <ReactFlowProvider>
             <NodePalette />
-            
-            <WorkflowCanvas 
-              isRunning={isRunning} 
+
+            <WorkflowCanvas
+              isRunning={isRunning}
+              nodeStatuses={nodeStatuses}
+              onWorkflowChange={({ nodes, edges }) => {
+                setFlowNodes(nodes);
+                setFlowEdges(edges);
+              }}
               onNodeSelect={(id) => {
-                if (!isRunning) setSelectedNodeId(id);
-              }} 
+                if (!isRunning) {
+                  setSelectedNodeId(id);
+                }
+              }}
             />
-            
+
             <div className="h-full z-10 flex border-l border-white/[0.05]">
               {selectedNodeId && !isRunning ? (
                 <NodeConfigPanel nodeId={selectedNodeId} onClose={() => setSelectedNodeId(null)} />
@@ -109,6 +275,9 @@ export default function Workspace() {
                 <ExecutionPanel
                   isRunning={isRunning}
                   logs={logs}
+                  screenshot={screenshot}
+                  taskId={taskId}
+                  pageUrl={pageUrl}
                   onClearLogs={() => setLogs([])}
                 />
               )}
@@ -127,7 +296,7 @@ export default function Workspace() {
               <TabsTrigger value="schedule">调度执行</TabsTrigger>
               <TabsTrigger value="alerts">告警规则</TabsTrigger>
             </TabsList>
-            
+
             <TabsContent value="schedule" className="space-y-6">
               <div className="flex items-center justify-between">
                 <div>
@@ -184,7 +353,7 @@ export default function Workspace() {
               </div>
             </TabsContent>
           </Tabs>
-          
+
           <div className="mt-8 flex justify-end gap-3">
             <Button variant="ghost" onClick={() => setSettingsOpen(false)}>取消</Button>
             <Button className="bg-sky-600 hover:bg-sky-700 text-white border-transparent" onClick={() => setSettingsOpen(false)}>保存配置</Button>

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { Plus, LayoutGrid, Folder, MoreHorizontal, Globe, Store, Settings, ShieldAlert, SlidersHorizontal, Workflow, Activity, PanelLeftClose, PanelLeftOpen, X } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 import { useNavigate, useLocation } from "react-router-dom";
@@ -32,7 +32,7 @@ export function Sidebar() {
 
   const isActive = (path: string) => location.pathname === path;
 
-  const handleCreateWorkflow = (e: React.FormEvent) => {
+  const handleCreateWorkflow = (e: FormEvent) => {
     e.preventDefault();
     if (!newWorkflowName.trim()) return;
 

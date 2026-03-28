@@ -8,6 +8,7 @@ export interface TaskLogPayload {
   message: string;
   level: TaskLogLevel;
   timestamp: string;
+  nodeId?: string;
 }
 
 export interface TaskScreenshotPayload {

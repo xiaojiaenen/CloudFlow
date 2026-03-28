@@ -1,8 +1,10 @@
 import ReactECharts, { EChartsReactProps } from 'echarts-for-react';
+import type { CSSProperties } from 'react';
 import { cn } from '@/src/lib/utils';
 
-interface ChartProps extends EChartsReactProps {
+interface ChartProps extends Omit<EChartsReactProps, 'style'> {
   className?: string;
+  style?: CSSProperties;
 }
 
 export function Chart({ className, ...props }: ChartProps) {
