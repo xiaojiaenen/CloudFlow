@@ -22,6 +22,10 @@ import {
   ExecutionNodeStatus,
   getWsBaseUrl,
   runTask,
+  sanitizeCanvasEdges,
+  sanitizeCanvasNodes,
+  SanitizedCanvasEdge,
+  SanitizedCanvasNode,
   TaskEvent,
 } from "@/src/lib/cloudflow";
 
@@ -62,12 +66,13 @@ export default function Workspace() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [screenshot, setScreenshot] = useState<string | null>(null);
-  const [flowNodes, setFlowNodes] = useState<Node<CanvasNodeData>[]>([]);
-  const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
+  const [flowNodes, setFlowNodes] = useState<SanitizedCanvasNode[]>([]);
+  const [flowEdges, setFlowEdges] = useState<SanitizedCanvasEdge[]>([]);
   const [nodeStatuses, setNodeStatuses] = useState<Record<string, ExecutionNodeStatus>>({});
 
   const socketRef = useRef<Socket | null>(null);
   const activeNodeIdRef = useRef<string | null>(null);
+  const lastFlowSnapshotRef = useRef<string>("");
 
   const pageUrl = useMemo(() => getPrimaryPageUrl(flowNodes), [flowNodes]);
 
@@ -109,11 +114,13 @@ export default function Workspace() {
   );
 
   useEffect(() => {
-    const socket = io(`${getWsBaseUrl()}/tasks`, {
-      transports: ["websocket"],
-    });
+    if (!socketRef.current) {
+      socketRef.current = io(`${getWsBaseUrl()}/tasks`, {
+        transports: ["websocket"],
+      });
+    }
 
-    socketRef.current = socket;
+    const socket = socketRef.current;
 
     socket.on("task:event", (event: TaskEvent) => {
       if (event.type === "log") {
@@ -177,8 +184,8 @@ export default function Workspace() {
     });
 
     return () => {
-      socket.disconnect();
-      socketRef.current = null;
+      socket.off("task:event");
+      socket.off("connect_error");
     };
   }, [addLog]);
 
@@ -258,8 +265,20 @@ export default function Workspace() {
               isRunning={isRunning}
               nodeStatuses={nodeStatuses}
               onWorkflowChange={({ nodes, edges }) => {
-                setFlowNodes(nodes);
-                setFlowEdges(edges);
+                const sanitizedNodes = sanitizeCanvasNodes(nodes);
+                const sanitizedEdges = sanitizeCanvasEdges(edges);
+                const snapshot = JSON.stringify({
+                  nodes: sanitizedNodes,
+                  edges: sanitizedEdges,
+                });
+
+                if (snapshot === lastFlowSnapshotRef.current) {
+                  return;
+                }
+
+                lastFlowSnapshotRef.current = snapshot;
+                setFlowNodes(sanitizedNodes);
+                setFlowEdges(sanitizedEdges);
               }}
               onNodeSelect={(id) => {
                 if (!isRunning) {

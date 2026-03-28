@@ -188,11 +188,15 @@ function Flow({ isRunning, onNodeSelect, nodeStatuses, onWorkflowChange }: Workf
   useEffect(() => {
     setNodes((nds) =>
       nds.map((node) => ({
-        ...node,
-        data: {
-          ...node.data,
-          status: nodeStatuses?.[node.id] ?? "idle",
-        },
+        ...(node.data.status === (nodeStatuses?.[node.id] ?? "idle")
+          ? node
+          : {
+              ...node,
+              data: {
+                ...node.data,
+                status: nodeStatuses?.[node.id] ?? "idle",
+              },
+            }),
       })),
     );
   }, [nodeStatuses, setNodes]);

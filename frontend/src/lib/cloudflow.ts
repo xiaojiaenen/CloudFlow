@@ -14,6 +14,22 @@ export interface WorkflowApiDefinition {
   nodes: Array<Record<string, unknown>>;
 }
 
+export interface SanitizedCanvasNode {
+  id: string;
+  type: string | undefined;
+  position: {
+    x: number;
+    y: number;
+  };
+  data: CanvasNodeData;
+}
+
+export interface SanitizedCanvasEdge {
+  id: string;
+  source: string;
+  target: string;
+}
+
 export interface WorkflowRecord {
   id: string;
   name: string;
@@ -185,4 +201,27 @@ export function buildWorkflowDefinition(
       return baseNode;
     }),
   };
+}
+
+export function sanitizeCanvasNodes(nodes: Node<CanvasNodeData>[]): SanitizedCanvasNode[] {
+  return nodes.map((node) => ({
+    id: node.id,
+    type: node.type,
+    position: {
+      x: node.position.x,
+      y: node.position.y,
+    },
+    data: {
+      ...node.data,
+      status: undefined,
+    },
+  }));
+}
+
+export function sanitizeCanvasEdges(edges: Edge[]): SanitizedCanvasEdge[] {
+  return edges.map((edge) => ({
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+  }));
 }
