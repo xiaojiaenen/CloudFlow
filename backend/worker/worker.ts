@@ -2,8 +2,10 @@ import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 import { Job, Worker } from 'bullmq';
 import IORedis from 'ioredis';
-import { chromium, Browser, Page } from 'playwright';
+import { chromium, Browser, BrowserContext, Page } from 'playwright';
 import {
+  TASK_CANCEL_CHANNEL,
+  TASK_CANCEL_KEY_PREFIX,
   TASK_EVENTS_CHANNEL,
   TASK_EXECUTION_JOB_NAME,
   TASK_QUEUE_NAME,
@@ -26,8 +28,20 @@ const publisher = new IORedis(redisUrl, {
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
 });
+const cancellationSubscriber = new IORedis(redisUrl, {
+  maxRetriesPerRequest: null,
+  enableReadyCheck: false,
+});
 
 let browserPromise: Promise<Browser> | null = null;
+const taskControllers = new Map<string, { cancelRequested: boolean; context?: BrowserContext }>();
+
+class TaskCancelledError extends Error {
+  constructor(taskId: string) {
+    super(`Task ${taskId} cancelled by user.`);
+    this.name = 'TaskCancelledError';
+  }
+}
 
 async function getBrowser() {
   if (!browserPromise) {
@@ -71,6 +85,57 @@ async function publishStatus(taskId: string, status: TaskExecutionStatus, errorM
       timestamp: new Date().toISOString(),
     },
   });
+}
+
+function getCancellationKey(taskId: string) {
+  return `${TASK_CANCEL_KEY_PREFIX}${taskId}`;
+}
+
+function getTaskController(taskId: string) {
+  const existingController = taskControllers.get(taskId);
+
+  if (existingController) {
+    return existingController;
+  }
+
+  const controller = {
+    cancelRequested: false,
+    context: undefined as BrowserContext | undefined,
+  };
+
+  taskControllers.set(taskId, controller);
+  return controller;
+}
+
+function requestTaskCancellation(taskId: string) {
+  const controller = getTaskController(taskId);
+  controller.cancelRequested = true;
+
+  if (controller.context) {
+    void controller.context.close().catch(() => undefined);
+  }
+}
+
+async function isTaskCancellationRequested(taskId: string) {
+  const controller = taskControllers.get(taskId);
+
+  if (controller?.cancelRequested) {
+    return true;
+  }
+
+  const result = await publisher.exists(getCancellationKey(taskId));
+  return result === 1;
+}
+
+async function ensureTaskNotCancelled(taskId: string) {
+  if (await isTaskCancellationRequested(taskId)) {
+    throw new TaskCancelledError(taskId);
+  }
+}
+
+async function clearTaskCancellation(taskId: string) {
+  taskControllers.delete(taskId);
+  await publisher.del(getCancellationKey(taskId));
 }
 
 function startScreenshotStream(taskId: string, page: Page) {
@@ -125,7 +190,15 @@ async function executeNode(taskId: string, page: Page, node: WorkflowNode) {
     case 'wait': {
       const duration = Number(node.time ?? node.duration ?? 1000);
       await publishLog(taskId, `等待 ${duration}ms`, 'info', node.clientNodeId);
-      await page.waitForTimeout(duration);
+
+      let remaining = duration;
+      while (remaining > 0) {
+        await ensureTaskNotCancelled(taskId);
+        const slice = Math.min(remaining, 200);
+        await page.waitForTimeout(slice);
+        remaining -= slice;
+      }
+
       break;
     }
     default:
@@ -136,16 +209,22 @@ async function executeNode(taskId: string, page: Page, node: WorkflowNode) {
 async function runTask(job: Job<TaskQueuePayload>) {
   const { taskId, workflow } = job.data;
   const browser = await getBrowser();
+  const controller = getTaskController(taskId);
   const context = await browser.newContext({
     viewport: {
       width: 1440,
       height: 900,
     },
   });
+
+  controller.context = context;
+
   const page = await context.newPage();
   const stopScreenshotStream = startScreenshotStream(taskId, page);
 
   try {
+    await ensureTaskNotCancelled(taskId);
+
     await prisma.task.update({
       where: { id: taskId },
       data: {
@@ -159,7 +238,9 @@ async function runTask(job: Job<TaskQueuePayload>) {
     await publishLog(taskId, `开始执行任务，共 ${workflow.nodes.length} 个节点`);
 
     for (const node of workflow.nodes) {
+      await ensureTaskNotCancelled(taskId);
       await executeNode(taskId, page, node);
+      await ensureTaskNotCancelled(taskId);
     }
 
     await prisma.task.update({
@@ -173,6 +254,24 @@ async function runTask(job: Job<TaskQueuePayload>) {
     await publishLog(taskId, '任务执行完成', 'success');
     await publishStatus(taskId, 'success');
   } catch (error) {
+    const cancellationRequested = await isTaskCancellationRequested(taskId);
+
+    if (error instanceof TaskCancelledError || cancellationRequested) {
+      await prisma.task.update({
+        where: { id: taskId },
+        data: {
+          status: 'cancelled',
+          completedAt: new Date(),
+          errorMessage: 'Task cancelled by user.',
+          cancelRequestedAt: new Date(),
+        },
+      });
+
+      await publishLog(taskId, '任务已取消。', 'warn');
+      await publishStatus(taskId, 'cancelled');
+      return;
+    }
+
     const message = error instanceof Error ? error.message : 'Unknown execution error';
 
     await prisma.task.update({
@@ -190,7 +289,8 @@ async function runTask(job: Job<TaskQueuePayload>) {
     throw error;
   } finally {
     stopScreenshotStream();
-    await context.close();
+    await context.close().catch(() => undefined);
+    await clearTaskCancellation(taskId);
   }
 }
 
@@ -221,8 +321,26 @@ worker.on('failed', (job, error) => {
   console.error(`[worker] Job ${job?.id} failed`, error);
 });
 
+cancellationSubscriber.on('message', (channel, message) => {
+  if (channel !== TASK_CANCEL_CHANNEL) {
+    return;
+  }
+
+  try {
+    const payload = JSON.parse(message) as { taskId?: string };
+    if (payload.taskId) {
+      requestTaskCancellation(payload.taskId);
+    }
+  } catch (error) {
+    console.error('[worker] Failed to parse cancellation payload', error);
+  }
+});
+
+void cancellationSubscriber.subscribe(TASK_CANCEL_CHANNEL);
+
 async function shutdown(code = 0) {
   await worker.close();
+  await cancellationSubscriber.quit();
   await publisher.quit();
   await workerConnection.quit();
   await prisma.$disconnect();

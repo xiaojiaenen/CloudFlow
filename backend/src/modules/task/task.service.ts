@@ -43,6 +43,58 @@ export class TaskService {
   }
 
   async findOne(id: string) {
+    return this.getTaskOrThrow(id);
+  }
+
+  async cancel(id: string) {
+    const task = await this.getTaskOrThrow(id);
+
+    if (task.status === 'success' || task.status === 'failed' || task.status === 'cancelled') {
+      return task;
+    }
+
+    if (task.status === 'pending') {
+      const removed = await this.queueService.cancelPendingTask(task.id);
+
+      if (removed) {
+        const cancelledTask = await this.prismaService.task.update({
+          where: { id: task.id },
+          data: {
+            status: 'cancelled',
+            cancelRequestedAt: new Date(),
+            completedAt: new Date(),
+            errorMessage: 'Task cancelled by user.',
+          },
+          include: {
+            workflow: true,
+          },
+        });
+
+        await this.queueService.publishLog(task.id, '任务已在队列中取消。', 'warn');
+        await this.queueService.publishStatus(task.id, 'cancelled');
+        await this.queueService.clearTaskCancellation(task.id);
+
+        return cancelledTask;
+      }
+    }
+
+    const updatedTask = await this.prismaService.task.update({
+      where: { id: task.id },
+      data: {
+        cancelRequestedAt: task.cancelRequestedAt ?? new Date(),
+      },
+      include: {
+        workflow: true,
+      },
+    });
+
+    await this.queueService.requestTaskCancellation(task.id);
+    await this.queueService.publishLog(task.id, '已发送停止请求，正在等待 Worker 安全终止任务...', 'warn');
+
+    return updatedTask;
+  }
+
+  private async getTaskOrThrow(id: string) {
     const task = await this.prismaService.task.findUnique({
       where: { id },
       include: {

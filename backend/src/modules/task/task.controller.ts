@@ -15,4 +15,9 @@ export class TaskController {
   findOne(@Param('id') id: string) {
     return this.taskService.findOne(id);
   }
+
+  @Post(':id/cancel')
+  cancel(@Param('id') id: string) {
+    return this.taskService.cancel(id);
+  }
 }

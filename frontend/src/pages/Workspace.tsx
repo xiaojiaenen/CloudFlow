@@ -17,6 +17,7 @@ import { Button } from "@/src/components/ui/Button";
 import { Input } from "@/src/components/ui/Input";
 import {
   buildWorkflowDefinition,
+  cancelTask,
   CanvasNodeData,
   createWorkflow,
   ExecutionNodeStatus,
@@ -61,6 +62,7 @@ function getPrimaryPageUrl(nodes: Node<CanvasNodeData>[]) {
 
 export default function Workspace() {
   const [isRunning, setIsRunning] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -139,10 +141,14 @@ export default function Workspace() {
       }
 
       if (event.type === "status") {
-        const payload = event.data as Extract<TaskEvent["data"], { status: "pending" | "running" | "success" | "failed" }>;
+        const payload = event.data as Extract<
+          TaskEvent["data"],
+          { status: "pending" | "running" | "success" | "failed" | "cancelled" }
+        >;
 
         if (payload.status === "running") {
           setIsRunning(true);
+          setIsCancelling(false);
           return;
         }
 
@@ -155,6 +161,7 @@ export default function Workspace() {
             }));
           }
           setIsRunning(false);
+          setIsCancelling(false);
           activeNodeIdRef.current = null;
           return;
         }
@@ -168,6 +175,7 @@ export default function Workspace() {
             }));
           }
           setIsRunning(false);
+          setIsCancelling(false);
           activeNodeIdRef.current = null;
 
           if (payload.errorMessage) {
@@ -175,6 +183,20 @@ export default function Workspace() {
               timestamp: payload.timestamp,
             });
           }
+          return;
+        }
+
+        if (payload.status === "cancelled") {
+          const activeNodeId = activeNodeIdRef.current;
+          if (activeNodeId) {
+            setNodeStatuses((prev) => ({
+              ...prev,
+              [activeNodeId]: "cancelled",
+            }));
+          }
+          setIsRunning(false);
+          setIsCancelling(false);
+          activeNodeIdRef.current = null;
         }
       }
     });
@@ -200,14 +222,44 @@ export default function Workspace() {
   }, [taskId]);
 
   useEffect(() => {
-    if (!isRunning) {
-      setNodeStatuses(buildIdleNodeStatuses(flowNodes));
-    }
-  }, [flowNodes, isRunning]);
+    setNodeStatuses((prev) => {
+      const next = { ...prev };
+
+      for (const node of flowNodes) {
+        if (!(node.id in next)) {
+          next[node.id] = "idle";
+        }
+      }
+
+      for (const nodeId of Object.keys(next)) {
+        if (!flowNodes.some((node) => node.id === nodeId)) {
+          delete next[nodeId];
+        }
+      }
+
+      return next;
+    });
+  }, [flowNodes]);
 
   const toggleRun = useCallback(async () => {
     if (isRunning) {
-      addLog("warn", "当前版本暂不支持中止已投递任务，请等待任务完成。");
+      if (!taskId) {
+        addLog("warn", "当前任务还没有拿到 taskId，暂时无法停止。");
+        return;
+      }
+
+      if (isCancelling) {
+        return;
+      }
+
+      try {
+        setIsCancelling(true);
+        await cancelTask(taskId);
+        addLog("warn", `已发送任务 ${taskId} 的停止请求，等待 Worker 安全退出...`);
+      } catch (error) {
+        setIsCancelling(false);
+        addLog("error", error instanceof Error ? error.message : "停止任务时发生未知错误。");
+      }
       return;
     }
 
@@ -220,6 +272,7 @@ export default function Workspace() {
     setLogs([]);
     setScreenshot(null);
     setTaskId(null);
+    setIsCancelling(false);
     activeNodeIdRef.current = null;
     setNodeStatuses(buildIdleNodeStatuses(flowNodes));
 
@@ -239,9 +292,10 @@ export default function Workspace() {
       addLog("info", `任务 ${task.id} 已入队，等待 Worker 执行...`);
     } catch (error) {
       setIsRunning(false);
+      setIsCancelling(false);
       addLog("error", error instanceof Error ? error.message : "执行任务时发生未知错误。");
     }
-  }, [addLog, flowEdges, flowNodes, isRunning]);
+  }, [addLog, flowEdges, flowNodes, isCancelling, isRunning, taskId]);
 
   return (
     <div className="h-screen w-screen bg-[#09090b] text-zinc-50 flex overflow-hidden font-sans selection:bg-sky-500/30">
@@ -250,7 +304,7 @@ export default function Workspace() {
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-sky-900/10 via-transparent to-transparent pointer-events-none"></div>
 
         <div className="flex items-center justify-between border-b border-white/[0.05] bg-zinc-950/50 backdrop-blur-md px-6 z-10">
-          <Header isRunning={isRunning} onToggleRun={toggleRun} />
+          <Header isRunning={isRunning} isCancelling={isCancelling} onToggleRun={toggleRun} />
           <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)} className="ml-4 h-8 gap-2">
             <Settings className="w-3.5 h-3.5" />
             全局配置
@@ -332,8 +386,12 @@ export default function Workspace() {
               <div className="space-y-2">
                 <label className="text-sm font-medium text-zinc-300">时区</label>
                 <select className="flex h-10 w-full rounded-md border border-white/[0.06] bg-zinc-900/50 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500">
-                  <option value="Asia/Shanghai" className="bg-zinc-800 text-zinc-200">Asia/Shanghai (UTC+8)</option>
-                  <option value="UTC" className="bg-zinc-800 text-zinc-200">UTC</option>
+                  <option value="Asia/Shanghai" className="bg-zinc-800 text-zinc-200">
+                    Asia/Shanghai (UTC+8)
+                  </option>
+                  <option value="UTC" className="bg-zinc-800 text-zinc-200">
+                    UTC
+                  </option>
                 </select>
               </div>
             </TabsContent>
@@ -341,21 +399,21 @@ export default function Workspace() {
             <TabsContent value="alerts" className="space-y-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="text-sm font-medium text-zinc-200">执行失败 (Error)</div>
+                  <div className="text-sm font-medium text-zinc-200">执行失败</div>
                   <div className="text-xs text-zinc-500">节点报错或超时</div>
                 </div>
                 <Switch checked={true} />
               </div>
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="text-sm font-medium text-zinc-200">执行成功 (Success)</div>
+                  <div className="text-sm font-medium text-zinc-200">执行成功</div>
                   <div className="text-xs text-zinc-500">工作流完整运行结束</div>
                 </div>
                 <Switch checked={false} />
               </div>
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="text-sm font-medium text-zinc-200">执行超时 (Timeout)</div>
+                  <div className="text-sm font-medium text-zinc-200">执行超时</div>
                   <div className="text-xs text-zinc-500">运行时间超过设定阈值</div>
                 </div>
                 <Switch checked={true} />
@@ -366,7 +424,7 @@ export default function Workspace() {
                   <Input placeholder="admin@example.com" />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-zinc-300">Webhook URL (可选)</label>
+                  <label className="text-sm font-medium text-zinc-300">Webhook URL</label>
                   <Input placeholder="https://..." />
                 </div>
               </div>
@@ -374,8 +432,15 @@ export default function Workspace() {
           </Tabs>
 
           <div className="mt-8 flex justify-end gap-3">
-            <Button variant="ghost" onClick={() => setSettingsOpen(false)}>取消</Button>
-            <Button className="bg-sky-600 hover:bg-sky-700 text-white border-transparent" onClick={() => setSettingsOpen(false)}>保存配置</Button>
+            <Button variant="ghost" onClick={() => setSettingsOpen(false)}>
+              取消
+            </Button>
+            <Button
+              className="bg-sky-600 hover:bg-sky-700 text-white border-transparent"
+              onClick={() => setSettingsOpen(false)}
+            >
+              保存配置
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

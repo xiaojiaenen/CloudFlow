@@ -1,19 +1,25 @@
-import { Play, Square, Settings, Bell, ChevronRight } from "lucide-react";
+import { ChevronRight, Play, Square } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 
 interface HeaderProps {
   isRunning: boolean;
+  isCancelling?: boolean;
   runLabel?: string;
-  onToggleRun: () => void;
+  onToggleRun: () => void | Promise<void>;
 }
 
-export function Header({ isRunning, runLabel = "执行工作流", onToggleRun }: HeaderProps) {
+export function Header({
+  isRunning,
+  isCancelling = false,
+  runLabel = "执行工作流",
+  onToggleRun,
+}: HeaderProps) {
   return (
     <div className="h-14 flex items-center justify-between flex-1 z-10 relative">
       <div className="flex items-center gap-2 text-sm text-zinc-400">
         <span className="hover:text-zinc-200 cursor-pointer transition-colors">工作流</span>
         <ChevronRight className="w-4 h-4 opacity-50" />
-        <span className="text-zinc-100 font-medium">抓取亚马逊商品</span>
+        <span className="text-zinc-100 font-medium">CloudFlow Workspace</span>
       </div>
 
       <div className="flex items-center gap-4">
@@ -25,28 +31,29 @@ export function Header({ isRunning, runLabel = "执行工作流", onToggleRun }:
             <span
               className={cn(
                 "relative inline-flex rounded-full h-2 w-2",
-                isRunning ? "bg-emerald-500" : "bg-zinc-600"
+                isRunning ? "bg-emerald-500" : "bg-zinc-600",
               )}
-            ></span>
+            />
           </span>
           <span className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">
-            {isRunning ? "运行中" : "已就绪"}
+            {isRunning ? (isCancelling ? "Stopping" : "Running") : "Ready"}
           </span>
         </div>
 
         <button
-          onClick={onToggleRun}
+          onClick={() => void onToggleRun()}
+          disabled={isCancelling}
           className={cn(
-            "flex items-center gap-2 px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200",
+            "flex items-center gap-2 px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-70",
             isRunning
               ? "bg-red-500/10 text-red-500 hover:bg-red-500/20 border border-red-500/20"
-              : "bg-white text-black hover:bg-zinc-200 shadow-[0_0_15px_rgba(255,255,255,0.1)]"
+              : "bg-white text-black hover:bg-zinc-200 shadow-[0_0_15px_rgba(255,255,255,0.1)]",
           )}
         >
           {isRunning ? (
             <>
               <Square className="w-4 h-4 fill-current" />
-              停止执行
+              {isCancelling ? "停止中..." : "停止执行"}
             </>
           ) : (
             <>

@@ -2,7 +2,7 @@ import { WorkflowDefinition } from './workflow.types';
 
 export type TaskLogLevel = 'info' | 'warn' | 'error' | 'success';
 export type ExecutionEventType = 'log' | 'screenshot' | 'status';
-export type TaskExecutionStatus = 'pending' | 'running' | 'success' | 'failed';
+export type TaskExecutionStatus = 'pending' | 'running' | 'success' | 'failed' | 'cancelled';
 
 export interface TaskLogPayload {
   message: string;

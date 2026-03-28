@@ -1,6 +1,6 @@
 import type { Edge, Node } from "@xyflow/react";
 
-export type ExecutionNodeStatus = "idle" | "running" | "success" | "error";
+export type ExecutionNodeStatus = "idle" | "running" | "success" | "error" | "cancelled";
 
 export interface CanvasNodeData {
   label: string;
@@ -42,8 +42,9 @@ export interface WorkflowRecord {
 export interface TaskRecord {
   id: string;
   workflowId: string;
-  status: "pending" | "running" | "success" | "failed";
+  status: "pending" | "running" | "success" | "failed" | "cancelled";
   errorMessage?: string | null;
+  cancelRequestedAt?: string | null;
   createdAt: string;
   updatedAt: string;
   startedAt?: string | null;
@@ -66,14 +67,16 @@ export interface TaskEvent {
         timestamp: string;
       }
     | {
-        status: "pending" | "running" | "success" | "failed";
+        status: "pending" | "running" | "success" | "failed" | "cancelled";
         errorMessage?: string;
         timestamp: string;
       };
 }
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "http://localhost:3001/api";
-const WS_BASE_URL = (import.meta.env.VITE_WS_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "http://localhost:3001";
+const API_BASE_URL =
+  (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "http://localhost:3001/api";
+const WS_BASE_URL =
+  (import.meta.env.VITE_WS_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "http://localhost:3001";
 
 export function getApiBaseUrl() {
   return API_BASE_URL;
@@ -119,10 +122,19 @@ export async function runTask(workflowId: string) {
   return (await response.json()) as TaskRecord;
 }
 
-export function buildWorkflowDefinition(
-  nodes: Node<CanvasNodeData>[],
-  edges: Edge[],
-): WorkflowApiDefinition {
+export async function cancelTask(taskId: string) {
+  const response = await fetch(`${API_BASE_URL}/tasks/${taskId}/cancel`, {
+    method: "POST",
+  });
+
+  if (!response.ok) {
+    throw new Error(`停止任务失败 (${response.status})`);
+  }
+
+  return (await response.json()) as TaskRecord;
+}
+
+export function buildWorkflowDefinition(nodes: Node<CanvasNodeData>[], edges: Edge[]): WorkflowApiDefinition {
   const supportedTypes = new Set(["open_page", "click", "input", "wait"]);
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const incomingCounts = new Map<string, number>();
