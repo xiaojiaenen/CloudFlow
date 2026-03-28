@@ -15,7 +15,13 @@ import {
 } from "lucide-react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { cn } from "@/src/lib/utils";
-import { buildWorkflowDefinition, createDefaultCanvasGraph, createWorkflow, listWorkflows, WorkflowRecord } from "@/src/lib/cloudflow";
+import {
+  buildWorkflowDefinition,
+  createDefaultCanvasGraph,
+  createWorkflow,
+  listWorkflows,
+  WorkflowRecord,
+} from "@/src/lib/cloudflow";
 
 const navItems = [
   { path: "/", icon: LayoutGrid, label: "我的工作区" },
@@ -70,7 +76,6 @@ export function Sidebar() {
   }, [fetchWorkflows]);
 
   const isActive = (path: string) => location.pathname === path;
-
   const visibleWorkflows = useMemo(() => workflows.slice(0, 12), [workflows]);
 
   const handleCreateWorkflow = async (event: FormEvent) => {
@@ -184,10 +189,7 @@ export function Sidebar() {
                   工作流
                 </div>
                 {isWorkspacePage && (
-                  <button
-                    onClick={openBlankWorkflow}
-                    className="text-[11px] text-sky-400 hover:text-sky-300 transition-colors"
-                  >
+                  <button onClick={openBlankWorkflow} className="text-[11px] text-sky-400 hover:text-sky-300 transition-colors">
                     新建空白
                   </button>
                 )}
@@ -258,10 +260,7 @@ export function Sidebar() {
           <div className="bg-zinc-900 border border-white/[0.08] rounded-xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
             <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.05]">
               <h3 className="text-lg font-medium text-zinc-100">新建工作流</h3>
-              <button
-                onClick={() => setIsCreateModalOpen(false)}
-                className="text-zinc-400 hover:text-zinc-100 transition-colors"
-              >
+              <button onClick={() => setIsCreateModalOpen(false)} className="text-zinc-400 hover:text-zinc-100 transition-colors">
                 <X className="w-5 h-5" />
               </button>
             </div>

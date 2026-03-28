@@ -1,4 +1,4 @@
-import { Monitor, RefreshCw, Lock, ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Lock, Monitor, RefreshCw } from "lucide-react";
 
 interface BrowserPreviewProps {
   isRunning: boolean;
@@ -24,7 +24,6 @@ export function BrowserPreview({ isRunning, screenshot, taskId, pageUrl }: Brows
 
       <div className="flex-1 p-4 flex flex-col">
         <div className="flex-1 rounded-lg border border-white/[0.08] bg-[#000] overflow-hidden relative shadow-inner flex flex-col">
-          {/* Browser Chrome */}
           <div className="h-10 bg-[#121212] border-b border-white/[0.08] flex items-center px-3 gap-3">
             <div className="flex gap-2 text-zinc-500">
               <ChevronLeft className="w-4 h-4" />
@@ -39,7 +38,6 @@ export function BrowserPreview({ isRunning, screenshot, taskId, pageUrl }: Brows
             </div>
           </div>
 
-          {/* Browser Content */}
           <div className="flex-1 relative bg-[#050505]">
             {screenshot ? (
               <img
@@ -58,7 +56,7 @@ export function BrowserPreview({ isRunning, screenshot, taskId, pageUrl }: Brows
                 <div className="text-center">
                   <Monitor className="w-10 h-10 mx-auto mb-3 opacity-20" />
                   <p className="text-sm text-zinc-400">画面未激活</p>
-                  <p className="text-[11px] opacity-50 mt-1">点击右上角执行以查看实时画面</p>
+                  <p className="text-[11px] opacity-50 mt-1">点击右上角执行以后查看实时画面</p>
                 </div>
               </div>
             )}

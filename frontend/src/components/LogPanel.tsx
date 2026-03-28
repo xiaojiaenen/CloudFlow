@@ -1,7 +1,7 @@
-import { Terminal, Trash2 } from "lucide-react";
 import { useEffect, useRef } from "react";
+import { AnimatePresence, motion } from "motion/react";
+import { Terminal, Trash2 } from "lucide-react";
 import { cn } from "@/src/lib/utils";
-import { motion, AnimatePresence } from "motion/react";
 
 export interface LogEntry {
   id: string;
@@ -31,11 +31,7 @@ export function LogPanel({ logs, onClear }: LogPanelProps) {
           <Terminal className="w-3.5 h-3.5" />
           <span className="text-[11px] font-medium uppercase tracking-wider">执行日志</span>
         </div>
-        <button
-          onClick={onClear}
-          className="text-zinc-500 hover:text-zinc-300 transition-colors"
-          title="清空日志"
-        >
+        <button onClick={onClear} className="text-zinc-500 hover:text-zinc-300 transition-colors" title="清空日志">
           <Trash2 className="w-3.5 h-3.5" />
         </button>
       </div>
@@ -49,12 +45,7 @@ export function LogPanel({ logs, onClear }: LogPanelProps) {
         ) : (
           <AnimatePresence initial={false}>
             {logs.map((log) => (
-              <motion.div
-                key={log.id}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="flex gap-3 group"
-              >
+              <motion.div key={log.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex gap-3 group">
                 <span className="text-zinc-600 shrink-0 select-none">{log.timestamp}</span>
                 <span
                   className={cn(
@@ -62,17 +53,12 @@ export function LogPanel({ logs, onClear }: LogPanelProps) {
                     log.level === "info" && "text-blue-400/80",
                     log.level === "warn" && "text-amber-400/80",
                     log.level === "error" && "text-red-400/80",
-                    log.level === "success" && "text-emerald-400/80"
+                    log.level === "success" && "text-emerald-400/80",
                   )}
                 >
                   [{log.level}]
                 </span>
-                <span
-                  className={cn(
-                    "break-words",
-                    log.level === "error" ? "text-red-300" : "text-zinc-300"
-                  )}
-                >
+                <span className={cn("break-words", log.level === "error" ? "text-red-300" : "text-zinc-300")}>
                   {log.message}
                 </span>
               </motion.div>

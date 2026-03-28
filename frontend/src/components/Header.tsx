@@ -26,13 +26,10 @@ export function Header({
         <div className="flex items-center gap-2 mr-4">
           <span className="relative flex h-2 w-2">
             {isRunning && (
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
             )}
             <span
-              className={cn(
-                "relative inline-flex rounded-full h-2 w-2",
-                isRunning ? "bg-emerald-500" : "bg-zinc-600",
-              )}
+              className={cn("relative inline-flex rounded-full h-2 w-2", isRunning ? "bg-emerald-500" : "bg-zinc-600")}
             />
           </span>
           <span className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">
@@ -63,7 +60,7 @@ export function Header({
           )}
         </button>
 
-        <div className="w-px h-5 bg-white/[0.08] mx-2"></div>
+        <div className="w-px h-5 bg-white/[0.08] mx-2" />
 
         <div className="w-7 h-7 rounded-full bg-gradient-to-tr from-zinc-700 to-zinc-600 border border-white/10 overflow-hidden ml-2 cursor-pointer">
           <img

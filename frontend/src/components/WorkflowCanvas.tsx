@@ -55,7 +55,7 @@ function Flow({
   } | null>(null);
 
   const onConnect = useCallback(
-    (params: Connection | Edge) => setEdges((eds) => addEdge({ ...params, animated: true }, eds)),
+    (params: Connection | Edge) => setEdges((existingEdges) => addEdge({ ...params, animated: true }, existingEdges)),
     [setEdges],
   );
 
@@ -104,7 +104,7 @@ function Flow({
         },
       };
 
-      setNodes((nds) => nds.concat(newNode));
+      setNodes((existingNodes) => existingNodes.concat(newNode));
     },
     [screenToFlowPosition, setNodes],
   );
@@ -167,8 +167,10 @@ function Flow({
       return;
     }
 
-    setNodes((nds) => nds.filter((node) => node.id !== contextMenu.nodeId));
-    setEdges((eds) => eds.filter((edge) => edge.source !== contextMenu.nodeId && edge.target !== contextMenu.nodeId));
+    setNodes((existingNodes) => existingNodes.filter((node) => node.id !== contextMenu.nodeId));
+    setEdges((existingEdges) =>
+      existingEdges.filter((edge) => edge.source !== contextMenu.nodeId && edge.target !== contextMenu.nodeId),
+    );
   }, [contextMenu, setEdges, setNodes]);
 
   return (

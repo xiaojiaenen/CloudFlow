@@ -11,10 +11,10 @@ interface NodeData {
 }
 
 export function NodeCard({ data, selected }: { data: NodeData; selected: boolean }) {
-  const def = getNodeDefinition(data.type);
-  const Icon = def?.icon || Globe;
-  const colors = def?.color || "text-zinc-400 bg-zinc-400/10 border-zinc-400/20";
-  const bgGradient = def?.bgGradient || "from-zinc-500/10";
+  const definition = getNodeDefinition(data.type);
+  const Icon = definition?.icon || Globe;
+  const colors = definition?.color || "text-zinc-400 bg-zinc-400/10 border-zinc-400/20";
+  const bgGradient = definition?.bgGradient || "from-zinc-500/10";
 
   return (
     <div
