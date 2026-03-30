@@ -647,6 +647,8 @@ export async function listTasks(params?: {
   pageSize?: number;
   status?: TaskRecord["status"];
   triggerSource?: TaskRecord["triggerSource"];
+  workflowId?: string;
+  activeOnly?: boolean;
 }) {
   const query = new URLSearchParams();
 
@@ -664,6 +666,14 @@ export async function listTasks(params?: {
 
   if (params?.triggerSource) {
     query.set("triggerSource", params.triggerSource);
+  }
+
+  if (params?.workflowId) {
+    query.set("workflowId", params.workflowId);
+  }
+
+  if (params?.activeOnly) {
+    query.set("activeOnly", "true");
   }
 
   const response = await fetch(`${API_BASE_URL}/tasks${query.toString() ? `?${query.toString()}` : ""}`);

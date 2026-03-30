@@ -17,12 +17,16 @@ export class TaskController {
     @Query('pageSize') pageSize?: string,
     @Query('status') status?: string,
     @Query('triggerSource') triggerSource?: string,
+    @Query('workflowId') workflowId?: string,
+    @Query('activeOnly') activeOnly?: string,
   ) {
     return this.taskService.findAll({
       page,
       pageSize,
       status,
       triggerSource,
+      workflowId,
+      activeOnly,
     });
   }
 

@@ -23,15 +23,18 @@ import {
   createEmptyCanvasGraph,
   createWorkflow,
   ExecutionNodeStatus,
+  getTask,
   getWorkflow,
   getWsBaseUrl,
   hydrateCanvasFromWorkflow,
+  listTasks,
   runTask,
   sanitizeCanvasEdges,
   sanitizeCanvasNodes,
   SanitizedCanvasEdge,
   SanitizedCanvasNode,
   TaskEvent,
+  TaskExecutionRecord,
   updateWorkflow,
   WORKFLOW_OPEN_BLANK_EVENT,
   WORKFLOW_SAVED_EVENT,
@@ -67,6 +70,22 @@ function buildIdleNodeStatuses(nodes: Array<Node<CanvasNodeData> | SanitizedCanv
 function getPrimaryPageUrl(nodes: Array<Node<CanvasNodeData> | SanitizedCanvasNode>) {
   const pageNode = nodes.find((node) => node.data.type === "open_page");
   return typeof pageNode?.data.url === "string" ? pageNode.data.url : "";
+}
+
+function buildRestoredLogs(events: TaskExecutionRecord[]): LogEntry[] {
+  return events
+    .filter((event) => event.type === "log" && event.message)
+    .map((event) => ({
+      id: event.id,
+      timestamp: toLogTimestamp(event.createdAt),
+      level: (event.level ?? "info") as LogEntry["level"],
+      message: event.message ?? "",
+    }));
+}
+
+function getLatestPersistedScreenshot(events: TaskExecutionRecord[]) {
+  const screenshots = events.filter((event) => event.type === "screenshot" && Boolean(event.imageBase64));
+  return screenshots.length > 0 ? screenshots[screenshots.length - 1].imageBase64 ?? null : null;
 }
 
 export default function Workspace() {
@@ -367,6 +386,11 @@ export default function Workspace() {
   useEffect(() => {
     const loadWorkflow = async () => {
       setIsLoadingWorkflow(true);
+      setTaskId(null);
+      setIsRunning(false);
+      setIsCancelling(false);
+      setLogs([]);
+      setScreenshot(null);
 
       try {
         if (!workflowId) {
@@ -376,8 +400,33 @@ export default function Workspace() {
 
         const workflow = await getWorkflow(workflowId);
         resetCanvasWithWorkflow(workflow);
+
+        const runningTasks = await listTasks({
+          page: 1,
+          pageSize: 1,
+          workflowId,
+          activeOnly: true,
+        });
+
+        const activeTask = runningTasks.items[0];
+
+        if (activeTask) {
+          const taskDetail = await getTask(activeTask.id);
+          setTaskId(taskDetail.id);
+          setIsRunning(true);
+          setIsCancelling(Boolean(taskDetail.cancelRequestedAt));
+          setLogs(buildRestoredLogs(taskDetail.executionEvents ?? []));
+          setScreenshot(getLatestPersistedScreenshot(taskDetail.executionEvents ?? []));
+        } else {
+          setTaskId(null);
+          setIsRunning(false);
+          setIsCancelling(false);
+        }
       } catch (error) {
         addLog("error", error instanceof Error ? error.message : "读取工作流失败。");
+        setTaskId(null);
+        setIsRunning(false);
+        setIsCancelling(false);
         resetCanvasWithWorkflow(null);
       } finally {
         setIsLoadingWorkflow(false);

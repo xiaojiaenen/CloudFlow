@@ -56,6 +56,8 @@ export class TaskService {
     pageSize?: string;
     status?: string;
     triggerSource?: string;
+    workflowId?: string;
+    activeOnly?: string;
   }) {
     const page = Math.max(1, Number(filters?.page ?? 1) || 1);
     const pageSize = Math.min(50, Math.max(1, Number(filters?.pageSize ?? 10) || 10));
@@ -63,6 +65,14 @@ export class TaskService {
       ...(this.isTaskStatus(filters?.status) ? { status: filters?.status } : {}),
       ...(this.isTriggerSource(filters?.triggerSource)
         ? { triggerSource: filters?.triggerSource }
+        : {}),
+      ...(filters?.workflowId ? { workflowId: filters.workflowId } : {}),
+      ...(filters?.activeOnly === 'true'
+        ? {
+            status: {
+              in: ['pending', 'running'],
+            },
+          }
         : {}),
     };
 
