@@ -45,8 +45,8 @@ enum UserStatus {
 
 model Workflow {
   id               String   @id @default(cuid())
-  ownerId          String?
-  owner            User?    @relation("UserWorkflows", fields: [ownerId], references: [id])
+  ownerId          String
+  owner            User     @relation("UserWorkflows", fields: [ownerId], references: [id])
   name             String
   description      String?
   definition       Json
@@ -73,8 +73,8 @@ model Task {
   id                String               @id @default(cuid())
   workflowId        String
   workflow          Workflow             @relation(fields: [workflowId], references: [id])
-  ownerId           String?
-  owner             User?                @relation("UserTasks", fields: [ownerId], references: [id])
+  ownerId           String
+  owner             User                 @relation("UserTasks", fields: [ownerId], references: [id])
   status            TaskStatus           @default(pending)
   triggerSource     TaskTriggerSource    @default(manual)
   workflowSnapshot  Json
