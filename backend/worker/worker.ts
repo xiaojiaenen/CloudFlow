@@ -12,9 +12,11 @@ import {
 } from '../src/common/constants/redis.constants';
 import {
   TaskExecutionEvent,
+  TaskExtractPayload,
   TaskExecutionStatus,
   TaskLogLevel,
   TaskQueuePayload,
+  TaskScreenshotPayload,
 } from '../src/common/types/execution-event.types';
 import { WorkflowNode } from '../src/common/types/workflow.types';
 
@@ -87,6 +89,22 @@ async function publishStatus(taskId: string, status: TaskExecutionStatus, errorM
   });
 }
 
+async function publishScreenshot(taskId: string, payload: TaskScreenshotPayload) {
+  await publishEvent({
+    taskId,
+    type: 'screenshot',
+    data: payload,
+  });
+}
+
+async function publishExtract(taskId: string, payload: TaskExtractPayload) {
+  await publishEvent({
+    taskId,
+    type: 'extract',
+    data: payload,
+  });
+}
+
 function getCancellationKey(taskId: string) {
   return `${TASK_CANCEL_KEY_PREFIX}${taskId}`;
 }
@@ -154,14 +172,11 @@ function startScreenshotStream(taskId: string, page: Page) {
         quality: 60,
       });
 
-      await publishEvent({
-        taskId,
-        type: 'screenshot',
-        data: {
-          imageBase64: buffer.toString('base64'),
-          mimeType: 'image/jpeg',
-          timestamp: new Date().toISOString(),
-        },
+      await publishScreenshot(taskId, {
+        imageBase64: buffer.toString('base64'),
+        mimeType: 'image/jpeg',
+        source: 'stream',
+        timestamp: new Date().toISOString(),
       });
     } catch {
       // Ignore transient screenshot failures when pages are navigating.
@@ -239,6 +254,14 @@ async function executeNode(taskId: string, page: Page, node: WorkflowNode) {
       }
 
       const preview = extractedValue.length > 120 ? `${extractedValue.slice(0, 120)}...` : extractedValue;
+      await publishExtract(taskId, {
+        selector: node.selector,
+        property,
+        value: extractedValue,
+        preview: preview || '[空值]',
+        nodeId: node.clientNodeId,
+        timestamp: new Date().toISOString(),
+      });
       await publishLog(taskId, `提取结果: ${preview || '[空值]'}`, 'success', node.clientNodeId);
       break;
     }
@@ -252,14 +275,11 @@ async function executeNode(taskId: string, page: Page, node: WorkflowNode) {
         fullPage: scope === 'full',
       });
 
-      await publishEvent({
-        taskId,
-        type: 'screenshot',
-        data: {
-          imageBase64: buffer.toString('base64'),
-          mimeType: 'image/jpeg',
-          timestamp: new Date().toISOString(),
-        },
+      await publishScreenshot(taskId, {
+        imageBase64: buffer.toString('base64'),
+        mimeType: 'image/jpeg',
+        source: 'node',
+        timestamp: new Date().toISOString(),
       });
 
       await publishLog(taskId, '截图已推送到前端。', 'success', node.clientNodeId);

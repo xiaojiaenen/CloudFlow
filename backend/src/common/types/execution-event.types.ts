@@ -1,7 +1,7 @@
 import { WorkflowDefinition } from './workflow.types';
 
 export type TaskLogLevel = 'info' | 'warn' | 'error' | 'success';
-export type ExecutionEventType = 'log' | 'screenshot' | 'status';
+export type ExecutionEventType = 'log' | 'screenshot' | 'status' | 'extract';
 export type TaskExecutionStatus = 'pending' | 'running' | 'success' | 'failed' | 'cancelled';
 
 export interface TaskLogPayload {
@@ -14,6 +14,7 @@ export interface TaskLogPayload {
 export interface TaskScreenshotPayload {
   imageBase64: string;
   mimeType: string;
+  source?: 'stream' | 'node';
   timestamp: string;
 }
 
@@ -23,10 +24,23 @@ export interface TaskStatusPayload {
   timestamp: string;
 }
 
+export interface TaskExtractPayload {
+  selector: string;
+  property: string;
+  value: string;
+  preview: string;
+  nodeId?: string;
+  timestamp: string;
+}
+
 export interface TaskExecutionEvent {
   taskId: string;
   type: ExecutionEventType;
-  data: TaskLogPayload | TaskScreenshotPayload | TaskStatusPayload;
+  data:
+    | TaskLogPayload
+    | TaskScreenshotPayload
+    | TaskStatusPayload
+    | TaskExtractPayload;
 }
 
 export interface TaskQueuePayload {

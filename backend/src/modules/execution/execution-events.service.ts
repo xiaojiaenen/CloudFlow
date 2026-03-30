@@ -1,17 +1,29 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import IORedis from 'ioredis';
 import { TASK_EVENTS_CHANNEL } from 'src/common/constants/redis.constants';
-import { TaskExecutionEvent } from 'src/common/types/execution-event.types';
+import {
+  TaskExecutionEvent,
+  TaskExtractPayload,
+  TaskLogPayload,
+  TaskScreenshotPayload,
+  TaskStatusPayload,
+} from 'src/common/types/execution-event.types';
+import { PrismaService } from 'src/prisma/prisma.service';
 import { TaskEventsGateway } from 'src/ws/task-events.gateway';
 
 @Injectable()
 export class ExecutionEventsService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ExecutionEventsService.name);
   private readonly subscriber: IORedis;
+  private readonly taskWriteChains = new Map<string, Promise<void>>();
+  private readonly taskSequences = new Map<string, number>();
+  private readonly lastPersistedScreenshotAt = new Map<string, number>();
 
   constructor(
     private readonly configService: ConfigService,
+    private readonly prismaService: PrismaService,
     private readonly taskEventsGateway: TaskEventsGateway,
   ) {
     const redisUrl = this.configService.get<string>('REDIS_URL', 'redis://127.0.0.1:6379');
@@ -32,6 +44,7 @@ export class ExecutionEventsService implements OnModuleInit, OnModuleDestroy {
       try {
         const event = JSON.parse(message) as TaskExecutionEvent;
         this.taskEventsGateway.emitTaskEvent(event.taskId, event);
+        this.enqueuePersistence(event);
       } catch (error) {
         this.logger.error(`Failed to parse execution event: ${message}`, error as Error);
       }
@@ -43,5 +56,137 @@ export class ExecutionEventsService implements OnModuleInit, OnModuleDestroy {
   async onModuleDestroy() {
     await this.subscriber.unsubscribe(TASK_EVENTS_CHANNEL);
     await this.subscriber.quit();
+  }
+
+  private enqueuePersistence(event: TaskExecutionEvent) {
+    const existingChain = this.taskWriteChains.get(event.taskId) ?? Promise.resolve();
+    const nextChain = existingChain
+      .catch(() => undefined)
+      .then(async () => {
+        if (!(await this.shouldPersistEvent(event))) {
+          return;
+        }
+
+        const sequence = await this.getNextSequence(event.taskId);
+        await this.prismaService.taskExecutionEvent.create({
+          data: this.buildPersistencePayload(event, sequence),
+        });
+
+        if (
+          event.type === 'status' &&
+          ['success', 'failed', 'cancelled'].includes((event.data as TaskStatusPayload).status)
+        ) {
+          this.taskSequences.delete(event.taskId);
+          this.lastPersistedScreenshotAt.delete(event.taskId);
+        }
+      })
+      .catch((error) => {
+        this.logger.error(
+          `Failed to persist execution event for task ${event.taskId}`,
+          error instanceof Error ? error.stack : String(error),
+        );
+      });
+
+    this.taskWriteChains.set(event.taskId, nextChain);
+    void nextChain.finally(() => {
+      if (this.taskWriteChains.get(event.taskId) === nextChain) {
+        this.taskWriteChains.delete(event.taskId);
+      }
+    });
+  }
+
+  private async getNextSequence(taskId: string) {
+    const currentSequence = this.taskSequences.get(taskId);
+
+    if (typeof currentSequence === 'number') {
+      const nextSequence = currentSequence + 1;
+      this.taskSequences.set(taskId, nextSequence);
+      return nextSequence;
+    }
+
+    const latestEvent = await this.prismaService.taskExecutionEvent.findFirst({
+      where: { taskId },
+      orderBy: { sequence: 'desc' },
+      select: { sequence: true },
+    });
+
+    const nextSequence = (latestEvent?.sequence ?? 0) + 1;
+    this.taskSequences.set(taskId, nextSequence);
+    return nextSequence;
+  }
+
+  private async shouldPersistEvent(event: TaskExecutionEvent) {
+    if (event.type !== 'screenshot') {
+      return true;
+    }
+
+    const payload = event.data as TaskScreenshotPayload;
+
+    if (payload.source === 'node') {
+      return true;
+    }
+
+    const eventTime = new Date(payload.timestamp).getTime();
+    const lastTime = this.lastPersistedScreenshotAt.get(event.taskId) ?? 0;
+
+    if (eventTime - lastTime < 2000) {
+      return false;
+    }
+
+    this.lastPersistedScreenshotAt.set(event.taskId, eventTime);
+    return true;
+  }
+
+  private buildPersistencePayload(event: TaskExecutionEvent, sequence: number) {
+    if (event.type === 'log') {
+      const payload = event.data as TaskLogPayload;
+      return {
+        taskId: event.taskId,
+        type: event.type,
+        sequence,
+        level: payload.level,
+        nodeId: payload.nodeId,
+        message: payload.message,
+        payload: payload as unknown as Prisma.InputJsonValue,
+        createdAt: new Date(payload.timestamp),
+      };
+    }
+
+    if (event.type === 'status') {
+      const payload = event.data as TaskStatusPayload;
+      return {
+        taskId: event.taskId,
+        type: event.type,
+        sequence,
+        message: payload.errorMessage ?? payload.status,
+        status: payload.status,
+        payload: payload as unknown as Prisma.InputJsonValue,
+        createdAt: new Date(payload.timestamp),
+      };
+    }
+
+    if (event.type === 'extract') {
+      const payload = event.data as TaskExtractPayload;
+      return {
+        taskId: event.taskId,
+        type: event.type,
+        sequence,
+        nodeId: payload.nodeId,
+        message: payload.preview,
+        payload: payload as unknown as Prisma.InputJsonValue,
+        createdAt: new Date(payload.timestamp),
+      };
+    }
+
+    const payload = event.data as TaskScreenshotPayload;
+    return {
+      taskId: event.taskId,
+      type: event.type,
+      sequence,
+      mimeType: payload.mimeType,
+      imageBase64: payload.imageBase64,
+      payload: payload as unknown as Prisma.InputJsonValue,
+      createdAt: new Date(payload.timestamp),
+    };
   }
 }

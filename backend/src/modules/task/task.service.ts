@@ -43,7 +43,7 @@ export class TaskService {
   }
 
   async findOne(id: string) {
-    return this.getTaskOrThrow(id);
+    return this.getTaskOrThrow(id, true);
   }
 
   async findAll() {
@@ -106,11 +106,16 @@ export class TaskService {
     return updatedTask;
   }
 
-  private async getTaskOrThrow(id: string) {
+  private async getTaskOrThrow(id: string, includeExecutionEvents = false) {
     const task = await this.prismaService.task.findUnique({
       where: { id },
       include: {
         workflow: true,
+        executionEvents: includeExecutionEvents
+          ? {
+              orderBy: [{ sequence: 'asc' }, { createdAt: 'asc' }],
+            }
+          : false,
       },
     });
 

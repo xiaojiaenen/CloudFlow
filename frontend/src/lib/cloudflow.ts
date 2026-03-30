@@ -58,11 +58,12 @@ export interface TaskRecord {
   completedAt?: string | null;
   workflow?: WorkflowRecord;
   workflowSnapshot?: WorkflowApiDefinition;
+  executionEvents?: TaskExecutionRecord[];
 }
 
 export interface TaskEvent {
   taskId: string;
-  type: "log" | "screenshot" | "status";
+  type: "log" | "screenshot" | "status" | "extract";
   data:
     | {
         message: string;
@@ -73,13 +74,37 @@ export interface TaskEvent {
     | {
         imageBase64: string;
         mimeType: string;
+        source?: "stream" | "node";
         timestamp: string;
       }
     | {
         status: "pending" | "running" | "success" | "failed" | "cancelled";
         errorMessage?: string;
         timestamp: string;
+      }
+    | {
+        selector: string;
+        property: string;
+        value: string;
+        preview: string;
+        nodeId?: string;
+        timestamp: string;
       };
+}
+
+export interface TaskExecutionRecord {
+  id: string;
+  taskId: string;
+  type: "log" | "screenshot" | "status" | "extract";
+  sequence: number;
+  level?: "info" | "warn" | "error" | "success" | null;
+  nodeId?: string | null;
+  message?: string | null;
+  status?: "pending" | "running" | "success" | "failed" | "cancelled" | null;
+  mimeType?: string | null;
+  imageBase64?: string | null;
+  payload?: Record<string, unknown> | null;
+  createdAt: string;
 }
 
 export const WORKFLOW_SAVED_EVENT = "cloudflow:workflow-saved";

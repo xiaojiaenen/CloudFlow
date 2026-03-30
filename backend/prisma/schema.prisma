@@ -15,6 +15,13 @@ enum TaskStatus {
   cancelled
 }
 
+enum TaskExecutionEventType {
+  log
+  screenshot
+  status
+  extract
+}
+
 model Workflow {
   id          String   @id @default(cuid())
   name        String
@@ -26,18 +33,39 @@ model Workflow {
 }
 
 model Task {
-  id               String     @id @default(cuid())
-  workflowId       String
-  workflow         Workflow   @relation(fields: [workflowId], references: [id])
-  status           TaskStatus @default(pending)
-  workflowSnapshot Json
-  errorMessage     String?
+  id                String               @id @default(cuid())
+  workflowId        String
+  workflow          Workflow             @relation(fields: [workflowId], references: [id])
+  status            TaskStatus           @default(pending)
+  workflowSnapshot  Json
+  errorMessage      String?
   cancelRequestedAt DateTime?
-  createdAt        DateTime   @default(now())
-  updatedAt        DateTime   @updatedAt
-  startedAt        DateTime?
-  completedAt      DateTime?
+  executionEvents   TaskExecutionEvent[]
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  startedAt         DateTime?
+  completedAt       DateTime?
 
   @@index([workflowId])
   @@index([status])
+}
+
+model TaskExecutionEvent {
+  id          String                 @id @default(cuid())
+  taskId       String
+  task         Task                   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  type         TaskExecutionEventType
+  sequence     Int
+  level        String?
+  nodeId       String?
+  message      String?                @db.Text
+  status       TaskStatus?
+  mimeType     String?
+  imageBase64  String?                @db.LongText
+  payload      Json?
+  createdAt    DateTime               @default(now())
+
+  @@index([taskId, createdAt])
+  @@index([taskId, sequence])
+  @@index([taskId, type])
 }
