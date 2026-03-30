@@ -194,25 +194,6 @@ export class ExecutionEventsService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async notifyTaskIfNeeded(taskId: string) {
-    const task = await this.prismaService.task.findUnique({
-      where: { id: taskId },
-      include: {
-        workflow: {
-          select: {
-            id: true,
-            name: true,
-            alertEmail: true,
-            alertOnFailure: true,
-            alertOnSuccess: true,
-          },
-        },
-      },
-    });
-
-    if (!task) {
-      return;
-    }
-
-    await this.notificationService.notifyTaskFinished(task);
+    await this.notificationService.notifyTaskFinished(taskId);
   }
 }
