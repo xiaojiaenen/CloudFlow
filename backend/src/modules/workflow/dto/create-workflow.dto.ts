@@ -2,6 +2,7 @@ import {
   IsArray,
   IsBoolean,
   IsEmail,
+  IsIn,
   IsNumber,
   IsObject,
   IsOptional,
@@ -108,6 +109,11 @@ export class CreateWorkflowDto {
   @IsOptional()
   @IsString()
   description?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['draft', 'active', 'archived'])
+  status?: 'draft' | 'active' | 'archived';
 
   @ValidateNested()
   @Type(() => WorkflowDefinitionDto)

@@ -27,11 +27,18 @@ enum TaskExecutionEventType {
   extract
 }
 
+enum WorkflowLifecycleStatus {
+  draft
+  active
+  archived
+}
+
 model Workflow {
   id               String   @id @default(cuid())
   name             String
   description      String?
   definition       Json
+  status           WorkflowLifecycleStatus @default(active)
   scheduleEnabled  Boolean  @default(false)
   scheduleCron     String?
   scheduleTimezone String?
@@ -45,6 +52,7 @@ model Workflow {
 
   @@index([scheduleEnabled])
   @@index([deletedAt])
+  @@index([status])
 }
 
 model Task {
@@ -84,4 +92,42 @@ model TaskExecutionEvent {
   @@index([taskId, createdAt])
   @@index([taskId, sequence])
   @@index([taskId, type])
+}
+
+model WorkflowTemplate {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  title       String
+  description String   @db.Text
+  category    String
+  tags        Json
+  definition  Json
+  authorName  String   @default("CloudFlow")
+  published   Boolean  @default(false)
+  featured    Boolean  @default(false)
+  installCount Int     @default(0)
+  rating      Float    @default(4.8)
+  deletedAt   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([published, deletedAt])
+  @@index([category])
+}
+
+model SystemConfig {
+  id                   String   @id @default(cuid())
+  platformName         String   @default("CloudFlow")
+  supportEmail         String?
+  smtpHost             String?
+  smtpPort             Int      @default(587)
+  smtpUser             String?
+  smtpPass             String?
+  smtpSecure           Boolean  @default(false)
+  smtpFrom             String?
+  screenshotIntervalMs Int      @default(500)
+  taskRetentionDays    Int      @default(30)
+  monitorPageSize      Int      @default(10)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 }

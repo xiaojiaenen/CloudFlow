@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsOptional, IsString, ValidateNested } from 'class-validator';
+import { IsIn, IsOptional, IsString, ValidateNested } from 'class-validator';
 import {
   WorkflowAlertDto,
   WorkflowDefinitionDto,
@@ -14,6 +14,11 @@ export class UpdateWorkflowDto {
   @IsOptional()
   @IsString()
   description?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['draft', 'active', 'archived'])
+  status?: 'draft' | 'active' | 'archived';
 
   @IsOptional()
   @ValidateNested()

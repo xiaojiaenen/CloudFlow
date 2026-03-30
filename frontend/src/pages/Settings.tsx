@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Sidebar } from "@/src/components/Sidebar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/src/components/ui/Card";
 import { Button } from "@/src/components/ui/Button";
+import { Input } from "@/src/components/ui/Input";
 import { ArrowRight, CalendarClock, Clock3, Mail, PauseCircle, RefreshCw, Settings2, Workflow } from "lucide-react";
 import { listWorkflowSchedules, updateWorkflow, WorkflowScheduleRecord } from "@/src/lib/cloudflow";
 import { cn } from "@/src/lib/utils";
@@ -59,6 +60,9 @@ export default function Settings() {
   const [pageSize] = useState(6);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "running" | "success" | "failed" | "cancelled" | "pending" | "never">("all");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [updatingWorkflowId, setUpdatingWorkflowId] = useState<string | null>(null);
 
@@ -68,6 +72,8 @@ export default function Settings() {
       const data = await listWorkflowSchedules({
         page,
         pageSize,
+        search,
+        lastStatus: statusFilter,
       });
 
       if (data.page !== page) {
@@ -78,14 +84,19 @@ export default function Settings() {
       setSchedules(data.items);
       setTotal(data.total);
       setTotalPages(data.totalPages);
+      setSelectedIds((current) => current.filter((id) => data.items.some((item) => item.id === id)));
     } finally {
       setIsLoading(false);
     }
-  }, [page, pageSize]);
+  }, [page, pageSize, search, statusFilter]);
 
   useEffect(() => {
     void loadSchedules();
   }, [loadSchedules]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, statusFilter]);
 
   const metrics = useMemo(() => {
     const withAlerts = schedules.filter((item) => Boolean(item.alertEmail)).length;
@@ -114,6 +125,31 @@ export default function Settings() {
     }
   };
 
+  const toggleSelected = (id: string) => {
+    setSelectedIds((current) => (current.includes(id) ? current.filter((value) => value !== id) : [...current, id]));
+  };
+
+  const disableSelectedSchedules = async () => {
+    if (selectedIds.length === 0) {
+      return;
+    }
+
+    try {
+      setUpdatingWorkflowId("batch");
+      for (const workflowId of selectedIds) {
+        await updateWorkflow(workflowId, {
+          schedule: {
+            enabled: false,
+          },
+        });
+      }
+      setSelectedIds([]);
+      await loadSchedules();
+    } finally {
+      setUpdatingWorkflowId(null);
+    }
+  };
+
   return (
     <div className="h-screen w-screen bg-[#09090b] text-zinc-50 flex overflow-hidden font-sans selection:bg-sky-500/30">
       <div className="fixed inset-0 z-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(56,189,248,0.12),rgba(255,255,255,0))] pointer-events-none" />
@@ -131,10 +167,21 @@ export default function Settings() {
                 <h2 className="text-2xl font-semibold tracking-tight mb-1">调度管理中心</h2>
                 <p className="text-sm text-zinc-400">集中查看所有已启用的定时工作流，支持跳转编辑和一键停用。</p>
               </div>
-              <Button variant="outline" onClick={() => void loadSchedules()} className="gap-2">
-                <RefreshCw className={cn("w-4 h-4", isLoading && "animate-spin")} />
-                刷新调度
-              </Button>
+              <div className="flex items-center gap-3">
+                <Button
+                  variant="outline"
+                  disabled={selectedIds.length === 0 || updatingWorkflowId === "batch"}
+                  onClick={() => void disableSelectedSchedules()}
+                  className="gap-2 text-amber-200 border-amber-500/20 hover:bg-amber-500/10"
+                >
+                  <PauseCircle className="w-4 h-4" />
+                  {updatingWorkflowId === "batch" ? "批量停用中..." : `批量停用 (${selectedIds.length})`}
+                </Button>
+                <Button variant="outline" onClick={() => void loadSchedules()} className="gap-2">
+                  <RefreshCw className={cn("w-4 h-4", isLoading && "animate-spin")} />
+                  刷新调度
+                </Button>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -178,6 +225,38 @@ export default function Settings() {
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_180px_180px] gap-3">
+                  <Input
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    placeholder="搜索工作流名称或描述"
+                  />
+                  <select
+                    value={statusFilter}
+                    onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}
+                    className="flex h-10 w-full rounded-md border border-white/[0.06] bg-zinc-900/50 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                  >
+                    <option value="all">全部状态</option>
+                    <option value="never">从未执行</option>
+                    <option value="running">运行中</option>
+                    <option value="success">最近成功</option>
+                    <option value="failed">最近失败</option>
+                    <option value="cancelled">最近已取消</option>
+                    <option value="pending">等待中</option>
+                  </select>
+                  <Button
+                    variant="outline"
+                    disabled={schedules.length === 0}
+                    onClick={() =>
+                      setSelectedIds((current) =>
+                        current.length === schedules.length ? [] : schedules.map((item) => item.id),
+                      )
+                    }
+                  >
+                    {selectedIds.length === schedules.length && schedules.length > 0 ? "取消全选" : "全选当前页"}
+                  </Button>
+                </div>
+
                 {schedules.length === 0 && !isLoading && (
                   <div className="rounded-xl border border-dashed border-white/[0.08] bg-white/[0.02] p-8 text-center text-sm text-zinc-500 space-y-4">
                     <div>当前没有启用中的定时工作流。你可以先在工作区里为某个工作流开启 Cron 调度。</div>
@@ -193,20 +272,28 @@ export default function Settings() {
                   return (
                     <div key={item.id} className="rounded-xl border border-white/[0.05] bg-white/[0.02] p-5 space-y-4">
                       <div className="flex items-start justify-between gap-4">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <div className="text-base font-semibold text-zinc-100 truncate">{item.name}</div>
-                            <div className="px-2 py-1 rounded text-[10px] font-medium bg-sky-500/10 text-sky-300 border border-sky-500/20">
-                              启用中
-                            </div>
-                            {item.lastScheduledTask && (
-                              <div className={cn("px-2 py-1 rounded text-[10px] font-medium", taskStatusMeta.className)}>
-                                最近执行 {taskStatusMeta.label}
+                        <div className="min-w-0 flex items-start gap-3">
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.includes(item.id)}
+                            onChange={() => toggleSelected(item.id)}
+                            className="mt-1 h-4 w-4 rounded border-white/10 bg-zinc-900"
+                          />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <div className="text-base font-semibold text-zinc-100 truncate">{item.name}</div>
+                              <div className="px-2 py-1 rounded text-[10px] font-medium bg-sky-500/10 text-sky-300 border border-sky-500/20">
+                                启用中
                               </div>
-                            )}
+                              {item.lastScheduledTask && (
+                                <div className={cn("px-2 py-1 rounded text-[10px] font-medium", taskStatusMeta.className)}>
+                                  最近执行 {taskStatusMeta.label}
+                                </div>
+                              )}
+                            </div>
+                            <div className="text-sm text-zinc-400 mt-2">{item.description || "暂无描述"}</div>
+                            <div className="text-xs text-zinc-500 font-mono mt-2 break-all">{item.id}</div>
                           </div>
-                          <div className="text-sm text-zinc-400 mt-2">{item.description || "暂无描述"}</div>
-                          <div className="text-xs text-zinc-500 font-mono mt-2 break-all">{item.id}</div>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
                           <Button variant="outline" size="sm" className="gap-2" onClick={() => navigate(`/?workflowId=${item.id}`)}>

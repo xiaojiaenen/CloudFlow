@@ -1,10 +1,13 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
+  Archive,
+  Copy,
   LayoutGrid,
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
+  PencilLine,
   Plus,
   Settings,
   ShieldAlert,
@@ -22,7 +25,9 @@ import {
   createEmptyCanvasGraph,
   createWorkflow,
   deleteWorkflow,
+  duplicateWorkflow,
   listWorkflows,
+  updateWorkflow,
   WORKFLOW_OPEN_BLANK_EVENT,
   WORKFLOW_SAVED_EVENT,
   WorkflowRecord,
@@ -80,7 +85,10 @@ export function Sidebar() {
   }, [fetchWorkflows]);
 
   const isActive = (path: string) => location.pathname === path;
-  const visibleWorkflows = useMemo(() => workflows.slice(0, 12), [workflows]);
+  const visibleWorkflows = useMemo(
+    () => workflows.filter((workflow) => workflow.status !== "archived").slice(0, 12),
+    [workflows],
+  );
 
   const handleCreateWorkflow = async (event: FormEvent, mode: "empty" | "demo" = "empty") => {
     event.preventDefault();
@@ -96,6 +104,7 @@ export function Sidebar() {
       const createdWorkflow = await createWorkflow({
         name: newWorkflowName.trim(),
         description: mode === "demo" ? "从前端工作区创建的示例工作流" : "从前端工作区创建的空白工作流",
+        status: mode === "demo" ? "active" : "draft",
         definition: {
           ...buildWorkflowDefinition(graph.nodes, graph.edges),
           canvas: graph,
@@ -137,6 +146,44 @@ export function Sidebar() {
       }
     } finally {
       setDeletingWorkflowId(null);
+    }
+  };
+
+  const renameWorkflow = async (workflow: WorkflowRecord) => {
+    const nextName = window.prompt("输入新的工作流名称", workflow.name);
+    if (!nextName || !nextName.trim() || nextName.trim() === workflow.name) {
+      return;
+    }
+
+    await updateWorkflow(workflow.id, {
+      name: nextName.trim(),
+    });
+    window.dispatchEvent(new CustomEvent(WORKFLOW_SAVED_EVENT));
+  };
+
+  const duplicateExistingWorkflow = async (workflow: WorkflowRecord) => {
+    const duplicated = await duplicateWorkflow(workflow.id);
+    window.dispatchEvent(new CustomEvent(WORKFLOW_SAVED_EVENT));
+    navigate(`/?workflowId=${duplicated.id}`);
+  };
+
+  const archiveWorkflow = async (workflow: WorkflowRecord) => {
+    const confirmed = window.confirm(`确认将工作流“${workflow.name}”归档吗？归档后会从常用工作区隐藏，并自动停用调度。`);
+    if (!confirmed) {
+      return;
+    }
+
+    await updateWorkflow(workflow.id, {
+      status: "archived",
+      schedule: {
+        enabled: false,
+      },
+    });
+    window.dispatchEvent(new CustomEvent(WORKFLOW_SAVED_EVENT));
+
+    if (currentWorkflowId === workflow.id && isWorkspacePage) {
+      window.dispatchEvent(new CustomEvent(WORKFLOW_OPEN_BLANK_EVENT));
+      navigate("/", { replace: true });
     }
   };
 
@@ -256,13 +303,52 @@ export function Sidebar() {
                           active ? "bg-sky-500 shadow-[0_0_8px_rgba(14,165,233,0.8)]" : "bg-zinc-600",
                         )}
                       />
-                      {!isCollapsed && <span className="truncate whitespace-nowrap">{workflow.name}</span>}
+                      {!isCollapsed && (
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="truncate whitespace-nowrap">{workflow.name}</span>
+                          {workflow.status === "draft" && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] border border-amber-500/20 bg-amber-500/10 text-amber-300 shrink-0">
+                              草稿
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                     {!isCollapsed && (
                       <div className="flex items-center gap-1 shrink-0">
                         {active && (
                           <MoreHorizontal className="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
                         )}
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void renameWorkflow(workflow);
+                          }}
+                          className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-500 hover:text-zinc-200"
+                        >
+                          <PencilLine className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void duplicateExistingWorkflow(workflow);
+                          }}
+                          className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-500 hover:text-sky-300"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void archiveWorkflow(workflow);
+                          }}
+                          className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-500 hover:text-amber-300"
+                        >
+                          <Archive className="w-3.5 h-3.5" />
+                        </button>
                         <button
                           type="button"
                           disabled={deletingWorkflowId === workflow.id}

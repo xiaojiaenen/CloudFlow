@@ -56,7 +56,7 @@ interface NotificationTaskDetail {
 export class NotificationService {
   private readonly logger = new Logger(NotificationService.name);
   private transporter: Transporter | null = null;
-  private transporterInitialized = false;
+  private transporterSignature: string | null = null;
 
   constructor(
     private readonly configService: ConfigService,
@@ -90,8 +90,15 @@ export class NotificationService {
       return;
     }
 
+    const systemConfig = await this.prismaService.systemConfig.findFirst({
+      orderBy: {
+        updatedAt: 'desc',
+      },
+    });
     const from =
+      systemConfig?.smtpFrom ||
       this.configService.get<string>('SMTP_FROM') ||
+      systemConfig?.smtpUser ||
       this.configService.get<string>('SMTP_USER') ||
       'cloudflow@localhost';
 
@@ -512,31 +519,44 @@ export class NotificationService {
   }
 
   private async getTransporter() {
-    if (this.transporterInitialized) {
-      return this.transporter;
-    }
+    const systemConfig = await this.prismaService.systemConfig.findFirst({
+      orderBy: {
+        updatedAt: 'desc',
+      },
+    });
 
-    this.transporterInitialized = true;
-
-    const host = this.configService.get<string>('SMTP_HOST');
-    const port = Number(this.configService.get<string>('SMTP_PORT') || 587);
-    const user = this.configService.get<string>('SMTP_USER');
-    const pass = this.configService.get<string>('SMTP_PASS');
-    const secure = this.configService.get<string>('SMTP_SECURE') === 'true';
+    const host =
+      systemConfig?.smtpHost || this.configService.get<string>('SMTP_HOST');
+    const port =
+      systemConfig?.smtpPort ||
+      Number(this.configService.get<string>('SMTP_PORT') || 587);
+    const user =
+      systemConfig?.smtpUser || this.configService.get<string>('SMTP_USER');
+    const pass =
+      systemConfig?.smtpPass || this.configService.get<string>('SMTP_PASS');
+    const secure =
+      systemConfig?.smtpSecure ??
+      (this.configService.get<string>('SMTP_SECURE') === 'true');
+    const signature = [host, port, user, pass, secure].join('|');
 
     if (!host || !user || !pass) {
+      this.transporter = null;
+      this.transporterSignature = null;
       return null;
     }
 
-    this.transporter = nodemailer.createTransport({
-      host,
-      port,
-      secure,
-      auth: {
-        user,
-        pass,
-      },
-    });
+    if (!this.transporter || this.transporterSignature !== signature) {
+      this.transporter = nodemailer.createTransport({
+        host,
+        port,
+        secure,
+        auth: {
+          user,
+          pass,
+        },
+      });
+      this.transporterSignature = signature;
+    }
 
     return this.transporter;
   }

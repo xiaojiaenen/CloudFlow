@@ -179,6 +179,22 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
     return this.schedulerQueue.getJobScheduler(this.getSchedulerId(workflowId));
   }
 
+  async getHealth() {
+    const [redis, taskCounts, schedulerCounts] = await Promise.all([
+      this.connection.ping(),
+      this.queue.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed'),
+      this.schedulerQueue.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed'),
+    ]);
+
+    return {
+      redis: redis === 'PONG' ? 'up' : 'degraded',
+      queues: {
+        tasks: taskCounts,
+        schedulers: schedulerCounts,
+      },
+    };
+  }
+
   async requestTaskCancellation(taskId: string) {
     await this.publisher.set(this.getCancellationKey(taskId), '1', 'EX', 60 * 60 * 24);
     await this.publisher.publish(TASK_CANCEL_CHANNEL, JSON.stringify({ taskId }));
@@ -248,6 +264,7 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
     if (
       !workflow ||
       workflow.deletedAt ||
+      workflow.status === 'archived' ||
       !workflow.scheduleEnabled ||
       !workflow.scheduleCron
     ) {

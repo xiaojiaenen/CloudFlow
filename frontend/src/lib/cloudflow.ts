@@ -2,6 +2,7 @@ import type { Edge, Node } from "@xyflow/react";
 import { getNodeDefinition } from "@/src/registry/nodes";
 
 export type ExecutionNodeStatus = "idle" | "running" | "success" | "error" | "cancelled";
+export type WorkflowStatus = "draft" | "active" | "archived";
 
 export interface CanvasNodeData {
   label: string;
@@ -42,6 +43,7 @@ export interface WorkflowRecord {
   name: string;
   description?: string | null;
   definition: WorkflowApiDefinition;
+  status: WorkflowStatus;
   scheduleEnabled?: boolean;
   scheduleCron?: string | null;
   scheduleTimezone?: string | null;
@@ -119,6 +121,75 @@ export interface WorkflowScheduleRecord {
     startedAt?: string | null;
     completedAt?: string | null;
   } | null;
+}
+
+export interface WorkflowTemplateRecord {
+  id: string;
+  slug: string;
+  title: string;
+  description: string;
+  category: string;
+  tags: string[];
+  definition: WorkflowApiDefinition;
+  authorName: string;
+  published: boolean;
+  featured: boolean;
+  installCount: number;
+  rating: number;
+  deletedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminOverviewRecord {
+  metrics: {
+    activeWorkflows: number;
+    draftWorkflows: number;
+    archivedWorkflows: number;
+    templateTotal: number;
+    publishedTemplates: number;
+    scheduledWorkflows: number;
+    taskTotal: number;
+  };
+  roleMatrix: Array<{
+    key: "user" | "admin";
+    name: string;
+    summary: string;
+    capabilities: string[];
+  }>;
+}
+
+export interface SystemConfigRecord {
+  id: string;
+  platformName: string;
+  supportEmail?: string | null;
+  smtpHost?: string | null;
+  smtpPort: number;
+  smtpUser?: string | null;
+  smtpPass?: string | null;
+  smtpSecure: boolean;
+  smtpFrom?: string | null;
+  screenshotIntervalMs: number;
+  taskRetentionDays: number;
+  monitorPageSize: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface HealthRecord {
+  api: "up" | "down";
+  database: "up" | "down";
+  redis: "up" | "degraded" | "down";
+  queues: {
+    tasks: Record<string, number>;
+    schedulers: Record<string, number>;
+  };
+  smtpConfigured: boolean;
+  checkedAt: string;
+  runtime: {
+    nodeEnv: string;
+    port: string;
+  };
 }
 
 export interface TaskEvent {
@@ -266,8 +337,26 @@ export function createDemoCanvasGraph(): WorkflowCanvasSnapshot {
   };
 }
 
-export async function listWorkflows() {
-  const response = await fetch(`${API_BASE_URL}/workflows`);
+export async function listWorkflows(params?: {
+  includeArchived?: boolean;
+  status?: WorkflowStatus;
+  search?: string;
+}) {
+  const query = new URLSearchParams();
+
+  if (params?.includeArchived) {
+    query.set("includeArchived", "true");
+  }
+
+  if (params?.status) {
+    query.set("status", params.status);
+  }
+
+  if (params?.search?.trim()) {
+    query.set("search", params.search.trim());
+  }
+
+  const response = await fetch(`${API_BASE_URL}/workflows${query.toString() ? `?${query.toString()}` : ""}`);
 
   if (!response.ok) {
     throw new Error(`读取工作流列表失败 (${response.status})`);
@@ -289,6 +378,7 @@ export async function getWorkflow(id: string) {
 export async function createWorkflow(payload: {
   name: string;
   description?: string;
+  status?: WorkflowStatus;
   definition: WorkflowApiDefinition;
   schedule?: WorkflowSchedulePayload;
   alerts?: WorkflowAlertPayload;
@@ -313,6 +403,7 @@ export async function updateWorkflow(
   payload: {
     name?: string;
     description?: string;
+    status?: WorkflowStatus;
     definition?: WorkflowApiDefinition;
     schedule?: WorkflowSchedulePayload;
     alerts?: WorkflowAlertPayload;
@@ -345,9 +436,23 @@ export async function deleteWorkflow(id: string) {
   return (await response.json()) as { id: string; deletedAt: string };
 }
 
+export async function duplicateWorkflow(id: string) {
+  const response = await fetch(`${API_BASE_URL}/workflows/${id}/duplicate`, {
+    method: "POST",
+  });
+
+  if (!response.ok) {
+    throw new Error(`复制工作流失败 (${response.status})`);
+  }
+
+  return (await response.json()) as WorkflowRecord;
+}
+
 export async function listWorkflowSchedules(params?: {
   page?: number;
   pageSize?: number;
+  search?: string;
+  lastStatus?: TaskRecord["status"] | "never" | "all";
 }) {
   const query = new URLSearchParams();
 
@@ -359,6 +464,14 @@ export async function listWorkflowSchedules(params?: {
     query.set("pageSize", String(params.pageSize));
   }
 
+  if (params?.search?.trim()) {
+    query.set("search", params.search.trim());
+  }
+
+  if (params?.lastStatus && params.lastStatus !== "all") {
+    query.set("lastStatus", params.lastStatus);
+  }
+
   const response = await fetch(`${API_BASE_URL}/workflows/schedules${query.toString() ? `?${query.toString()}` : ""}`);
 
   if (!response.ok) {
@@ -366,6 +479,167 @@ export async function listWorkflowSchedules(params?: {
   }
 
   return (await response.json()) as PaginatedResponse<WorkflowScheduleRecord>;
+}
+
+export async function listStoreTemplates(params?: {
+  search?: string;
+  category?: string;
+}) {
+  const query = new URLSearchParams();
+
+  if (params?.search?.trim()) {
+    query.set("search", params.search.trim());
+  }
+
+  if (params?.category?.trim()) {
+    query.set("category", params.category.trim());
+  }
+
+  const response = await fetch(`${API_BASE_URL}/store/templates${query.toString() ? `?${query.toString()}` : ""}`);
+
+  if (!response.ok) {
+    throw new Error(`读取商店模板失败 (${response.status})`);
+  }
+
+  return (await response.json()) as WorkflowTemplateRecord[];
+}
+
+export async function markStoreTemplateInstalled(id: string) {
+  const response = await fetch(`${API_BASE_URL}/store/templates/${id}/install`, {
+    method: "POST",
+  });
+
+  if (!response.ok) {
+    throw new Error(`更新模板安装量失败 (${response.status})`);
+  }
+
+  return (await response.json()) as WorkflowTemplateRecord;
+}
+
+export async function getAdminOverview() {
+  const response = await fetch(`${API_BASE_URL}/admin/overview`);
+
+  if (!response.ok) {
+    throw new Error(`读取管理后台总览失败 (${response.status})`);
+  }
+
+  return (await response.json()) as AdminOverviewRecord;
+}
+
+export async function getHealthStatus() {
+  const response = await fetch(`${API_BASE_URL}/admin/health`);
+
+  if (!response.ok) {
+    throw new Error(`读取系统健康状态失败 (${response.status})`);
+  }
+
+  return (await response.json()) as HealthRecord;
+}
+
+export async function getSystemConfig() {
+  const response = await fetch(`${API_BASE_URL}/admin/system-config`);
+
+  if (!response.ok) {
+    throw new Error(`读取系统配置失败 (${response.status})`);
+  }
+
+  return (await response.json()) as SystemConfigRecord;
+}
+
+export async function updateSystemConfig(payload: Partial<SystemConfigRecord>) {
+  const response = await fetch(`${API_BASE_URL}/admin/system-config`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(`保存系统配置失败 (${response.status})`);
+  }
+
+  return (await response.json()) as SystemConfigRecord;
+}
+
+export async function listAdminTemplates(params?: {
+  search?: string;
+  published?: "true" | "false" | "all";
+}) {
+  const query = new URLSearchParams();
+
+  if (params?.search?.trim()) {
+    query.set("search", params.search.trim());
+  }
+
+  if (params?.published && params.published !== "all") {
+    query.set("published", params.published);
+  }
+
+  const response = await fetch(`${API_BASE_URL}/admin/templates${query.toString() ? `?${query.toString()}` : ""}`);
+
+  if (!response.ok) {
+    throw new Error(`读取模板列表失败 (${response.status})`);
+  }
+
+  return (await response.json()) as WorkflowTemplateRecord[];
+}
+
+export async function createAdminTemplate(payload: {
+  slug: string;
+  title: string;
+  description: string;
+  category: string;
+  tags: string[];
+  definition: WorkflowApiDefinition;
+  authorName?: string;
+  published?: boolean;
+  featured?: boolean;
+  rating?: number;
+}) {
+  const response = await fetch(`${API_BASE_URL}/admin/templates`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(`创建模板失败 (${response.status})`);
+  }
+
+  return (await response.json()) as WorkflowTemplateRecord;
+}
+
+export async function updateAdminTemplate(
+  id: string,
+  payload: Partial<{
+    slug: string;
+    title: string;
+    description: string;
+    category: string;
+    tags: string[];
+    definition: WorkflowApiDefinition;
+    authorName: string;
+    published: boolean;
+    featured: boolean;
+    rating: number;
+  }>,
+) {
+  const response = await fetch(`${API_BASE_URL}/admin/templates/${id}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(`更新模板失败 (${response.status})`);
+  }
+
+  return (await response.json()) as WorkflowTemplateRecord;
 }
 
 export async function listTasks(params?: {
