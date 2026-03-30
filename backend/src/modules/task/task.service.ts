@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, TaskStatus, TaskTriggerSource } from '@prisma/client';
 import { WorkflowDefinition } from 'src/common/types/workflow.types';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { QueueService } from 'src/queue/queue.service';
@@ -20,6 +20,10 @@ export class TaskService {
     });
 
     if (!workflow) {
+      throw new NotFoundException(`Workflow ${runTaskDto.workflowId} not found`);
+    }
+
+    if (workflow.deletedAt) {
       throw new NotFoundException(`Workflow ${runTaskDto.workflowId} not found`);
     }
 
@@ -47,7 +51,48 @@ export class TaskService {
     return this.getTaskOrThrow(id, true);
   }
 
-  async findAll() {
+  async findAll(filters?: {
+    page?: string;
+    pageSize?: string;
+    status?: string;
+    triggerSource?: string;
+  }) {
+    const page = Math.max(1, Number(filters?.page ?? 1) || 1);
+    const pageSize = Math.min(50, Math.max(1, Number(filters?.pageSize ?? 10) || 10));
+    const where: Prisma.TaskWhereInput = {
+      ...(this.isTaskStatus(filters?.status) ? { status: filters?.status } : {}),
+      ...(this.isTriggerSource(filters?.triggerSource)
+        ? { triggerSource: filters?.triggerSource }
+        : {}),
+    };
+
+    const [items, total] = await Promise.all([
+      this.prismaService.task.findMany({
+        where,
+        include: {
+          workflow: true,
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+      this.prismaService.task.count({
+        where,
+      }),
+    ]);
+
+    return {
+      items,
+      page,
+      pageSize,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    };
+  }
+
+  async findRecent(limit = 5) {
     return this.prismaService.task.findMany({
       include: {
         workflow: true,
@@ -55,7 +100,7 @@ export class TaskService {
       orderBy: {
         createdAt: 'desc',
       },
-      take: 50,
+      take: limit,
     });
   }
 
@@ -125,5 +170,15 @@ export class TaskService {
     }
 
     return task;
+  }
+
+  private isTaskStatus(value?: string): value is TaskStatus {
+    return ['pending', 'running', 'success', 'failed', 'cancelled'].includes(
+      value ?? '',
+    );
+  }
+
+  private isTriggerSource(value?: string): value is TaskTriggerSource {
+    return ['manual', 'schedule'].includes(value ?? '');
   }
 }

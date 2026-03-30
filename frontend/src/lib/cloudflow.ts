@@ -64,6 +64,14 @@ export interface WorkflowAlertPayload {
   onSuccess: boolean;
 }
 
+export interface PaginatedResponse<T> {
+  items: T[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+}
+
 export interface TaskRecord {
   id: string;
   workflowId: string;
@@ -78,6 +86,19 @@ export interface TaskRecord {
   workflow?: WorkflowRecord;
   workflowSnapshot?: WorkflowApiDefinition;
   executionEvents?: TaskExecutionRecord[];
+}
+
+export interface AlertRecord {
+  id: string;
+  level: "error" | "warning" | "success";
+  title: string;
+  message: string;
+  createdAt: string;
+  taskId: string;
+  workflowId: string;
+  workflowName: string;
+  triggerSource?: "manual" | "schedule";
+  taskStatus: "pending" | "running" | "success" | "failed" | "cancelled";
 }
 
 export interface TaskEvent {
@@ -292,14 +313,49 @@ export async function updateWorkflow(
   return (await response.json()) as WorkflowRecord;
 }
 
-export async function listTasks() {
-  const response = await fetch(`${API_BASE_URL}/tasks`);
+export async function deleteWorkflow(id: string) {
+  const response = await fetch(`${API_BASE_URL}/workflows/${id}`, {
+    method: "DELETE",
+  });
+
+  if (!response.ok) {
+    throw new Error(`删除工作流失败 (${response.status})`);
+  }
+
+  return (await response.json()) as { id: string; deletedAt: string };
+}
+
+export async function listTasks(params?: {
+  page?: number;
+  pageSize?: number;
+  status?: TaskRecord["status"];
+  triggerSource?: TaskRecord["triggerSource"];
+}) {
+  const query = new URLSearchParams();
+
+  if (params?.page) {
+    query.set("page", String(params.page));
+  }
+
+  if (params?.pageSize) {
+    query.set("pageSize", String(params.pageSize));
+  }
+
+  if (params?.status) {
+    query.set("status", params.status);
+  }
+
+  if (params?.triggerSource) {
+    query.set("triggerSource", params.triggerSource);
+  }
+
+  const response = await fetch(`${API_BASE_URL}/tasks${query.toString() ? `?${query.toString()}` : ""}`);
 
   if (!response.ok) {
     throw new Error(`读取任务列表失败 (${response.status})`);
   }
 
-  return (await response.json()) as TaskRecord[];
+  return (await response.json()) as PaginatedResponse<TaskRecord>;
 }
 
 export async function getTask(id: string) {
@@ -310,6 +366,34 @@ export async function getTask(id: string) {
   }
 
   return (await response.json()) as TaskRecord;
+}
+
+export async function listAlerts(params?: {
+  page?: number;
+  pageSize?: number;
+  level?: AlertRecord["level"];
+}) {
+  const query = new URLSearchParams();
+
+  if (params?.page) {
+    query.set("page", String(params.page));
+  }
+
+  if (params?.pageSize) {
+    query.set("pageSize", String(params.pageSize));
+  }
+
+  if (params?.level) {
+    query.set("level", params.level);
+  }
+
+  const response = await fetch(`${API_BASE_URL}/alerts${query.toString() ? `?${query.toString()}` : ""}`);
+
+  if (!response.ok) {
+    throw new Error(`读取告警列表失败 (${response.status})`);
+  }
+
+  return (await response.json()) as PaginatedResponse<AlertRecord>;
 }
 
 export async function runTask(workflowId: string) {

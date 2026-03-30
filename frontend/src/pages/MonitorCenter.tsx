@@ -162,6 +162,10 @@ export function MonitorCenter() {
   const [searchParams, setSearchParams] = useSearchParams();
   const taskIdFromQuery = searchParams.get("taskId");
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
+  const [taskPage, setTaskPage] = useState(1);
+  const [taskPageSize] = useState(10);
+  const [taskTotal, setTaskTotal] = useState(0);
+  const [taskTotalPages, setTaskTotalPages] = useState(1);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(() => taskIdFromQuery);
   const [selectedTask, setSelectedTask] = useState<TaskRecord | null>(null);
   const [selectedScreenshotId, setSelectedScreenshotId] = useState<string | null>(null);
@@ -171,25 +175,32 @@ export function MonitorCenter() {
   const loadTasks = useCallback(async () => {
     try {
       setIsLoadingTasks(true);
-      const data = await listTasks();
+      const data = await listTasks({
+        page: taskPage,
+        pageSize: taskPageSize,
+      });
+      setTaskTotal(data.total);
+      setTaskTotalPages(data.totalPages);
       setTasks((current) => {
-        if (!selectedTaskId || data.some((task) => task.id === selectedTaskId)) {
-          return data;
+        if (!selectedTaskId || data.items.some((task) => task.id === selectedTaskId)) {
+          return data.items;
         }
 
         const pinnedTask = current.find((task) => task.id === selectedTaskId);
-        return pinnedTask ? [pinnedTask, ...data.filter((task) => task.id !== selectedTaskId)] : data;
+        return pinnedTask
+          ? [pinnedTask, ...data.items.filter((task) => task.id !== selectedTaskId)]
+          : data.items;
       });
 
       if (taskIdFromQuery) {
         setSelectedTaskId(taskIdFromQuery);
-      } else if (!selectedTaskId && data.length > 0) {
-        setSelectedTaskId(data[0].id);
+      } else if (!selectedTaskId && data.items.length > 0) {
+        setSelectedTaskId(data.items[0].id);
       }
     } finally {
       setIsLoadingTasks(false);
     }
-  }, [selectedTaskId, taskIdFromQuery]);
+  }, [selectedTaskId, taskIdFromQuery, taskPage, taskPageSize]);
 
   const loadTaskDetail = useCallback(async (taskId: string) => {
     try {
@@ -344,8 +355,10 @@ export function MonitorCenter() {
           <div className="grid grid-cols-1 xl:grid-cols-[1.05fr_0.95fr] gap-6">
             <div className="bg-zinc-950/50 border border-white/[0.05] rounded-xl backdrop-blur-md overflow-hidden">
               <div className="px-5 py-4 border-b border-white/[0.05] flex items-center justify-between">
-                <div className="text-sm font-medium text-zinc-100">最近 50 条任务</div>
-                <div className="text-xs text-zinc-500">{isLoadingTasks ? "正在同步..." : `${tasks.length} 条记录`}</div>
+                <div className="text-sm font-medium text-zinc-100">任务列表</div>
+                <div className="text-xs text-zinc-500">
+                  {isLoadingTasks ? "正在同步..." : `第 ${taskPage} / ${taskTotalPages} 页 · 共 ${taskTotal} 条`}
+                </div>
               </div>
 
               <div className="divide-y divide-white/[0.05]">
@@ -407,6 +420,28 @@ export function MonitorCenter() {
                     </button>
                   );
                 })}
+              </div>
+
+              <div className="px-5 py-4 border-t border-white/[0.05] flex items-center justify-between gap-4">
+                <div className="text-xs text-zinc-500">每页 {taskPageSize} 条，不再继续向下无限滚动。</div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={taskPage <= 1 || isLoadingTasks}
+                    onClick={() => setTaskPage((value) => Math.max(1, value - 1))}
+                  >
+                    上一页
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={taskPage >= taskTotalPages || isLoadingTasks}
+                    onClick={() => setTaskPage((value) => Math.min(taskTotalPages, value + 1))}
+                  >
+                    下一页
+                  </Button>
+                </div>
               </div>
             </div>
 

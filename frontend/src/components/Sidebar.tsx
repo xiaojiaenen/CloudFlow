@@ -10,6 +10,7 @@ import {
   ShieldAlert,
   SlidersHorizontal,
   Store,
+  Trash2,
   Workflow,
   X,
 } from "lucide-react";
@@ -20,6 +21,7 @@ import {
   createDemoCanvasGraph,
   createEmptyCanvasGraph,
   createWorkflow,
+  deleteWorkflow,
   listWorkflows,
   WORKFLOW_OPEN_BLANK_EVENT,
   WORKFLOW_SAVED_EVENT,
@@ -45,6 +47,7 @@ export function Sidebar() {
   const [isLoadingWorkflows, setIsLoadingWorkflows] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isCreatingWorkflow, setIsCreatingWorkflow] = useState(false);
+  const [deletingWorkflowId, setDeletingWorkflowId] = useState<string | null>(null);
   const [newWorkflowName, setNewWorkflowName] = useState("");
 
   const isWorkspacePage = location.pathname === "/";
@@ -115,6 +118,26 @@ export function Sidebar() {
 
   const selectWorkflow = (id: string) => {
     navigate(`/?workflowId=${id}`);
+  };
+
+  const removeWorkflow = async (workflow: WorkflowRecord) => {
+    const confirmed = window.confirm(`确认删除工作流“${workflow.name}”吗？删除后会从工作区隐藏，但历史任务仍会保留。`);
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setDeletingWorkflowId(workflow.id);
+      await deleteWorkflow(workflow.id);
+      window.dispatchEvent(new CustomEvent(WORKFLOW_SAVED_EVENT));
+
+      if (currentWorkflowId === workflow.id && isWorkspacePage) {
+        window.dispatchEvent(new CustomEvent(WORKFLOW_OPEN_BLANK_EVENT));
+        navigate("/", { replace: true });
+      }
+    } finally {
+      setDeletingWorkflowId(null);
+    }
   };
 
   return (
@@ -235,8 +258,23 @@ export function Sidebar() {
                       />
                       {!isCollapsed && <span className="truncate whitespace-nowrap">{workflow.name}</span>}
                     </div>
-                    {!isCollapsed && active && (
-                      <MoreHorizontal className="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+                    {!isCollapsed && (
+                      <div className="flex items-center gap-1 shrink-0">
+                        {active && (
+                          <MoreHorizontal className="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+                        )}
+                        <button
+                          type="button"
+                          disabled={deletingWorkflowId === workflow.id}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void removeWorkflow(workflow);
+                          }}
+                          className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-500 hover:text-red-300 disabled:opacity-50"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     )}
                   </button>
                 );

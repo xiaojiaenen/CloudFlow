@@ -38,6 +38,9 @@ export class WorkflowService {
 
   async findAll() {
     return this.prismaService.workflow.findMany({
+      where: {
+        deletedAt: null,
+      },
       orderBy: {
         createdAt: 'desc',
       },
@@ -49,7 +52,7 @@ export class WorkflowService {
       where: { id },
     });
 
-    if (!workflow) {
+    if (!workflow || workflow.deletedAt) {
       throw new NotFoundException(`Workflow ${id} not found`);
     }
 
@@ -120,6 +123,32 @@ export class WorkflowService {
 
     await this.queueService.syncWorkflowSchedule(workflow);
     return workflow;
+  }
+
+  async remove(id: string) {
+    const workflow = await this.findOne(id);
+
+    const deletedWorkflow = await this.prismaService.workflow.update({
+      where: { id },
+      data: {
+        deletedAt: new Date(),
+        scheduleEnabled: false,
+        scheduleCron: null,
+        scheduleTimezone: null,
+      },
+    });
+
+    await this.queueService.syncWorkflowSchedule({
+      id: deletedWorkflow.id,
+      scheduleEnabled: false,
+      scheduleCron: null,
+      scheduleTimezone: null,
+    });
+
+    return {
+      id: workflow.id,
+      deletedAt: deletedWorkflow.deletedAt,
+    };
   }
 
   private async validateSchedule(schedule?: {

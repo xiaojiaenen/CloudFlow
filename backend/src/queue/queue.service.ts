@@ -220,6 +220,9 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
 
   private async syncAllWorkflowSchedules() {
     const workflows = await this.prismaService.workflow.findMany({
+      where: {
+        deletedAt: null,
+      },
       select: {
         id: true,
         scheduleEnabled: true,
@@ -238,7 +241,12 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
       where: { id: job.data.workflowId },
     });
 
-    if (!workflow || !workflow.scheduleEnabled || !workflow.scheduleCron) {
+    if (
+      !workflow ||
+      workflow.deletedAt ||
+      !workflow.scheduleEnabled ||
+      !workflow.scheduleCron
+    ) {
       await this.schedulerQueue.removeJobScheduler(this.getSchedulerId(job.data.workflowId));
       return;
     }

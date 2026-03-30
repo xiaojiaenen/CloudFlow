@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { RunTaskDto } from './dto/run-task.dto';
 import { TaskService } from './task.service';
 
@@ -12,8 +12,18 @@ export class TaskController {
   }
 
   @Get()
-  findAll() {
-    return this.taskService.findAll();
+  findAll(
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('status') status?: string,
+    @Query('triggerSource') triggerSource?: string,
+  ) {
+    return this.taskService.findAll({
+      page,
+      pageSize,
+      status,
+      triggerSource,
+    });
   }
 
   @Get(':id')
