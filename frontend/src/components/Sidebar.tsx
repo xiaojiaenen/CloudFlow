@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { useAuth } from "@/src/context/AuthContext";
 import { cn } from "@/src/lib/utils";
 import {
   buildWorkflowDefinition,
@@ -43,6 +44,7 @@ const navItems = [
 ];
 
 export function Sidebar() {
+  const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
@@ -88,6 +90,10 @@ export function Sidebar() {
   const visibleWorkflows = useMemo(
     () => workflows.filter((workflow) => workflow.status !== "archived").slice(0, 12),
     [workflows],
+  );
+  const visibleNavItems = useMemo(
+    () => navItems.filter((item) => item.path !== "/admin" || user?.role === "admin"),
+    [user?.role],
   );
 
   const handleCreateWorkflow = async (event: FormEvent, mode: "empty" | "demo" = "empty") => {
@@ -234,7 +240,7 @@ export function Sidebar() {
               </div>
             )}
             <div className="space-y-0.5">
-              {navItems.map((item) => {
+              {visibleNavItems.map((item) => {
                 const Icon = item.icon;
                 return (
                   <button

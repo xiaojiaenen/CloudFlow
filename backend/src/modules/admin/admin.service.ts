@@ -19,7 +19,7 @@ export class AdminService {
   async getOverview() {
     await this.ensureDefaultTemplates();
 
-    const [workflowGroups, templateTotal, publishedTemplates, scheduledWorkflows, taskTotal] =
+    const [workflowGroups, templateTotal, publishedTemplates, scheduledWorkflows, taskTotal, totalUsers] =
       await Promise.all([
         this.prismaService.workflow.groupBy({
           by: ['status'],
@@ -51,10 +51,11 @@ export class AdminService {
           },
         }),
         this.prismaService.task.count(),
+        this.userModel.count(),
       ]);
 
     const workflowCountMap = workflowGroups.reduce<Record<string, number>>(
-      (acc, item) => {
+      (acc, item: { status: string; _count: { status: number } }) => {
         acc[item.status] = item._count.status;
         return acc;
       },
@@ -70,6 +71,7 @@ export class AdminService {
         publishedTemplates,
         scheduledWorkflows,
         taskTotal,
+        totalUsers,
       },
       roleMatrix: [
         {
@@ -125,6 +127,23 @@ export class AdminService {
         port: this.configService.get<string>('PORT', '3001'),
       },
     };
+  }
+
+  async listUsers() {
+    return this.userModel.findMany({
+      orderBy: {
+        createdAt: 'asc',
+      },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
   }
 
   async getSystemConfig() {
@@ -314,5 +333,14 @@ export class AdminService {
         platformName: 'CloudFlow',
       },
     });
+  }
+
+  private get userModel() {
+    return (this.prismaService as unknown as {
+      user: {
+        count: (...args: any[]) => Promise<number>;
+        findMany: (...args: any[]) => Promise<any[]>;
+      };
+    }).user;
   }
 }

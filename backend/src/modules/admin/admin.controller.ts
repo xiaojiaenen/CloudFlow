@@ -1,9 +1,14 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Put } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Put, UseGuards } from '@nestjs/common';
+import { AuthGuard } from '../auth/auth.guard';
+import { Roles } from '../auth/roles.decorator';
+import { RolesGuard } from '../auth/roles.guard';
 import { AdminService } from './admin.service';
 import { CreateTemplateDto } from './dto/create-template.dto';
 import { UpdateSystemConfigDto } from './dto/update-system-config.dto';
 import { UpdateTemplateDto } from './dto/update-template.dto';
 
+@UseGuards(AuthGuard, RolesGuard)
+@Roles('admin')
 @Controller('admin')
 export class AdminController {
   constructor(private readonly adminService: AdminService) {}
@@ -11,6 +16,11 @@ export class AdminController {
   @Get('overview')
   getOverview() {
     return this.adminService.getOverview();
+  }
+
+  @Get('users')
+  getUsers() {
+    return this.adminService.listUsers();
   }
 
   @Get('health')

@@ -12,11 +12,13 @@ import {
   getSystemConfig,
   HealthRecord,
   listAdminTemplates,
+  listUsers,
   SystemConfigRecord,
   updateAdminTemplate,
   updateSystemConfig,
   WorkflowTemplateRecord,
   AdminOverviewRecord,
+  UserRecord,
 } from "@/src/lib/cloudflow";
 import { cn } from "@/src/lib/utils";
 import { Activity, Mail, RefreshCw, Server, Settings2, ShieldCheck, ShoppingBag, Users } from "lucide-react";
@@ -54,6 +56,7 @@ export default function Admin() {
   const [health, setHealth] = useState<HealthRecord | null>(null);
   const [config, setConfig] = useState<SystemConfigRecord>(emptyConfig);
   const [templates, setTemplates] = useState<WorkflowTemplateRecord[]>([]);
+  const [users, setUsers] = useState<UserRecord[]>([]);
   const [templateSearch, setTemplateSearch] = useState("");
   const [templateFilter, setTemplateFilter] = useState<"all" | "true" | "false">("all");
   const [isLoading, setIsLoading] = useState(false);
@@ -71,7 +74,7 @@ export default function Admin() {
   const loadAll = useCallback(async () => {
     try {
       setIsLoading(true);
-      const [overviewData, healthData, configData, templateData] = await Promise.all([
+      const [overviewData, healthData, configData, templateData, userData] = await Promise.all([
         getAdminOverview(),
         getHealthStatus(),
         getSystemConfig(),
@@ -79,11 +82,13 @@ export default function Admin() {
           search: templateSearch,
           published: templateFilter,
         }),
+        listUsers(),
       ]);
       setOverview(overviewData);
       setHealth(healthData);
       setConfig(configData);
       setTemplates(templateData);
+      setUsers(userData);
     } finally {
       setIsLoading(false);
     }
@@ -130,7 +135,7 @@ export default function Admin() {
               </TabsList>
 
               <TabsContent value="overview" className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
                   <Card>
                     <CardContent className="p-5">
                       <div className="flex items-center justify-between mb-2">
@@ -164,11 +169,21 @@ export default function Admin() {
                   <Card>
                     <CardContent className="p-5">
                       <div className="flex items-center justify-between mb-2">
-                        <div className="text-sm text-zinc-400">累计任务</div>
-                        <Users className="w-4 h-4 text-amber-400" />
+                      <div className="text-sm text-zinc-400">累计任务</div>
+                      <Users className="w-4 h-4 text-amber-400" />
                       </div>
                       <div className="text-3xl font-bold text-zinc-100">{overview?.metrics.taskTotal ?? 0}</div>
                       <div className="text-xs text-zinc-500 mt-2">覆盖手动触发与定时触发</div>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="p-5">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="text-sm text-zinc-400">用户总数</div>
+                        <Users className="w-4 h-4 text-fuchsia-400" />
+                      </div>
+                      <div className="text-3xl font-bold text-zinc-100">{overview?.metrics.totalUsers ?? 0}</div>
+                      <div className="text-xs text-zinc-500 mt-2">支持普通用户与管理员双角色</div>
                     </CardContent>
                   </Card>
                 </div>
@@ -196,6 +211,31 @@ export default function Admin() {
                               {item}
                             </div>
                           ))}
+                        </div>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>用户列表</CardTitle>
+                    <CardDescription>当前登录体系已接上真实后端账号，管理员可以从这里理解角色分布。</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {users.map((user) => (
+                      <div key={user.id} className="rounded-xl border border-white/[0.05] bg-white/[0.02] p-4 flex items-center justify-between gap-4">
+                        <div>
+                          <div className="text-sm font-semibold text-zinc-100">{user.name}</div>
+                          <div className="text-xs text-zinc-500 mt-1">{user.email}</div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge variant={user.role === "admin" ? "default" : "secondary"}>
+                            {user.role === "admin" ? "管理员" : "普通用户"}
+                          </Badge>
+                          <Badge variant={user.status === "active" ? "success" : "outline"}>
+                            {user.status === "active" ? "启用中" : "已停用"}
+                          </Badge>
                         </div>
                       </div>
                     ))}

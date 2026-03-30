@@ -150,6 +150,7 @@ export interface AdminOverviewRecord {
     publishedTemplates: number;
     scheduledWorkflows: number;
     taskTotal: number;
+    totalUsers: number;
   };
   roleMatrix: Array<{
     key: "user" | "admin";
@@ -157,6 +158,16 @@ export interface AdminOverviewRecord {
     summary: string;
     capabilities: string[];
   }>;
+}
+
+export interface UserRecord {
+  id: string;
+  email: string;
+  name: string;
+  role: "admin" | "user";
+  status: "active" | "suspended";
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface SystemConfigRecord {
@@ -245,6 +256,7 @@ const API_BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "http://localhost:3001/api";
 const WS_BASE_URL =
   (import.meta.env.VITE_WS_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "http://localhost:3001";
+const AUTH_STORAGE_KEY = "cloudflow:auth-token";
 
 function buildNodeParams(data: Record<string, unknown>) {
   return Object.entries(data)
@@ -279,6 +291,31 @@ export function getApiBaseUrl() {
 
 export function getWsBaseUrl() {
   return WS_BASE_URL;
+}
+
+export function getAuthToken() {
+  return window.localStorage.getItem(AUTH_STORAGE_KEY) ?? "";
+}
+
+export function setAuthToken(token: string) {
+  window.localStorage.setItem(AUTH_STORAGE_KEY, token);
+}
+
+export function clearAuthToken() {
+  window.localStorage.removeItem(AUTH_STORAGE_KEY);
+}
+
+function buildAuthHeaders(headers?: HeadersInit) {
+  const token = getAuthToken();
+
+  if (!token) {
+    return headers;
+  }
+
+  return {
+    ...(headers ?? {}),
+    Authorization: `Bearer ${token}`,
+  };
 }
 
 export function createEmptyCanvasGraph(): WorkflowCanvasSnapshot {
@@ -387,6 +424,7 @@ export async function createWorkflow(payload: {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      ...buildAuthHeaders(),
     },
     body: JSON.stringify(payload),
   });
@@ -413,6 +451,7 @@ export async function updateWorkflow(
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
+      ...buildAuthHeaders(),
     },
     body: JSON.stringify(payload),
   });
@@ -427,6 +466,7 @@ export async function updateWorkflow(
 export async function deleteWorkflow(id: string) {
   const response = await fetch(`${API_BASE_URL}/workflows/${id}`, {
     method: "DELETE",
+    headers: buildAuthHeaders(),
   });
 
   if (!response.ok) {
@@ -439,6 +479,7 @@ export async function deleteWorkflow(id: string) {
 export async function duplicateWorkflow(id: string) {
   const response = await fetch(`${API_BASE_URL}/workflows/${id}/duplicate`, {
     method: "POST",
+    headers: buildAuthHeaders(),
   });
 
   if (!response.ok) {
@@ -517,7 +558,9 @@ export async function markStoreTemplateInstalled(id: string) {
 }
 
 export async function getAdminOverview() {
-  const response = await fetch(`${API_BASE_URL}/admin/overview`);
+  const response = await fetch(`${API_BASE_URL}/admin/overview`, {
+    headers: buildAuthHeaders(),
+  });
 
   if (!response.ok) {
     throw new Error(`读取管理后台总览失败 (${response.status})`);
@@ -527,7 +570,9 @@ export async function getAdminOverview() {
 }
 
 export async function getHealthStatus() {
-  const response = await fetch(`${API_BASE_URL}/admin/health`);
+  const response = await fetch(`${API_BASE_URL}/admin/health`, {
+    headers: buildAuthHeaders(),
+  });
 
   if (!response.ok) {
     throw new Error(`读取系统健康状态失败 (${response.status})`);
@@ -537,7 +582,9 @@ export async function getHealthStatus() {
 }
 
 export async function getSystemConfig() {
-  const response = await fetch(`${API_BASE_URL}/admin/system-config`);
+  const response = await fetch(`${API_BASE_URL}/admin/system-config`, {
+    headers: buildAuthHeaders(),
+  });
 
   if (!response.ok) {
     throw new Error(`读取系统配置失败 (${response.status})`);
@@ -551,6 +598,7 @@ export async function updateSystemConfig(payload: Partial<SystemConfigRecord>) {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
+      ...buildAuthHeaders(),
     },
     body: JSON.stringify(payload),
   });
@@ -576,7 +624,9 @@ export async function listAdminTemplates(params?: {
     query.set("published", params.published);
   }
 
-  const response = await fetch(`${API_BASE_URL}/admin/templates${query.toString() ? `?${query.toString()}` : ""}`);
+  const response = await fetch(`${API_BASE_URL}/admin/templates${query.toString() ? `?${query.toString()}` : ""}`, {
+    headers: buildAuthHeaders(),
+  });
 
   if (!response.ok) {
     throw new Error(`读取模板列表失败 (${response.status})`);
@@ -601,6 +651,7 @@ export async function createAdminTemplate(payload: {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      ...buildAuthHeaders(),
     },
     body: JSON.stringify(payload),
   });
@@ -631,6 +682,7 @@ export async function updateAdminTemplate(
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
+      ...buildAuthHeaders(),
     },
     body: JSON.stringify(payload),
   });
@@ -728,6 +780,7 @@ export async function runTask(workflowId: string) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      ...buildAuthHeaders(),
     },
     body: JSON.stringify({ workflowId }),
   });
@@ -742,6 +795,7 @@ export async function runTask(workflowId: string) {
 export async function cancelTask(taskId: string) {
   const response = await fetch(`${API_BASE_URL}/tasks/${taskId}/cancel`, {
     method: "POST",
+    headers: buildAuthHeaders(),
   });
 
   if (!response.ok) {
@@ -749,6 +803,49 @@ export async function cancelTask(taskId: string) {
   }
 
   return (await response.json()) as TaskRecord;
+}
+
+export async function login(payload: { email: string; password: string }) {
+  const response = await fetch(`${API_BASE_URL}/auth/login`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(`登录失败 (${response.status})`);
+  }
+
+  return (await response.json()) as {
+    token: string;
+    user: UserRecord;
+  };
+}
+
+export async function getCurrentUser() {
+  const response = await fetch(`${API_BASE_URL}/auth/me`, {
+    headers: buildAuthHeaders(),
+  });
+
+  if (!response.ok) {
+    throw new Error(`读取当前用户失败 (${response.status})`);
+  }
+
+  return (await response.json()) as UserRecord;
+}
+
+export async function listUsers() {
+  const response = await fetch(`${API_BASE_URL}/admin/users`, {
+    headers: buildAuthHeaders(),
+  });
+
+  if (!response.ok) {
+    throw new Error(`读取用户列表失败 (${response.status})`);
+  }
+
+  return (await response.json()) as UserRecord[];
 }
 
 export function buildWorkflowDefinition(nodes: Node<CanvasNodeData>[], edges: Edge[]): WorkflowApiDefinition {

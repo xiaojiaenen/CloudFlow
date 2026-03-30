@@ -1,4 +1,6 @@
-import { ChevronRight, Play, Square } from "lucide-react";
+import { ChevronRight, LogOut, Play, ShieldCheck, Square, UserRound } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/src/context/AuthContext";
 import { cn } from "@/src/lib/utils";
 
 interface HeaderProps {
@@ -14,6 +16,9 @@ export function Header({
   runLabel = "执行工作流",
   onToggleRun,
 }: HeaderProps) {
+  const navigate = useNavigate();
+  const { user, logout } = useAuth();
+
   return (
     <div className="h-14 flex items-center justify-between flex-1 z-10 relative">
       <div className="flex items-center gap-2 text-sm text-zinc-400">
@@ -62,12 +67,24 @@ export function Header({
 
         <div className="w-px h-5 bg-white/[0.08] mx-2" />
 
-        <div className="w-7 h-7 rounded-full bg-gradient-to-tr from-zinc-700 to-zinc-600 border border-white/10 overflow-hidden ml-2 cursor-pointer">
-          <img
-            src="https://api.dicebear.com/7.x/avataaars/svg?seed=Felix"
-            alt="User Avatar"
-            className="w-full h-full object-cover"
-          />
+        <div className="flex items-center gap-3">
+          <div className="text-right">
+            <div className="text-xs text-zinc-100 font-medium">{user?.name ?? "未登录"}</div>
+            <div className="text-[11px] text-zinc-500 flex items-center justify-end gap-1">
+              {user?.role === "admin" ? <ShieldCheck className="w-3 h-3 text-sky-400" /> : <UserRound className="w-3 h-3 text-zinc-400" />}
+              {user?.role === "admin" ? "管理员" : "普通用户"}
+            </div>
+          </div>
+          <button
+            onClick={() => {
+              logout();
+              navigate("/login", { replace: true });
+            }}
+            className="w-8 h-8 rounded-full border border-white/10 bg-zinc-900/80 text-zinc-300 hover:text-white hover:border-white/20 flex items-center justify-center"
+            title="退出登录"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
         </div>
       </div>
     </div>
