@@ -1,4 +1,13 @@
-import { IsArray, IsBoolean, IsNumber, IsObject, IsOptional, IsString, ValidateNested } from 'class-validator';
+import {
+  IsArray,
+  IsBoolean,
+  IsEmail,
+  IsNumber,
+  IsObject,
+  IsOptional,
+  IsString,
+  ValidateNested,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 class WorkflowNodeDto {
@@ -68,6 +77,18 @@ export class WorkflowScheduleDto {
   timezone?: string;
 }
 
+export class WorkflowAlertDto {
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+
+  @IsBoolean()
+  onFailure!: boolean;
+
+  @IsBoolean()
+  onSuccess!: boolean;
+}
+
 export class WorkflowDefinitionDto {
   @IsArray()
   @ValidateNested({ each: true })
@@ -96,4 +117,9 @@ export class CreateWorkflowDto {
   @ValidateNested()
   @Type(() => WorkflowScheduleDto)
   schedule?: WorkflowScheduleDto;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => WorkflowAlertDto)
+  alerts?: WorkflowAlertDto;
 }

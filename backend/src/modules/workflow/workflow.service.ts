@@ -14,6 +14,7 @@ export class WorkflowService {
 
   async create(createWorkflowDto: CreateWorkflowDto) {
     await this.validateSchedule(createWorkflowDto.schedule);
+    this.validateAlerts(createWorkflowDto.alerts);
 
     const workflow = await this.prismaService.workflow.create({
       data: {
@@ -25,6 +26,9 @@ export class WorkflowService {
         scheduleTimezone: createWorkflowDto.schedule?.enabled
           ? createWorkflowDto.schedule.timezone?.trim() || 'Asia/Shanghai'
           : null,
+        alertEmail: createWorkflowDto.alerts?.email?.trim() || null,
+        alertOnFailure: createWorkflowDto.alerts?.onFailure ?? true,
+        alertOnSuccess: createWorkflowDto.alerts?.onSuccess ?? false,
       },
     });
 
@@ -66,7 +70,20 @@ export class WorkflowService {
           timezone: existingWorkflow.scheduleTimezone,
         };
 
+    const nextAlerts = updateWorkflowDto.alerts
+      ? {
+          email: updateWorkflowDto.alerts.email,
+          onFailure: updateWorkflowDto.alerts.onFailure,
+          onSuccess: updateWorkflowDto.alerts.onSuccess,
+        }
+      : {
+          email: existingWorkflow.alertEmail,
+          onFailure: existingWorkflow.alertOnFailure,
+          onSuccess: existingWorkflow.alertOnSuccess,
+        };
+
     await this.validateSchedule(nextSchedule);
+    this.validateAlerts(nextAlerts);
 
     const workflow = await this.prismaService.workflow.update({
       where: { id },
@@ -91,6 +108,13 @@ export class WorkflowService {
                 : null,
             }
           : {}),
+        ...(updateWorkflowDto.alerts
+          ? {
+              alertEmail: updateWorkflowDto.alerts.email?.trim() || null,
+              alertOnFailure: updateWorkflowDto.alerts.onFailure,
+              alertOnSuccess: updateWorkflowDto.alerts.onSuccess,
+            }
+          : {}),
       },
     });
 
@@ -109,6 +133,18 @@ export class WorkflowService {
       throw new BadRequestException(
         error instanceof Error ? error.message : '工作流调度配置无效。',
       );
+    }
+  }
+
+  private validateAlerts(alerts?: {
+    email?: string | null;
+    onFailure?: boolean;
+    onSuccess?: boolean;
+  }) {
+    const shouldNotify = alerts?.onFailure || alerts?.onSuccess;
+
+    if (shouldNotify && !alerts?.email?.trim()) {
+      throw new BadRequestException('启用邮件告警时必须填写通知邮箱。');
     }
   }
 }

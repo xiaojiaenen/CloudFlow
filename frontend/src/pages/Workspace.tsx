@@ -90,6 +90,9 @@ export default function Workspace() {
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleCron, setScheduleCron] = useState("0 0 * * *");
   const [scheduleTimezone, setScheduleTimezone] = useState("Asia/Shanghai");
+  const [alertEmail, setAlertEmail] = useState("");
+  const [alertOnFailure, setAlertOnFailure] = useState(true);
+  const [alertOnSuccess, setAlertOnSuccess] = useState(false);
   const [canvasVersion, setCanvasVersion] = useState(0);
 
   const socketRef = useRef<Socket | null>(null);
@@ -104,6 +107,18 @@ export default function Workspace() {
 
     return `定时调度已启用 · ${scheduleCron || "--"} · ${scheduleTimezone || "Asia/Shanghai"}`;
   }, [scheduleCron, scheduleEnabled, scheduleTimezone]);
+  const alertSummary = useMemo(() => {
+    const flags = [
+      alertOnFailure ? "失败" : "",
+      alertOnSuccess ? "成功" : "",
+    ].filter(Boolean);
+
+    if (!alertEmail || flags.length === 0) {
+      return "未启用邮件告警";
+    }
+
+    return `邮件告警已启用 · ${flags.join(" / ")} · ${alertEmail}`;
+  }, [alertEmail, alertOnFailure, alertOnSuccess]);
 
   const resetCanvasWithWorkflow = useCallback((workflow?: WorkflowRecord | null) => {
     const graph = workflow ? hydrateCanvasFromWorkflow(workflow.definition) : createEmptyCanvasGraph();
@@ -117,6 +132,9 @@ export default function Workspace() {
     setScheduleEnabled(workflow?.scheduleEnabled ?? false);
     setScheduleCron(workflow?.scheduleCron ?? "0 0 * * *");
     setScheduleTimezone(workflow?.scheduleTimezone ?? "Asia/Shanghai");
+    setAlertEmail(workflow?.alertEmail ?? "");
+    setAlertOnFailure(workflow?.alertOnFailure ?? true);
+    setAlertOnSuccess(workflow?.alertOnSuccess ?? false);
     setFlowNodes(graph.nodes);
     setFlowEdges(graph.edges);
     setNodeStatuses(buildIdleNodeStatuses(graph.nodes));
@@ -175,6 +193,11 @@ export default function Workspace() {
           cron: scheduleEnabled ? scheduleCron.trim() : undefined,
           timezone: scheduleEnabled ? scheduleTimezone : undefined,
         },
+        alerts: {
+          email: alertEmail.trim() || undefined,
+          onFailure: alertOnFailure,
+          onSuccess: alertOnSuccess,
+        },
       };
 
       setIsSavingWorkflow(true);
@@ -207,6 +230,9 @@ export default function Workspace() {
       flowEdges,
       flowNodes,
       navigate,
+      alertEmail,
+      alertOnFailure,
+      alertOnSuccess,
       scheduleCron,
       scheduleEnabled,
       scheduleTimezone,
@@ -469,7 +495,7 @@ export default function Workspace() {
             {workflowId ? `当前工作流 ID: ${workflowId}` : "当前为未保存工作流"}
           </div>
           <div className="text-xs text-zinc-500">
-            {isLoadingWorkflow ? "正在加载工作流..." : `${workflowDescription} · ${scheduleSummary}`}
+            {isLoadingWorkflow ? "正在加载工作流..." : `${workflowDescription} · ${scheduleSummary} · ${alertSummary}`}
           </div>
         </div>
 
@@ -584,30 +610,24 @@ export default function Workspace() {
                   <div className="text-sm font-medium text-zinc-200">执行失败</div>
                   <div className="text-xs text-zinc-500">节点报错或超时</div>
                 </div>
-                <Switch checked={true} />
+                <Switch checked={alertOnFailure} onCheckedChange={setAlertOnFailure} />
               </div>
               <div className="flex items-center justify-between">
                 <div>
                   <div className="text-sm font-medium text-zinc-200">执行成功</div>
                   <div className="text-xs text-zinc-500">工作流完整运行结束</div>
                 </div>
-                <Switch checked={false} />
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-medium text-zinc-200">执行超时</div>
-                  <div className="text-xs text-zinc-500">运行时间超过设定阈值</div>
-                </div>
-                <Switch checked={true} />
+                <Switch checked={alertOnSuccess} onCheckedChange={setAlertOnSuccess} />
               </div>
               <div className="pt-4 border-t border-white/[0.05] space-y-4">
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-zinc-300">通知邮箱</label>
-                  <Input placeholder="admin@example.com" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-zinc-300">Webhook URL</label>
-                  <Input placeholder="https://..." />
+                  <Input
+                    value={alertEmail}
+                    onChange={(event) => setAlertEmail(event.target.value)}
+                    placeholder="admin@example.com"
+                  />
+                  <p className="text-xs text-zinc-500">当前版本仅支持邮件通知。请在后端环境变量中配置 SMTP 参数后使用。</p>
                 </div>
               </div>
             </TabsContent>

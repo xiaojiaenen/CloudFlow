@@ -45,6 +45,9 @@ export interface WorkflowRecord {
   scheduleEnabled?: boolean;
   scheduleCron?: string | null;
   scheduleTimezone?: string | null;
+  alertEmail?: string | null;
+  alertOnSuccess?: boolean;
+  alertOnFailure?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -53,6 +56,12 @@ export interface WorkflowSchedulePayload {
   enabled: boolean;
   cron?: string;
   timezone?: string;
+}
+
+export interface WorkflowAlertPayload {
+  email?: string;
+  onFailure: boolean;
+  onSuccess: boolean;
 }
 
 export interface TaskRecord {
@@ -240,6 +249,7 @@ export async function createWorkflow(payload: {
   description?: string;
   definition: WorkflowApiDefinition;
   schedule?: WorkflowSchedulePayload;
+  alerts?: WorkflowAlertPayload;
 }) {
   const response = await fetch(`${API_BASE_URL}/workflows`, {
     method: "POST",
@@ -263,6 +273,7 @@ export async function updateWorkflow(
     description?: string;
     definition?: WorkflowApiDefinition;
     schedule?: WorkflowSchedulePayload;
+    alerts?: WorkflowAlertPayload;
   },
 ) {
   const response = await fetch(`${API_BASE_URL}/workflows/${id}`, {

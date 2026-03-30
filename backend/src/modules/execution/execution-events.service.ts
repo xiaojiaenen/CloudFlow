@@ -10,6 +10,7 @@ import {
   TaskScreenshotPayload,
   TaskStatusPayload,
 } from 'src/common/types/execution-event.types';
+import { NotificationService } from 'src/modules/notification/notification.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { TaskEventsGateway } from 'src/ws/task-events.gateway';
 
@@ -23,6 +24,7 @@ export class ExecutionEventsService implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     private readonly configService: ConfigService,
+    private readonly notificationService: NotificationService,
     private readonly prismaService: PrismaService,
     private readonly taskEventsGateway: TaskEventsGateway,
   ) {
@@ -76,6 +78,7 @@ export class ExecutionEventsService implements OnModuleInit, OnModuleDestroy {
           event.type === 'status' &&
           ['success', 'failed', 'cancelled'].includes((event.data as TaskStatusPayload).status)
         ) {
+          await this.notifyTaskIfNeeded(event.taskId);
           this.taskSequences.delete(event.taskId);
           this.lastPersistedScreenshotAt.delete(event.taskId);
         }
@@ -188,5 +191,28 @@ export class ExecutionEventsService implements OnModuleInit, OnModuleDestroy {
       payload: payload as unknown as Prisma.InputJsonValue,
       createdAt: new Date(payload.timestamp),
     };
+  }
+
+  private async notifyTaskIfNeeded(taskId: string) {
+    const task = await this.prismaService.task.findUnique({
+      where: { id: taskId },
+      include: {
+        workflow: {
+          select: {
+            id: true,
+            name: true,
+            alertEmail: true,
+            alertOnFailure: true,
+            alertOnSuccess: true,
+          },
+        },
+      },
+    });
+
+    if (!task) {
+      return;
+    }
+
+    await this.notificationService.notifyTaskFinished(task);
   }
 }
