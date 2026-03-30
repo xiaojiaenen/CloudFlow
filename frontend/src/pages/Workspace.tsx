@@ -33,10 +33,10 @@ import {
   SanitizedCanvasNode,
   TaskEvent,
   updateWorkflow,
+  WORKFLOW_OPEN_BLANK_EVENT,
+  WORKFLOW_SAVED_EVENT,
   WorkflowRecord,
 } from "@/src/lib/cloudflow";
-
-const WORKFLOW_SAVED_EVENT = "cloudflow:workflow-saved";
 
 function toLogTimestamp(timestamp?: string) {
   if (!timestamp) {
@@ -312,6 +312,21 @@ export default function Workspace() {
 
     void loadWorkflow();
   }, [addLog, resetCanvasWithWorkflow, workflowId]);
+
+  useEffect(() => {
+    const handleOpenBlankWorkflow = () => {
+      setLogs([]);
+      setScreenshot(null);
+      setTaskId(null);
+      setIsRunning(false);
+      setIsCancelling(false);
+      setIsLoadingWorkflow(false);
+      resetCanvasWithWorkflow(null);
+    };
+
+    window.addEventListener(WORKFLOW_OPEN_BLANK_EVENT, handleOpenBlankWorkflow);
+    return () => window.removeEventListener(WORKFLOW_OPEN_BLANK_EVENT, handleOpenBlankWorkflow);
+  }, [resetCanvasWithWorkflow]);
 
   useEffect(() => {
     setNodeStatuses((prev) => {

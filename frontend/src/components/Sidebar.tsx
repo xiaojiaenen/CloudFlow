@@ -21,6 +21,8 @@ import {
   createEmptyCanvasGraph,
   createWorkflow,
   listWorkflows,
+  WORKFLOW_OPEN_BLANK_EVENT,
+  WORKFLOW_SAVED_EVENT,
   WorkflowRecord,
 } from "@/src/lib/cloudflow";
 
@@ -32,8 +34,6 @@ const navItems = [
   { path: "/admin", icon: Settings, label: "管理后台" },
   { path: "/settings", icon: SlidersHorizontal, label: "系统设置" },
 ];
-
-const WORKFLOW_SAVED_EVENT = "cloudflow:workflow-saved";
 
 export function Sidebar() {
   const navigate = useNavigate();
@@ -109,7 +109,8 @@ export function Sidebar() {
   };
 
   const openBlankWorkflow = () => {
-    navigate("/");
+    window.dispatchEvent(new CustomEvent(WORKFLOW_OPEN_BLANK_EVENT));
+    navigate("/", { replace: !currentWorkflowId });
   };
 
   const selectWorkflow = (id: string) => {

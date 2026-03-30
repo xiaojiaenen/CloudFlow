@@ -82,6 +82,9 @@ export interface TaskEvent {
       };
 }
 
+export const WORKFLOW_SAVED_EVENT = "cloudflow:workflow-saved";
+export const WORKFLOW_OPEN_BLANK_EVENT = "cloudflow:open-blank-workflow";
+
 const API_BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "http://localhost:3001/api";
 const WS_BASE_URL =
