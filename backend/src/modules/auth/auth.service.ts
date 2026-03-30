@@ -2,6 +2,7 @@ import {
   ForbiddenException,
   Injectable,
   OnModuleInit,
+  BadRequestException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -100,6 +101,68 @@ export class AuthService implements OnModuleInit {
     return users.map((user) => this.toClientUser(user));
   }
 
+  async updateProfile(
+    currentUser: { id: string },
+    name: string,
+  ) {
+    const trimmedName = name.trim();
+
+    if (!trimmedName) {
+      throw new BadRequestException('姓名不能为空。');
+    }
+
+    const user = await this.userModel.update({
+      where: {
+        id: currentUser.id,
+      },
+      data: {
+        name: trimmedName,
+      },
+    });
+
+    return this.toClientUser(user);
+  }
+
+  async changePassword(
+    currentUser: { id: string },
+    currentPassword: string,
+    newPassword: string,
+  ) {
+    const user = await this.userModel.findUnique({
+      where: {
+        id: currentUser.id,
+      },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('当前用户不存在。');
+    }
+
+    if (!verifyStoredPasswordHash(currentPassword, user.passwordHash)) {
+      throw new BadRequestException('当前密码不正确。');
+    }
+
+    const trimmedNewPassword = newPassword.trim();
+
+    if (trimmedNewPassword.length < 8) {
+      throw new BadRequestException('新密码长度不能少于 8 位。');
+    }
+
+    const salt = randomBytes(16).toString('hex');
+    await this.userModel.update({
+      where: {
+        id: currentUser.id,
+      },
+      data: {
+        passwordHash: buildStoredPasswordHash(trimmedNewPassword, salt),
+      },
+    });
+
+    return {
+      success: true,
+    };
+  }
+
   async ensureDefaultUsers() {
     const total = await this.userModel.count();
     if (total > 0) {
@@ -180,6 +243,7 @@ export class AuthService implements OnModuleInit {
         findMany: (...args: any[]) => Promise<any[]>;
         count: (...args: any[]) => Promise<number>;
         create: (...args: any[]) => Promise<any>;
+        update: (...args: any[]) => Promise<any>;
       };
     }).user;
   }

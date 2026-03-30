@@ -59,6 +59,7 @@ export class TaskService {
       triggerSource?: string;
       workflowId?: string;
       activeOnly?: string;
+      search?: string;
     } = {},
     currentUser?: AuthenticatedUser,
   ) {
@@ -76,6 +77,24 @@ export class TaskService {
             workflow: {
               deletedAt: null,
             },
+          }
+        : {}),
+      ...(filters.search?.trim()
+        ? {
+            OR: [
+              {
+                id: {
+                  contains: filters.search.trim(),
+                },
+              },
+              {
+                workflow: {
+                  name: {
+                    contains: filters.search.trim(),
+                  },
+                },
+              },
+            ],
           }
         : {}),
       ...(filters.activeOnly === 'true'
@@ -124,6 +143,82 @@ export class TaskService {
       },
       take: limit,
     });
+  }
+
+  async getSummary(
+    filters: {
+      status?: string;
+      triggerSource?: string;
+      workflowId?: string;
+      activeOnly?: string;
+      search?: string;
+    } = {},
+    currentUser?: AuthenticatedUser,
+  ) {
+    const where: Prisma.TaskWhereInput = {
+      ...this.buildTaskAccessWhere(currentUser),
+      ...(this.isTaskStatus(filters.status) ? { status: filters.status } : {}),
+      ...(this.isTriggerSource(filters.triggerSource)
+        ? { triggerSource: filters.triggerSource }
+        : {}),
+      ...(filters.workflowId
+        ? {
+            workflowId: filters.workflowId,
+          }
+        : {}),
+      ...(filters.search?.trim()
+        ? {
+            OR: [
+              {
+                id: {
+                  contains: filters.search.trim(),
+                },
+              },
+              {
+                workflow: {
+                  name: {
+                    contains: filters.search.trim(),
+                  },
+                },
+              },
+            ],
+          }
+        : {}),
+      ...(filters.activeOnly === 'true'
+        ? {
+            status: {
+              in: ['pending', 'running'],
+            },
+          }
+        : {}),
+    };
+
+    const [pending, running, success, failed, cancelled, manual, schedule, total] =
+      await Promise.all([
+        this.prismaService.task.count({ where: { ...where, status: 'pending' } }),
+        this.prismaService.task.count({ where: { ...where, status: 'running' } }),
+        this.prismaService.task.count({ where: { ...where, status: 'success' } }),
+        this.prismaService.task.count({ where: { ...where, status: 'failed' } }),
+        this.prismaService.task.count({ where: { ...where, status: 'cancelled' } }),
+        this.prismaService.task.count({ where: { ...where, triggerSource: 'manual' } }),
+        this.prismaService.task.count({ where: { ...where, triggerSource: 'schedule' } }),
+        this.prismaService.task.count({ where }),
+      ]);
+
+    return {
+      total,
+      byStatus: {
+        pending,
+        running,
+        success,
+        failed,
+        cancelled,
+      },
+      byTriggerSource: {
+        manual,
+        schedule,
+      },
+    };
   }
 
   async cancel(id: string, currentUser: AuthenticatedUser) {
@@ -176,6 +271,30 @@ export class TaskService {
     );
 
     return updatedTask;
+  }
+
+  async retry(id: string, currentUser: AuthenticatedUser) {
+    const task = await this.getTaskOrThrow(id, currentUser);
+
+    const retriedTask = await this.prismaService.task.create({
+      data: {
+        workflowId: task.workflowId,
+        ownerId: task.ownerId,
+        status: 'pending',
+        triggerSource: 'manual',
+        workflowSnapshot: task.workflowSnapshot as Prisma.InputJsonValue,
+      },
+      include: {
+        workflow: true,
+      },
+    });
+
+    await this.queueService.enqueueTask({
+      taskId: retriedTask.id,
+      workflow: task.workflowSnapshot as unknown as WorkflowDefinition,
+    });
+
+    return retriedTask;
   }
 
   private async getTaskOrThrow(

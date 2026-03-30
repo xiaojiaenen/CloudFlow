@@ -13,6 +13,7 @@ interface AuthContextValue {
   isLoading: boolean;
   login: (email: string, password: string) => Promise<UserRecord>;
   logout: () => void;
+  refreshUser: () => Promise<UserRecord | null>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -57,6 +58,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       logout() {
         clearAuthToken();
         setUser(null);
+      },
+      async refreshUser() {
+        const token = getAuthToken();
+        if (!token) {
+          setUser(null);
+          return null;
+        }
+
+        const currentUser = await getCurrentUser();
+        setUser(currentUser);
+        return currentUser;
       },
     }),
     [isLoading, user],

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
@@ -7,27 +8,24 @@ import {
   Clock3,
   FileSearch,
   LoaderCircle,
-  PlayCircle,
   RefreshCw,
   SquareTerminal,
-  TimerReset,
   Workflow,
   XCircle,
 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { Sidebar } from "@/src/components/Sidebar";
 import { Button } from "@/src/components/ui/Button";
+import { Input } from "@/src/components/ui/Input";
+import { cancelTask, getTask, getTaskSummary, listTasks, retryTask, TaskExecutionRecord, TaskRecord, TaskSummaryRecord } from "@/src/lib/cloudflow";
 import { cn } from "@/src/lib/utils";
-import { getTask, listTasks, TaskExecutionRecord, TaskRecord } from "@/src/lib/cloudflow";
 
 function formatDateTime(value?: string | null) {
   if (!value) {
     return "--";
   }
 
-  return new Date(value).toLocaleString("zh-CN", {
-    hour12: false,
-  });
+  return new Date(value).toLocaleString("zh-CN", { hour12: false });
 }
 
 function formatDuration(startedAt?: string | null, completedAt?: string | null) {
@@ -38,12 +36,8 @@ function formatDuration(startedAt?: string | null, completedAt?: string | null) 
   const start = new Date(startedAt).getTime();
   const end = completedAt ? new Date(completedAt).getTime() : Date.now();
   const totalSeconds = Math.max(0, Math.floor((end - start) / 1000));
-  const hours = Math.floor(totalSeconds / 3600)
-    .toString()
-    .padStart(2, "0");
-  const minutes = Math.floor((totalSeconds % 3600) / 60)
-    .toString()
-    .padStart(2, "0");
+  const hours = Math.floor(totalSeconds / 3600).toString().padStart(2, "0");
+  const minutes = Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, "0");
   const seconds = (totalSeconds % 60).toString().padStart(2, "0");
 
   return `${hours}:${minutes}:${seconds}`;
@@ -110,67 +104,74 @@ function getPayloadString(payload: Record<string, unknown> | null | undefined, k
 
 function getExecutionEventMeta(event: TaskExecutionRecord) {
   if (event.type === "status") {
-    const status = event.status ?? "pending";
-    const statusMeta = getStatusMeta(status);
+    const statusMeta = getStatusMeta((event.status ?? "pending") as TaskRecord["status"]);
     return {
-      icon: statusMeta.icon,
-      className: statusMeta.className,
       label: `状态更新为 ${statusMeta.label}`,
+      className: statusMeta.className,
+      icon: statusMeta.icon,
     };
   }
 
   if (event.type === "extract") {
     return {
-      icon: FileSearch,
-      className: "bg-violet-500/10 text-violet-300 border border-violet-500/20",
       label: "提取结果",
+      className: "bg-violet-500/10 text-violet-300 border border-violet-500/20",
+      icon: FileSearch,
     };
   }
 
   if (event.level === "error") {
     return {
-      icon: AlertCircle,
-      className: "bg-red-500/10 text-red-300 border border-red-500/20",
       label: "错误日志",
+      className: "bg-red-500/10 text-red-300 border border-red-500/20",
+      icon: AlertCircle,
     };
   }
 
   if (event.level === "warn") {
     return {
-      icon: AlertCircle,
+      label: "告警日志",
       className: "bg-amber-500/10 text-amber-300 border border-amber-500/20",
-      label: "警告日志",
-    };
-  }
-
-  if (event.level === "success") {
-    return {
-      icon: CheckCircle2,
-      className: "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20",
-      label: "成功日志",
+      icon: AlertCircle,
     };
   }
 
   return {
-    icon: SquareTerminal,
-    className: "bg-sky-500/10 text-sky-300 border border-sky-500/20",
     label: "执行日志",
+    className: "bg-sky-500/10 text-sky-300 border border-sky-500/20",
+    icon: SquareTerminal,
   };
+}
+
+function MetricCard({ label, value, colorClass }: { label: string; value: number; colorClass?: string }) {
+  return (
+    <div className="bg-zinc-950/50 border border-white/[0.05] rounded-xl p-5 backdrop-blur-md">
+      <div className="text-sm text-zinc-400 mb-2">{label}</div>
+      <div className={cn("text-3xl font-bold text-zinc-100", colorClass)}>{value}</div>
+    </div>
+  );
 }
 
 export function MonitorCenter() {
   const [searchParams, setSearchParams] = useSearchParams();
   const taskIdFromQuery = searchParams.get("taskId");
-  const [tasks, setTasks] = useState<TaskRecord[]>([]);
+
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<TaskRecord["status"] | "all">("all");
+  const [triggerFilter, setTriggerFilter] = useState<TaskRecord["triggerSource"] | "all">("all");
   const [taskPage, setTaskPage] = useState(1);
   const [taskPageSize] = useState(10);
   const [taskTotal, setTaskTotal] = useState(0);
   const [taskTotalPages, setTaskTotalPages] = useState(1);
+  const [tasks, setTasks] = useState<TaskRecord[]>([]);
+  const [summary, setSummary] = useState<TaskSummaryRecord | null>(null);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(() => taskIdFromQuery);
   const [selectedTask, setSelectedTask] = useState<TaskRecord | null>(null);
   const [selectedScreenshotId, setSelectedScreenshotId] = useState<string | null>(null);
   const [isLoadingTasks, setIsLoadingTasks] = useState(false);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
+  const [isMutatingTasks, setIsMutatingTasks] = useState(false);
 
   const loadTasks = useCallback(async () => {
     try {
@@ -178,19 +179,15 @@ export function MonitorCenter() {
       const data = await listTasks({
         page: taskPage,
         pageSize: taskPageSize,
+        status: statusFilter === "all" ? undefined : statusFilter,
+        triggerSource: triggerFilter === "all" ? undefined : triggerFilter,
+        search,
       });
+
       setTaskTotal(data.total);
       setTaskTotalPages(data.totalPages);
-      setTasks((current) => {
-        if (!selectedTaskId || data.items.some((task) => task.id === selectedTaskId)) {
-          return data.items;
-        }
-
-        const pinnedTask = current.find((task) => task.id === selectedTaskId);
-        return pinnedTask
-          ? [pinnedTask, ...data.items.filter((task) => task.id !== selectedTaskId)]
-          : data.items;
-      });
+      setTasks(data.items);
+      setSelectedTaskIds((current) => current.filter((id) => data.items.some((task) => task.id === id)));
 
       if (taskIdFromQuery) {
         setSelectedTaskId(taskIdFromQuery);
@@ -200,7 +197,16 @@ export function MonitorCenter() {
     } finally {
       setIsLoadingTasks(false);
     }
-  }, [selectedTaskId, taskIdFromQuery, taskPage, taskPageSize]);
+  }, [search, selectedTaskId, statusFilter, taskIdFromQuery, taskPage, taskPageSize, triggerFilter]);
+
+  const loadSummary = useCallback(async () => {
+    const data = await getTaskSummary({
+      status: statusFilter === "all" ? undefined : statusFilter,
+      triggerSource: triggerFilter === "all" ? undefined : triggerFilter,
+      search,
+    });
+    setSummary(data);
+  }, [search, statusFilter, triggerFilter]);
 
   const loadTaskDetail = useCallback(async (taskId: string) => {
     try {
@@ -214,13 +220,19 @@ export function MonitorCenter() {
 
   useEffect(() => {
     void loadTasks();
+    void loadSummary();
 
     const interval = window.setInterval(() => {
       void loadTasks();
+      void loadSummary();
     }, 10000);
 
     return () => window.clearInterval(interval);
-  }, [loadTasks]);
+  }, [loadSummary, loadTasks]);
+
+  useEffect(() => {
+    setTaskPage(1);
+  }, [search, statusFilter, triggerFilter]);
 
   useEffect(() => {
     if (taskIdFromQuery && taskIdFromQuery !== selectedTaskId) {
@@ -230,6 +242,7 @@ export function MonitorCenter() {
 
   useEffect(() => {
     if (!selectedTaskId) {
+      setSelectedTask(null);
       return;
     }
 
@@ -238,13 +251,6 @@ export function MonitorCenter() {
       next.set("taskId", selectedTaskId);
       return next;
     }, { replace: true });
-  }, [selectedTaskId, setSearchParams]);
-
-  useEffect(() => {
-    if (!selectedTaskId) {
-      setSelectedTask(null);
-      return;
-    }
 
     void loadTaskDetail(selectedTaskId);
 
@@ -253,43 +259,27 @@ export function MonitorCenter() {
     }, 5000);
 
     return () => window.clearInterval(interval);
-  }, [loadTaskDetail, selectedTaskId]);
+  }, [loadTaskDetail, selectedTaskId, setSearchParams]);
 
-  const metrics = useMemo(() => {
-    const running = tasks.filter((task) => task.status === "running").length;
-    const success = tasks.filter((task) => task.status === "success").length;
-    const failed = tasks.filter((task) => task.status === "failed").length;
-    const cancelled = tasks.filter((task) => task.status === "cancelled").length;
-
-    return { running, success, failed, cancelled, total: tasks.length };
-  }, [tasks]);
+  const metrics = useMemo(() => ({
+    total: summary?.total ?? 0,
+    pending: summary?.byStatus.pending ?? 0,
+    running: summary?.byStatus.running ?? 0,
+    success: summary?.byStatus.success ?? 0,
+    failed: summary?.byStatus.failed ?? 0,
+    cancelled: summary?.byStatus.cancelled ?? 0,
+  }), [summary]);
 
   const executionEvents = useMemo(() => selectedTask?.executionEvents ?? [], [selectedTask]);
-
-  const activityEvents = useMemo(
-    () => executionEvents.filter((event) => event.type !== "screenshot"),
-    [executionEvents],
-  );
-
-  const screenshotEvents = useMemo(
-    () => executionEvents.filter((event) => event.type === "screenshot" && Boolean(event.imageBase64)),
-    [executionEvents],
-  );
-
-  const extractEvents = useMemo(
-    () => executionEvents.filter((event) => event.type === "extract"),
-    [executionEvents],
-  );
-
+  const activityEvents = useMemo(() => executionEvents.filter((event) => event.type !== "screenshot"), [executionEvents]);
+  const screenshotEvents = useMemo(() => executionEvents.filter((event) => event.type === "screenshot" && Boolean(event.imageBase64)), [executionEvents]);
+  const extractEvents = useMemo(() => executionEvents.filter((event) => event.type === "extract"), [executionEvents]);
   const activeScreenshot = useMemo(() => {
     if (screenshotEvents.length === 0) {
       return null;
     }
 
-    return (
-      screenshotEvents.find((event) => event.id === selectedScreenshotId) ??
-      screenshotEvents[screenshotEvents.length - 1]
-    );
+    return screenshotEvents.find((event) => event.id === selectedScreenshotId) ?? screenshotEvents[screenshotEvents.length - 1];
   }, [screenshotEvents, selectedScreenshotId]);
 
   useEffect(() => {
@@ -307,6 +297,51 @@ export function MonitorCenter() {
     });
   }, [screenshotEvents]);
 
+  const selectedTasks = useMemo(() => tasks.filter((task) => selectedTaskIds.includes(task.id)), [selectedTaskIds, tasks]);
+
+  const handleTaskMutationRefresh = useCallback(async () => {
+    await Promise.all([loadTasks(), loadSummary()]);
+    if (selectedTaskId) {
+      await loadTaskDetail(selectedTaskId);
+    }
+  }, [loadSummary, loadTaskDetail, loadTasks, selectedTaskId]);
+
+  const handleBatchCancel = useCallback(async () => {
+    const cancellableTasks = selectedTasks.filter((task) => ["pending", "running"].includes(task.status));
+    if (cancellableTasks.length === 0) {
+      return;
+    }
+
+    try {
+      setIsMutatingTasks(true);
+      for (const task of cancellableTasks) {
+        await cancelTask(task.id);
+      }
+      setSelectedTaskIds([]);
+      await handleTaskMutationRefresh();
+    } finally {
+      setIsMutatingTasks(false);
+    }
+  }, [handleTaskMutationRefresh, selectedTasks]);
+
+  const handleBatchRetry = useCallback(async () => {
+    const retryableTasks = selectedTasks.filter((task) => ["failed", "cancelled"].includes(task.status));
+    if (retryableTasks.length === 0) {
+      return;
+    }
+
+    try {
+      setIsMutatingTasks(true);
+      for (const task of retryableTasks) {
+        await retryTask(task.id);
+      }
+      setSelectedTaskIds([]);
+      await handleTaskMutationRefresh();
+    } finally {
+      setIsMutatingTasks(false);
+    }
+  }, [handleTaskMutationRefresh, selectedTasks]);
+
   return (
     <div className="h-screen w-screen bg-[#09090b] text-zinc-50 flex overflow-hidden font-sans selection:bg-sky-500/30">
       <Sidebar />
@@ -320,36 +355,22 @@ export function MonitorCenter() {
                 <Activity className="w-6 h-6 text-sky-400" />
                 任务历史与详情
               </h1>
-              <p className="text-zinc-400 mt-2 text-sm">查看最近任务的执行状态、时间线、截图回放和提取结果。</p>
+              <p className="text-zinc-400 mt-2 text-sm">支持筛选任务、批量取消和失败重试，并可查看日志、截图与提取结果。</p>
             </div>
 
-            <Button variant="outline" onClick={() => void loadTasks()} className="gap-2">
+            <Button variant="outline" onClick={() => { void loadTasks(); void loadSummary(); }} className="gap-2">
               <RefreshCw className={cn("w-4 h-4", isLoadingTasks && "animate-spin")} />
               刷新任务
             </Button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-            <div className="bg-zinc-950/50 border border-white/[0.05] rounded-xl p-5 backdrop-blur-md">
-              <div className="text-sm text-zinc-400 mb-2">任务总数</div>
-              <div className="text-3xl font-bold text-zinc-100">{metrics.total}</div>
-            </div>
-            <div className="bg-zinc-950/50 border border-white/[0.05] rounded-xl p-5 backdrop-blur-md">
-              <div className="text-sm text-zinc-400 mb-2">运行中</div>
-              <div className="text-3xl font-bold text-sky-400">{metrics.running}</div>
-            </div>
-            <div className="bg-zinc-950/50 border border-white/[0.05] rounded-xl p-5 backdrop-blur-md">
-              <div className="text-sm text-zinc-400 mb-2">成功</div>
-              <div className="text-3xl font-bold text-emerald-400">{metrics.success}</div>
-            </div>
-            <div className="bg-zinc-950/50 border border-white/[0.05] rounded-xl p-5 backdrop-blur-md">
-              <div className="text-sm text-zinc-400 mb-2">失败</div>
-              <div className="text-3xl font-bold text-red-400">{metrics.failed}</div>
-            </div>
-            <div className="bg-zinc-950/50 border border-white/[0.05] rounded-xl p-5 backdrop-blur-md">
-              <div className="text-sm text-zinc-400 mb-2">已取消</div>
-              <div className="text-3xl font-bold text-amber-400">{metrics.cancelled}</div>
-            </div>
+          <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
+            <MetricCard label="任务总数" value={metrics.total} />
+            <MetricCard label="等待中" value={metrics.pending} />
+            <MetricCard label="运行中" value={metrics.running} colorClass="text-sky-400" />
+            <MetricCard label="成功" value={metrics.success} colorClass="text-emerald-400" />
+            <MetricCard label="失败" value={metrics.failed} colorClass="text-red-400" />
+            <MetricCard label="已取消" value={metrics.cancelled} colorClass="text-amber-400" />
           </div>
 
           <div className="grid grid-cols-1 xl:grid-cols-[1.05fr_0.95fr] gap-6">
@@ -361,9 +382,43 @@ export function MonitorCenter() {
                 </div>
               </div>
 
+              <div className="px-5 py-4 border-b border-white/[0.05] space-y-3">
+                <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_160px_160px] gap-3">
+                  <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索任务 ID 或工作流名称" />
+                  <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)} className="flex h-10 rounded-md border border-white/[0.06] bg-zinc-900/50 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500">
+                    <option value="all">全部状态</option>
+                    <option value="pending">等待中</option>
+                    <option value="running">运行中</option>
+                    <option value="success">成功</option>
+                    <option value="failed">失败</option>
+                    <option value="cancelled">已取消</option>
+                  </select>
+                  <select value={triggerFilter} onChange={(event) => setTriggerFilter(event.target.value as typeof triggerFilter)} className="flex h-10 rounded-md border border-white/[0.06] bg-zinc-900/50 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500">
+                    <option value="all">全部触发方式</option>
+                    <option value="manual">手动触发</option>
+                    <option value="schedule">定时触发</option>
+                  </select>
+                </div>
+
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-xs text-zinc-500">已选 {selectedTaskIds.length} 条任务。</div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" disabled={tasks.length === 0} onClick={() => setSelectedTaskIds((current) => current.length === tasks.length ? [] : tasks.map((task) => task.id))}>
+                      {selectedTaskIds.length === tasks.length && tasks.length > 0 ? "取消全选" : "全选当前页"}
+                    </Button>
+                    <Button variant="outline" size="sm" disabled={isMutatingTasks || selectedTasks.filter((task) => ["pending", "running"].includes(task.status)).length === 0} onClick={() => { void handleBatchCancel(); }}>
+                      {isMutatingTasks ? "处理中..." : "批量取消"}
+                    </Button>
+                    <Button variant="outline" size="sm" disabled={isMutatingTasks || selectedTasks.filter((task) => ["failed", "cancelled"].includes(task.status)).length === 0} onClick={() => { void handleBatchRetry(); }}>
+                      {isMutatingTasks ? "处理中..." : "批量重试"}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
               <div className="divide-y divide-white/[0.05]">
                 {tasks.length === 0 && (
-                  <div className="px-5 py-12 text-center text-sm text-zinc-500">还没有任务记录，先去工作区运行一个工作流吧。</div>
+                  <div className="px-5 py-12 text-center text-sm text-zinc-500">当前没有符合条件的任务记录。</div>
                 )}
 
                 {tasks.map((task) => {
@@ -372,30 +427,50 @@ export function MonitorCenter() {
                   const triggerMeta = getTriggerMeta(task.triggerSource);
 
                   return (
-                    <button
-                      key={task.id}
-                      onClick={() => setSelectedTaskId(task.id)}
-                      className={cn(
-                        "w-full px-5 py-4 text-left transition-colors hover:bg-white/[0.03]",
-                        selectedTaskId === task.id && "bg-white/[0.05]",
-                      )}
-                    >
+                    <div key={task.id} className={cn("px-5 py-4 transition-colors hover:bg-white/[0.03]", selectedTaskId === task.id && "bg-white/[0.05]")}>
                       <div className="flex items-start justify-between gap-4">
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium text-zinc-100 truncate">
-                            {task.workflow?.name || "未命名工作流"}
-                          </div>
-                          <div className="mt-1 flex items-center gap-2 flex-wrap">
-                            <div className="text-xs text-zinc-500 font-mono truncate">{task.id}</div>
-                            <div className={cn("px-2 py-0.5 rounded text-[10px] font-medium", triggerMeta.className)}>
-                              {triggerMeta.label}
+                        <div className="min-w-0 flex items-start gap-3">
+                          <input type="checkbox" checked={selectedTaskIds.includes(task.id)} onChange={() => setSelectedTaskIds((current) => current.includes(task.id) ? current.filter((id) => id !== task.id) : [...current, task.id])} className="mt-1 h-4 w-4 rounded border-white/10 bg-zinc-900" />
+                          <button className="min-w-0 text-left" onClick={() => setSelectedTaskId(task.id)}>
+                            <div className="text-sm font-medium text-zinc-100 truncate">{task.workflow?.name || "未命名工作流"}</div>
+                            <div className="mt-1 flex items-center gap-2 flex-wrap">
+                              <div className="text-xs text-zinc-500 font-mono truncate">{task.id}</div>
+                              <div className={cn("px-2 py-0.5 rounded text-[10px] font-medium", triggerMeta.className)}>{triggerMeta.label}</div>
                             </div>
-                          </div>
+                          </button>
                         </div>
 
-                        <div className={cn("px-2 py-1 rounded text-[10px] font-medium flex items-center gap-1.5 shrink-0", statusMeta.className)}>
-                          <StatusIcon className={cn("w-3.5 h-3.5", task.status === "running" && "animate-spin")} />
-                          {statusMeta.label}
+                        <div className="flex items-center gap-2 shrink-0">
+                          {(task.status === "pending" || task.status === "running") && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                void cancelTask(task.id).then(async () => {
+                                  await handleTaskMutationRefresh();
+                                });
+                              }}
+                            >
+                              取消
+                            </Button>
+                          )}
+                          {(task.status === "failed" || task.status === "cancelled") && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                void retryTask(task.id).then(async () => {
+                                  await handleTaskMutationRefresh();
+                                });
+                              }}
+                            >
+                              重试
+                            </Button>
+                          )}
+                          <div className={cn("px-2 py-1 rounded text-[10px] font-medium flex items-center gap-1.5 shrink-0", statusMeta.className)}>
+                            <StatusIcon className={cn("w-3.5 h-3.5", task.status === "running" && "animate-spin")} />
+                            {statusMeta.label}
+                          </div>
                         </div>
                       </div>
 
@@ -417,28 +492,18 @@ export function MonitorCenter() {
                           <div className="text-zinc-300 mt-1 font-mono">{formatDuration(task.startedAt, task.completedAt)}</div>
                         </div>
                       </div>
-                    </button>
+                    </div>
                   );
                 })}
               </div>
 
               <div className="px-5 py-4 border-t border-white/[0.05] flex items-center justify-between gap-4">
-                <div className="text-xs text-zinc-500">每页 {taskPageSize} 条，不再继续向下无限滚动。</div>
+                <div className="text-xs text-zinc-500">每页 {taskPageSize} 条，支持分页、筛选与批量动作。</div>
                 <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={taskPage <= 1 || isLoadingTasks}
-                    onClick={() => setTaskPage((value) => Math.max(1, value - 1))}
-                  >
+                  <Button variant="outline" size="sm" disabled={taskPage <= 1 || isLoadingTasks} onClick={() => setTaskPage((value) => Math.max(1, value - 1))}>
                     上一页
                   </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={taskPage >= taskTotalPages || isLoadingTasks}
-                    onClick={() => setTaskPage((value) => Math.min(taskTotalPages, value + 1))}
-                  >
+                  <Button variant="outline" size="sm" disabled={taskPage >= taskTotalPages || isLoadingTasks} onClick={() => setTaskPage((value) => Math.min(taskTotalPages, value + 1))}>
                     下一页
                   </Button>
                 </div>
@@ -452,7 +517,7 @@ export function MonitorCenter() {
               </div>
 
               {!selectedTask && !isLoadingDetail ? (
-                <div className="px-5 py-12 text-center text-sm text-zinc-500">选择左侧任务查看详细信息。</div>
+                <div className="px-5 py-12 text-center text-sm text-zinc-500">请选择左侧任务查看详细信息。</div>
               ) : (
                 <div className="p-5 space-y-6">
                   <div className="space-y-3">
@@ -493,221 +558,93 @@ export function MonitorCenter() {
                           <div className="text-zinc-500 mb-2">持久化截图</div>
                           <div className="text-zinc-100">{screenshotEvents.length}</div>
                         </div>
-                        <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4">
-                          <div className="text-zinc-500 mb-2">触发来源</div>
-                          <div className={cn("inline-flex px-2 py-1 rounded text-xs font-medium", getTriggerMeta(selectedTask.triggerSource).className)}>
-                            {getTriggerMeta(selectedTask.triggerSource).label}
-                          </div>
-                        </div>
-                        <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4">
-                          <div className="text-zinc-500 mb-2">告警配置</div>
-                          <div className="text-zinc-100 text-xs leading-6">
-                            {selectedTask.workflow?.alertEmail
-                              ? `${selectedTask.workflow.alertEmail} · ${selectedTask.workflow.alertOnFailure ? "失败通知" : ""}${selectedTask.workflow.alertOnFailure && selectedTask.workflow.alertOnSuccess ? " / " : ""}${selectedTask.workflow.alertOnSuccess ? "成功通知" : ""}`
-                              : "未配置"}
-                          </div>
-                        </div>
                       </div>
 
-                      <div className="space-y-3">
-                        <div className="text-sm font-medium text-zinc-100 flex items-center gap-2">
-                          <TimerReset className="w-4 h-4 text-sky-400" />
-                          时间线
-                        </div>
-                        <div className="space-y-3 text-sm">
-                          <div className="flex items-start justify-between gap-4 rounded-lg border border-white/[0.05] bg-white/[0.02] p-4">
-                            <span className="text-zinc-500">创建时间</span>
-                            <span className="text-zinc-200">{formatDateTime(selectedTask.createdAt)}</span>
-                          </div>
-                          <div className="flex items-start justify-between gap-4 rounded-lg border border-white/[0.05] bg-white/[0.02] p-4">
-                            <span className="text-zinc-500">开始时间</span>
-                            <span className="text-zinc-200">{formatDateTime(selectedTask.startedAt)}</span>
-                          </div>
-                          <div className="flex items-start justify-between gap-4 rounded-lg border border-white/[0.05] bg-white/[0.02] p-4">
-                            <span className="text-zinc-500">结束时间</span>
-                            <span className="text-zinc-200">{formatDateTime(selectedTask.completedAt)}</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="space-y-3">
-                        <div className="text-sm font-medium text-zinc-100 flex items-center gap-2">
-                          <SquareTerminal className="w-4 h-4 text-emerald-400" />
-                          执行时间线
-                        </div>
-                        <div className="space-y-3 max-h-[320px] overflow-auto pr-1">
-                          {activityEvents.length === 0 && (
-                            <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4 text-sm text-zinc-500">
-                              这个任务还没有持久化的执行事件。
-                            </div>
-                          )}
-
-                          {activityEvents.map((event) => {
-                            const eventMeta = getExecutionEventMeta(event);
-                            const EventIcon = eventMeta.icon;
-                            const selector = getPayloadString(event.payload, "selector");
-                            const property = getPayloadString(event.payload, "property");
-                            const value = getPayloadString(event.payload, "value");
-
-                            return (
-                              <div key={event.id} className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4 space-y-3">
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="flex items-center gap-2 min-w-0">
-                                    <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center shrink-0", eventMeta.className)}>
-                                      <EventIcon className={cn("w-4 h-4", event.status === "running" && "animate-spin")} />
-                                    </div>
-                                    <div className="min-w-0">
-                                      <div className="text-sm text-zinc-100 truncate">{eventMeta.label}</div>
-                                      <div className="text-[11px] text-zinc-500 font-mono">
-                                        #{event.sequence} · {formatDateTime(event.createdAt)}
-                                      </div>
-                                    </div>
-                                  </div>
-                                  {event.nodeId && <div className="text-[11px] text-zinc-500 font-mono shrink-0">{event.nodeId}</div>}
-                                </div>
-
-                                {event.message && <div className="text-sm text-zinc-300 leading-6">{event.message}</div>}
-
-                                {event.type === "extract" && (
-                                  <div className="rounded-lg border border-violet-500/10 bg-violet-500/5 p-3 space-y-2">
-                                    <div className="text-xs text-zinc-400">
-                                      目标: <span className="font-mono text-zinc-200">{selector || "--"}</span>
-                                    </div>
-                                    <div className="text-xs text-zinc-400">
-                                      属性: <span className="font-mono text-zinc-200">{property || "text"}</span>
-                                    </div>
-                                    <pre className="text-xs text-zinc-200 whitespace-pre-wrap break-all font-mono max-h-32 overflow-auto">
-                                      {value || "[空值]"}
-                                    </pre>
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      <div className="space-y-3">
-                        <div className="text-sm font-medium text-zinc-100 flex items-center gap-2">
-                          <Camera className="w-4 h-4 text-fuchsia-400" />
-                          截图回放
-                        </div>
-                        {activeScreenshot ? (
-                          <div className="space-y-3">
-                            <div className="rounded-xl overflow-hidden border border-white/[0.05] bg-black/40">
-                              <img
-                                src={`data:${activeScreenshot.mimeType || "image/jpeg"};base64,${activeScreenshot.imageBase64}`}
-                                alt="任务截图"
-                                className="w-full h-[280px] object-contain bg-black"
-                              />
-                            </div>
-                            <div className="flex items-center justify-between text-xs text-zinc-500">
-                              <span>截图时间: {formatDateTime(activeScreenshot.createdAt)}</span>
-                              <span>{getPayloadString(activeScreenshot.payload, "source") === "node" ? "节点截图" : "过程截图"}</span>
-                            </div>
-                            <div className="grid grid-cols-3 gap-3 max-h-[220px] overflow-auto pr-1">
-                              {screenshotEvents.map((event) => (
-                                <button
-                                  key={event.id}
-                                  onClick={() => setSelectedScreenshotId(event.id)}
-                                  className={cn(
-                                    "rounded-lg overflow-hidden border transition-colors bg-black/30",
-                                    activeScreenshot.id === event.id
-                                      ? "border-sky-500/60"
-                                      : "border-white/[0.06] hover:border-white/[0.18]",
-                                  )}
-                                >
-                                  <img
-                                    src={`data:${event.mimeType || "image/jpeg"};base64,${event.imageBase64}`}
-                                    alt="任务缩略图"
-                                    className="w-full h-24 object-cover bg-black"
-                                  />
-                                  <div className="px-2 py-2 text-[11px] text-zinc-400">
-                                    {formatDateTime(event.createdAt)}
-                                  </div>
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4 text-sm text-zinc-500">
-                            这个任务还没有持久化截图。后续执行时，系统会自动按间隔保存执行画面。
-                          </div>
+                      <SectionTitle icon={<SquareTerminal className="w-4 h-4 text-emerald-400" />} title="执行时间线" />
+                      <div className="space-y-3 max-h-[320px] overflow-auto pr-1">
+                        {activityEvents.length === 0 && (
+                          <EmptyBlock text="这个任务还没有持久化的执行事件。" />
                         )}
+
+                        {activityEvents.map((event) => {
+                          const eventMeta = getExecutionEventMeta(event);
+                          const EventIcon = eventMeta.icon;
+
+                          return (
+                            <div key={event.id} className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4 space-y-3">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center shrink-0", eventMeta.className)}>
+                                    <EventIcon className="w-4 h-4" />
+                                  </div>
+                                  <div className="min-w-0">
+                                    <div className="text-sm text-zinc-100 truncate">{eventMeta.label}</div>
+                                    <div className="text-[11px] text-zinc-500 font-mono">#{event.sequence} · {formatDateTime(event.createdAt)}</div>
+                                  </div>
+                                </div>
+                                {event.nodeId && <div className="text-[11px] text-zinc-500 font-mono shrink-0">{event.nodeId}</div>}
+                              </div>
+
+                              {event.message && <div className="text-sm text-zinc-300 leading-6">{event.message}</div>}
+                            </div>
+                          );
+                        })}
                       </div>
 
-                      <div className="space-y-3">
-                        <div className="text-sm font-medium text-zinc-100 flex items-center gap-2">
-                          <FileSearch className="w-4 h-4 text-violet-400" />
-                          提取结果
-                        </div>
-                        {extractEvents.length > 0 ? (
-                          <div className="space-y-3">
-                            {extractEvents.map((event) => (
-                              <div key={event.id} className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4 space-y-2">
-                                <div className="flex items-center justify-between gap-3 text-xs text-zinc-500">
-                                  <span>{formatDateTime(event.createdAt)}</span>
-                                  {event.nodeId && <span className="font-mono">{event.nodeId}</span>}
-                                </div>
-                                <div className="text-xs text-zinc-400">
-                                  选择器: <span className="font-mono text-zinc-200">{getPayloadString(event.payload, "selector") || "--"}</span>
-                                </div>
-                                <div className="text-xs text-zinc-400">
-                                  属性: <span className="font-mono text-zinc-200">{getPayloadString(event.payload, "property") || "text"}</span>
-                                </div>
-                                <pre className="rounded-md bg-black/30 p-3 text-xs text-zinc-200 whitespace-pre-wrap break-all font-mono max-h-40 overflow-auto">
-                                  {getPayloadString(event.payload, "value") || "[空值]"}
-                                </pre>
-                              </div>
+                      <SectionTitle icon={<Camera className="w-4 h-4 text-fuchsia-400" />} title="截图回放" />
+                      {activeScreenshot ? (
+                        <div className="space-y-3">
+                          <div className="rounded-xl overflow-hidden border border-white/[0.05] bg-black/40">
+                            <img src={`data:${activeScreenshot.mimeType || "image/jpeg"};base64,${activeScreenshot.imageBase64}`} alt="任务截图" className="w-full h-[280px] object-contain bg-black" />
+                          </div>
+                          <div className="text-xs text-zinc-500">截图时间：{formatDateTime(activeScreenshot.createdAt)}</div>
+                          <div className="grid grid-cols-3 gap-3 max-h-[220px] overflow-auto pr-1">
+                            {screenshotEvents.map((event) => (
+                              <button key={event.id} onClick={() => setSelectedScreenshotId(event.id)} className={cn("rounded-lg overflow-hidden border transition-colors bg-black/30", activeScreenshot.id === event.id ? "border-sky-500/60" : "border-white/[0.06] hover:border-white/[0.18]")}>
+                                <img src={`data:${event.mimeType || "image/jpeg"};base64,${event.imageBase64}`} alt="任务缩略图" className="w-full h-24 object-cover bg-black" />
+                                <div className="px-2 py-2 text-[11px] text-zinc-400">{formatDateTime(event.createdAt)}</div>
+                              </button>
                             ))}
                           </div>
-                        ) : (
-                          <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4 text-sm text-zinc-500">
-                            这个任务没有提取类型节点结果。
-                          </div>
-                        )}
-                      </div>
+                        </div>
+                      ) : (
+                        <EmptyBlock text="这个任务还没有持久化截图。" />
+                      )}
 
-                      <div className="space-y-3">
-                        <div className="text-sm font-medium text-zinc-100 flex items-center gap-2">
-                          <SquareTerminal className="w-4 h-4 text-emerald-400" />
-                          工作流快照
+                      <SectionTitle icon={<FileSearch className="w-4 h-4 text-violet-400" />} title="提取结果" />
+                      {extractEvents.length > 0 ? (
+                        <div className="space-y-3">
+                          {extractEvents.map((event) => (
+                            <div key={event.id} className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4 space-y-2">
+                              <div className="flex items-center justify-between gap-3 text-xs text-zinc-500">
+                                <span>{formatDateTime(event.createdAt)}</span>
+                                {event.nodeId && <span className="font-mono">{event.nodeId}</span>}
+                              </div>
+                              <div className="text-xs text-zinc-400">选择器：<span className="font-mono text-zinc-200">{getPayloadString(event.payload, "selector") || "--"}</span></div>
+                              <div className="text-xs text-zinc-400">属性：<span className="font-mono text-zinc-200">{getPayloadString(event.payload, "property") || "text"}</span></div>
+                              <pre className="rounded-md bg-black/30 p-3 text-xs text-zinc-200 whitespace-pre-wrap break-all font-mono max-h-40 overflow-auto">{getPayloadString(event.payload, "value") || "[空值]"}</pre>
+                            </div>
+                          ))}
                         </div>
-                        <div className="rounded-lg border border-white/[0.05] bg-black/30 p-4">
-                          <pre className="text-xs text-zinc-300 whitespace-pre-wrap break-all font-mono max-h-[260px] overflow-auto">
-                            {JSON.stringify(selectedTask.workflowSnapshot ?? selectedTask.workflow?.definition ?? {}, null, 2)}
-                          </pre>
-                        </div>
+                      ) : (
+                        <EmptyBlock text="这个任务没有提取类节点结果。" />
+                      )}
+
+                      <SectionTitle icon={<SquareTerminal className="w-4 h-4 text-emerald-400" />} title="工作流快照" />
+                      <div className="rounded-lg border border-white/[0.05] bg-black/30 p-4">
+                        <pre className="text-xs text-zinc-300 whitespace-pre-wrap break-all font-mono max-h-[260px] overflow-auto">
+                          {JSON.stringify(selectedTask.workflowSnapshot ?? selectedTask.workflow?.definition ?? {}, null, 2)}
+                        </pre>
                       </div>
 
                       {selectedTask.errorMessage && (
-                        <div className="space-y-3">
-                          <div className="text-sm font-medium text-zinc-100 flex items-center gap-2">
-                            <AlertCircle className="w-4 h-4 text-red-400" />
-                            错误信息
-                          </div>
+                        <>
+                          <SectionTitle icon={<AlertCircle className="w-4 h-4 text-red-400" />} title="错误信息" />
                           <div className="rounded-lg border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-200">
                             {selectedTask.errorMessage}
                           </div>
-                        </div>
+                        </>
                       )}
-
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4">
-                          <div className="text-zinc-500 text-xs mb-2">执行入口</div>
-                          <div className="text-zinc-100 flex items-center gap-2">
-                            <PlayCircle className="w-4 h-4 text-sky-400" />
-                            POST /api/tasks/run
-                          </div>
-                        </div>
-                        <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4">
-                          <div className="text-zinc-500 text-xs mb-2">详情接口</div>
-                          <div className="text-zinc-100 flex items-center gap-2">
-                            <Workflow className="w-4 h-4 text-emerald-400" />
-                            GET /api/tasks/:id
-                          </div>
-                        </div>
-                      </div>
                     </>
                   )}
                 </div>
@@ -716,6 +653,23 @@ export function MonitorCenter() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function SectionTitle({ icon, title }: { icon: ReactNode; title: string }) {
+  return (
+    <div className="text-sm font-medium text-zinc-100 flex items-center gap-2">
+      {icon}
+      {title}
+    </div>
+  );
+}
+
+function EmptyBlock({ text }: { text: string }) {
+  return (
+    <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4 text-sm text-zinc-500">
+      {text}
     </div>
   );
 }

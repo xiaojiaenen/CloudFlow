@@ -25,6 +25,7 @@ import {
   createWorkflow,
   ExecutionNodeStatus,
   getTask,
+  getAuthToken,
   getWorkflow,
   getWsBaseUrl,
   hydrateCanvasFromWorkflow,
@@ -293,6 +294,9 @@ export default function Workspace() {
     if (!socketRef.current) {
       socketRef.current = io(`${getWsBaseUrl()}/tasks`, {
         transports: ["websocket"],
+        auth: {
+          token: getAuthToken(),
+        },
       });
     }
 

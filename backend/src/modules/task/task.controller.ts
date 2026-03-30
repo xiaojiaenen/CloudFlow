@@ -31,6 +31,7 @@ export class TaskController {
     @Query('triggerSource') triggerSource?: string,
     @Query('workflowId') workflowId?: string,
     @Query('activeOnly') activeOnly?: string,
+    @Query('search') search?: string,
     @Req() request?: AuthenticatedRequest,
   ) {
     return this.taskService.findAll({
@@ -40,7 +41,29 @@ export class TaskController {
       triggerSource,
       workflowId,
       activeOnly,
+      search,
     }, request?.user);
+  }
+
+  @Get('summary')
+  summary(
+    @Query('status') status?: string,
+    @Query('triggerSource') triggerSource?: string,
+    @Query('workflowId') workflowId?: string,
+    @Query('activeOnly') activeOnly?: string,
+    @Query('search') search?: string,
+    @Req() request?: AuthenticatedRequest,
+  ) {
+    return this.taskService.getSummary(
+      {
+        status,
+        triggerSource,
+        workflowId,
+        activeOnly,
+        search,
+      },
+      request?.user,
+    );
   }
 
   @Get(':id')
@@ -51,5 +74,10 @@ export class TaskController {
   @Post(':id/cancel')
   cancel(@Param('id') id: string, @Req() request: AuthenticatedRequest) {
     return this.taskService.cancel(id, request.user);
+  }
+
+  @Post(':id/retry')
+  retry(@Param('id') id: string, @Req() request: AuthenticatedRequest) {
+    return this.taskService.retry(id, request.user);
   }
 }

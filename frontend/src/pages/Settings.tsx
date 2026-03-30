@@ -4,8 +4,9 @@ import { Sidebar } from "@/src/components/Sidebar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/src/components/ui/Card";
 import { Button } from "@/src/components/ui/Button";
 import { Input } from "@/src/components/ui/Input";
-import { ArrowRight, CalendarClock, Clock3, Mail, PauseCircle, RefreshCw, Settings2, Workflow } from "lucide-react";
-import { listWorkflowSchedules, updateWorkflow, WorkflowScheduleRecord } from "@/src/lib/cloudflow";
+import { ArrowRight, CalendarClock, Clock3, KeyRound, Mail, PauseCircle, RefreshCw, Settings2, UserRound, Workflow } from "lucide-react";
+import { useAuth } from "@/src/context/AuthContext";
+import { changeCurrentUserPassword, listWorkflowSchedules, updateCurrentUserProfile, updateWorkflow, WorkflowScheduleRecord } from "@/src/lib/cloudflow";
 import { cn } from "@/src/lib/utils";
 
 function formatDateTime(value?: string | null) {
@@ -55,6 +56,7 @@ function getTaskStatusMeta(status?: WorkflowScheduleRecord["lastScheduledTask"] 
 
 export default function Settings() {
   const navigate = useNavigate();
+  const { user, refreshUser } = useAuth();
   const [schedules, setSchedules] = useState<WorkflowScheduleRecord[]>([]);
   const [page, setPage] = useState(1);
   const [pageSize] = useState(6);
@@ -65,6 +67,13 @@ export default function Settings() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [updatingWorkflowId, setUpdatingWorkflowId] = useState<string | null>(null);
+  const [profileName, setProfileName] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [profileMessage, setProfileMessage] = useState("");
 
   const loadSchedules = useCallback(async () => {
     try {
@@ -97,6 +106,10 @@ export default function Settings() {
   useEffect(() => {
     setPage(1);
   }, [search, statusFilter]);
+
+  useEffect(() => {
+    setProfileName(user?.name ?? "");
+  }, [user?.name]);
 
   const metrics = useMemo(() => {
     const withAlerts = schedules.filter((item) => Boolean(item.alertEmail)).length;
@@ -412,6 +425,99 @@ export default function Settings() {
                 <div>3. 下一次执行时间来自 BullMQ 调度器的 `next` 字段，因此可以直接反映当前队列状态。</div>
               </CardContent>
             </Card>
+
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center gap-2 mb-1">
+                    <UserRound className="w-5 h-5 text-sky-400" />
+                    <CardTitle>个人资料</CardTitle>
+                  </div>
+                  <CardDescription>普通用户和管理员都可以在这里维护自己的显示名称。</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <Input value={user?.email ?? ""} disabled placeholder="邮箱" />
+                  <Input value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="显示名称" />
+                  <div className="text-xs text-zinc-500">当前角色：{user?.role === "admin" ? "管理员" : "普通用户"}</div>
+                  <div className="flex justify-end">
+                    <Button
+                      disabled={!profileName.trim() || isSavingProfile}
+                      onClick={async () => {
+                        try {
+                          setIsSavingProfile(true);
+                          setProfileMessage("");
+                          await updateCurrentUserProfile({ name: profileName.trim() });
+                          await refreshUser();
+                          setProfileMessage("个人资料已更新。");
+                        } catch (error) {
+                          setProfileMessage(error instanceof Error ? error.message : "更新个人资料失败。");
+                        } finally {
+                          setIsSavingProfile(false);
+                        }
+                      }}
+                    >
+                      {isSavingProfile ? "保存中..." : "保存资料"}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center gap-2 mb-1">
+                    <KeyRound className="w-5 h-5 text-amber-400" />
+                    <CardTitle>账户安全</CardTitle>
+                  </div>
+                  <CardDescription>普通用户可以自助修改登录密码，不再依赖管理员重置。</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <Input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} placeholder="当前密码" />
+                  <Input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="新密码，至少 8 位" />
+                  <Input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} placeholder="再次输入新密码" />
+                  <div className="flex justify-end">
+                    <Button
+                      disabled={
+                        !currentPassword.trim() ||
+                        newPassword.trim().length < 8 ||
+                        confirmPassword !== newPassword ||
+                        isChangingPassword
+                      }
+                      onClick={async () => {
+                        if (newPassword !== confirmPassword) {
+                          setProfileMessage("两次输入的新密码不一致。");
+                          return;
+                        }
+
+                        try {
+                          setIsChangingPassword(true);
+                          setProfileMessage("");
+                          await changeCurrentUserPassword({
+                            currentPassword,
+                            newPassword,
+                          });
+                          setCurrentPassword("");
+                          setNewPassword("");
+                          setConfirmPassword("");
+                          setProfileMessage("密码已修改成功。");
+                        } catch (error) {
+                          setProfileMessage(error instanceof Error ? error.message : "修改密码失败。");
+                        } finally {
+                          setIsChangingPassword(false);
+                        }
+                      }}
+                    >
+                      {isChangingPassword ? "提交中..." : "修改密码"}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            {profileMessage && (
+              <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3 text-sm text-zinc-300">
+                {profileMessage}
+              </div>
+            )}
           </div>
         </div>
       </div>

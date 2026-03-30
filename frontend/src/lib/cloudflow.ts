@@ -90,6 +90,21 @@ export interface TaskRecord {
   executionEvents?: TaskExecutionRecord[];
 }
 
+export interface TaskSummaryRecord {
+  total: number;
+  byStatus: {
+    pending: number;
+    running: number;
+    success: number;
+    failed: number;
+    cancelled: number;
+  };
+  byTriggerSource: {
+    manual: number;
+    schedule: number;
+  };
+}
+
 export interface AlertRecord {
   id: string;
   level: "error" | "warning" | "success";
@@ -740,6 +755,7 @@ export async function listTasks(params?: {
   triggerSource?: TaskRecord["triggerSource"];
   workflowId?: string;
   activeOnly?: boolean;
+  search?: string;
 }) {
   const query = new URLSearchParams();
 
@@ -767,6 +783,10 @@ export async function listTasks(params?: {
     query.set("activeOnly", "true");
   }
 
+  if (params?.search?.trim()) {
+    query.set("search", params.search.trim());
+  }
+
   const response = await fetch(`${API_BASE_URL}/tasks${query.toString() ? `?${query.toString()}` : ""}`, {
     headers: buildAuthHeaders(),
   });
@@ -776,6 +796,46 @@ export async function listTasks(params?: {
   }
 
   return (await response.json()) as PaginatedResponse<TaskRecord>;
+}
+
+export async function getTaskSummary(params?: {
+  status?: TaskRecord["status"];
+  triggerSource?: TaskRecord["triggerSource"];
+  workflowId?: string;
+  activeOnly?: boolean;
+  search?: string;
+}) {
+  const query = new URLSearchParams();
+
+  if (params?.status) {
+    query.set("status", params.status);
+  }
+
+  if (params?.triggerSource) {
+    query.set("triggerSource", params.triggerSource);
+  }
+
+  if (params?.workflowId) {
+    query.set("workflowId", params.workflowId);
+  }
+
+  if (params?.activeOnly) {
+    query.set("activeOnly", "true");
+  }
+
+  if (params?.search?.trim()) {
+    query.set("search", params.search.trim());
+  }
+
+  const response = await fetch(`${API_BASE_URL}/tasks/summary${query.toString() ? `?${query.toString()}` : ""}`, {
+    headers: buildAuthHeaders(),
+  });
+
+  if (!response.ok) {
+    throw new Error(`读取任务统计失败 (${response.status})`);
+  }
+
+  return (await response.json()) as TaskSummaryRecord;
 }
 
 export async function getTask(id: string) {
@@ -850,6 +910,19 @@ export async function cancelTask(taskId: string) {
   return (await response.json()) as TaskRecord;
 }
 
+export async function retryTask(taskId: string) {
+  const response = await fetch(`${API_BASE_URL}/tasks/${taskId}/retry`, {
+    method: "POST",
+    headers: buildAuthHeaders(),
+  });
+
+  if (!response.ok) {
+    throw new Error(`重试任务失败 (${response.status})`);
+  }
+
+  return (await response.json()) as TaskRecord;
+}
+
 export async function login(payload: { email: string; password: string }) {
   const response = await fetch(`${API_BASE_URL}/auth/login`, {
     method: "POST",
@@ -879,6 +952,43 @@ export async function getCurrentUser() {
   }
 
   return (await response.json()) as UserRecord;
+}
+
+export async function updateCurrentUserProfile(payload: { name: string }) {
+  const response = await fetch(`${API_BASE_URL}/auth/me`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildAuthHeaders(),
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(`更新个人资料失败 (${response.status})`);
+  }
+
+  return (await response.json()) as UserRecord;
+}
+
+export async function changeCurrentUserPassword(payload: {
+  currentPassword: string;
+  newPassword: string;
+}) {
+  const response = await fetch(`${API_BASE_URL}/auth/change-password`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildAuthHeaders(),
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(`修改密码失败 (${response.status})`);
+  }
+
+  return (await response.json()) as { success: boolean };
 }
 
 export async function listUsers() {
