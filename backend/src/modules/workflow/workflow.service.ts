@@ -47,6 +47,114 @@ export class WorkflowService {
     });
   }
 
+  async findSchedules(filters?: {
+    page?: string;
+    pageSize?: string;
+  }): Promise<{
+    items: Array<{
+      id: string;
+      name: string;
+      description: string | null;
+      scheduleCron: string | null;
+      scheduleTimezone: string | null;
+      nextRunAt: string | null;
+      lastScheduledTask: {
+        id: string;
+        status: string;
+        createdAt: Date;
+        startedAt: Date | null;
+        completedAt: Date | null;
+      } | null;
+      alertEmail: string | null;
+      alertOnFailure: boolean;
+      alertOnSuccess: boolean;
+      updatedAt: Date;
+    }>;
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  }> {
+    const page = Math.max(1, Number(filters?.page ?? 1) || 1);
+    const pageSize = Math.min(50, Math.max(1, Number(filters?.pageSize ?? 8) || 8));
+    const where = {
+      deletedAt: null,
+      scheduleEnabled: true,
+    } as const;
+
+    const [workflows, total] = await Promise.all([
+      this.prismaService.workflow.findMany({
+        where,
+        orderBy: {
+          updatedAt: 'desc',
+        },
+        include: {
+          tasks: {
+            where: {
+              triggerSource: 'schedule',
+            },
+            orderBy: {
+              createdAt: 'desc',
+            },
+            take: 1,
+          },
+        },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+      this.prismaService.workflow.count({
+        where,
+      }),
+    ]);
+
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const safePage = Math.min(page, totalPages);
+
+    if (safePage !== page) {
+      return this.findSchedules({
+        page: String(safePage),
+        pageSize: String(pageSize),
+      });
+    }
+
+    const items = await Promise.all(
+      workflows.map(async (workflow) => {
+        const scheduler = await this.queueService.getWorkflowScheduler(workflow.id);
+        const latestScheduledTask = workflow.tasks[0] ?? null;
+
+        return {
+          id: workflow.id,
+          name: workflow.name,
+          description: workflow.description,
+          scheduleCron: workflow.scheduleCron,
+          scheduleTimezone: workflow.scheduleTimezone,
+          nextRunAt: scheduler?.next ? new Date(scheduler.next).toISOString() : null,
+          lastScheduledTask: latestScheduledTask
+            ? {
+                id: latestScheduledTask.id,
+                status: latestScheduledTask.status,
+                createdAt: latestScheduledTask.createdAt,
+                startedAt: latestScheduledTask.startedAt,
+                completedAt: latestScheduledTask.completedAt,
+              }
+            : null,
+          alertEmail: workflow.alertEmail,
+          alertOnFailure: workflow.alertOnFailure,
+          alertOnSuccess: workflow.alertOnSuccess,
+          updatedAt: workflow.updatedAt,
+        };
+      }),
+    );
+
+    return {
+      items,
+      page: safePage,
+      pageSize,
+      total,
+      totalPages,
+    };
+  }
+
   async findOne(id: string) {
     const workflow = await this.prismaService.workflow.findUnique({
       where: { id },

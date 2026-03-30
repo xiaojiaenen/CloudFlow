@@ -101,6 +101,26 @@ export interface AlertRecord {
   taskStatus: "pending" | "running" | "success" | "failed" | "cancelled";
 }
 
+export interface WorkflowScheduleRecord {
+  id: string;
+  name: string;
+  description?: string | null;
+  scheduleCron?: string | null;
+  scheduleTimezone?: string | null;
+  nextRunAt?: string | null;
+  updatedAt: string;
+  alertEmail?: string | null;
+  alertOnFailure?: boolean;
+  alertOnSuccess?: boolean;
+  lastScheduledTask?: {
+    id: string;
+    status: "pending" | "running" | "success" | "failed" | "cancelled";
+    createdAt: string;
+    startedAt?: string | null;
+    completedAt?: string | null;
+  } | null;
+}
+
 export interface TaskEvent {
   taskId: string;
   type: "log" | "screenshot" | "status" | "extract";
@@ -323,6 +343,29 @@ export async function deleteWorkflow(id: string) {
   }
 
   return (await response.json()) as { id: string; deletedAt: string };
+}
+
+export async function listWorkflowSchedules(params?: {
+  page?: number;
+  pageSize?: number;
+}) {
+  const query = new URLSearchParams();
+
+  if (params?.page) {
+    query.set("page", String(params.page));
+  }
+
+  if (params?.pageSize) {
+    query.set("pageSize", String(params.pageSize));
+  }
+
+  const response = await fetch(`${API_BASE_URL}/workflows/schedules${query.toString() ? `?${query.toString()}` : ""}`);
+
+  if (!response.ok) {
+    throw new Error(`读取调度列表失败 (${response.status})`);
+  }
+
+  return (await response.json()) as PaginatedResponse<WorkflowScheduleRecord>;
 }
 
 export async function listTasks(params?: {

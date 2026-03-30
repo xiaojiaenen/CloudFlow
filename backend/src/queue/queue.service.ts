@@ -175,6 +175,10 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  async getWorkflowScheduler(workflowId: string) {
+    return this.schedulerQueue.getJobScheduler(this.getSchedulerId(workflowId));
+  }
+
   async requestTaskCancellation(taskId: string) {
     await this.publisher.set(this.getCancellationKey(taskId), '1', 'EX', 60 * 60 * 24);
     await this.publisher.publish(TASK_CANCEL_CHANNEL, JSON.stringify({ taskId }));

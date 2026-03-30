@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { CreateWorkflowDto } from './dto/create-workflow.dto';
 import { UpdateWorkflowDto } from './dto/update-workflow.dto';
 import { WorkflowService } from './workflow.service';
@@ -15,6 +15,17 @@ export class WorkflowController {
   @Get()
   findAll() {
     return this.workflowService.findAll();
+  }
+
+  @Get('schedules')
+  findSchedules(
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    return this.workflowService.findSchedules({
+      page,
+      pageSize,
+    });
   }
 
   @Get(':id')
