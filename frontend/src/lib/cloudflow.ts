@@ -42,8 +42,17 @@ export interface WorkflowRecord {
   name: string;
   description?: string | null;
   definition: WorkflowApiDefinition;
+  scheduleEnabled?: boolean;
+  scheduleCron?: string | null;
+  scheduleTimezone?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface WorkflowSchedulePayload {
+  enabled: boolean;
+  cron?: string;
+  timezone?: string;
 }
 
 export interface TaskRecord {
@@ -230,6 +239,7 @@ export async function createWorkflow(payload: {
   name: string;
   description?: string;
   definition: WorkflowApiDefinition;
+  schedule?: WorkflowSchedulePayload;
 }) {
   const response = await fetch(`${API_BASE_URL}/workflows`, {
     method: "POST",
@@ -252,6 +262,7 @@ export async function updateWorkflow(
     name?: string;
     description?: string;
     definition?: WorkflowApiDefinition;
+    schedule?: WorkflowSchedulePayload;
   },
 ) {
   const response = await fetch(`${API_BASE_URL}/workflows/${id}`, {

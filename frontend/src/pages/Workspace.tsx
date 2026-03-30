@@ -87,6 +87,9 @@ export default function Workspace() {
   const [nodeStatuses, setNodeStatuses] = useState<Record<string, ExecutionNodeStatus>>({});
   const [workflowName, setWorkflowName] = useState("未命名工作流");
   const [workflowDescription, setWorkflowDescription] = useState("由前端画布编辑的工作流");
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [scheduleCron, setScheduleCron] = useState("0 0 * * *");
+  const [scheduleTimezone, setScheduleTimezone] = useState("Asia/Shanghai");
   const [canvasVersion, setCanvasVersion] = useState(0);
 
   const socketRef = useRef<Socket | null>(null);
@@ -94,6 +97,13 @@ export default function Workspace() {
   const lastFlowSnapshotRef = useRef<string>("");
 
   const pageUrl = useMemo(() => getPrimaryPageUrl(flowNodes), [flowNodes]);
+  const scheduleSummary = useMemo(() => {
+    if (!scheduleEnabled) {
+      return "未启用定时调度";
+    }
+
+    return `定时调度已启用 · ${scheduleCron || "--"} · ${scheduleTimezone || "Asia/Shanghai"}`;
+  }, [scheduleCron, scheduleEnabled, scheduleTimezone]);
 
   const resetCanvasWithWorkflow = useCallback((workflow?: WorkflowRecord | null) => {
     const graph = workflow ? hydrateCanvasFromWorkflow(workflow.definition) : createEmptyCanvasGraph();
@@ -104,6 +114,9 @@ export default function Workspace() {
 
     setWorkflowName(workflow?.name ?? "未命名工作流");
     setWorkflowDescription(workflow?.description ?? "由前端画布编辑的工作流");
+    setScheduleEnabled(workflow?.scheduleEnabled ?? false);
+    setScheduleCron(workflow?.scheduleCron ?? "0 0 * * *");
+    setScheduleTimezone(workflow?.scheduleTimezone ?? "Asia/Shanghai");
     setFlowNodes(graph.nodes);
     setFlowEdges(graph.edges);
     setNodeStatuses(buildIdleNodeStatuses(graph.nodes));
@@ -157,6 +170,11 @@ export default function Workspace() {
         name: workflowName.trim() || "未命名工作流",
         description: workflowDescription.trim() || "由前端画布编辑的工作流",
         definition,
+        schedule: {
+          enabled: scheduleEnabled,
+          cron: scheduleEnabled ? scheduleCron.trim() : undefined,
+          timezone: scheduleEnabled ? scheduleTimezone : undefined,
+        },
       };
 
       setIsSavingWorkflow(true);
@@ -177,11 +195,25 @@ export default function Workspace() {
         }
 
         return workflow;
+      } catch (error) {
+        addLog("error", error instanceof Error ? error.message : "保存工作流失败。");
+        throw error;
       } finally {
         setIsSavingWorkflow(false);
       }
     },
-    [addLog, flowEdges, flowNodes, navigate, workflowDescription, workflowId, workflowName],
+    [
+      addLog,
+      flowEdges,
+      flowNodes,
+      navigate,
+      scheduleCron,
+      scheduleEnabled,
+      scheduleTimezone,
+      workflowDescription,
+      workflowId,
+      workflowName,
+    ],
   );
 
   useEffect(() => {
@@ -416,7 +448,9 @@ export default function Workspace() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => void persistWorkflow()}
+              onClick={() => {
+                void persistWorkflow().catch(() => undefined);
+              }}
               disabled={isSavingWorkflow || isLoadingWorkflow}
               className="h-8 gap-2"
             >
@@ -434,7 +468,9 @@ export default function Workspace() {
           <div className="text-xs text-zinc-500">
             {workflowId ? `当前工作流 ID: ${workflowId}` : "当前为未保存工作流"}
           </div>
-          <div className="text-xs text-zinc-500">{isLoadingWorkflow ? "正在加载工作流..." : workflowDescription}</div>
+          <div className="text-xs text-zinc-500">
+            {isLoadingWorkflow ? "正在加载工作流..." : `${workflowDescription} · ${scheduleSummary}`}
+          </div>
         </div>
 
         <div className="flex-1 flex overflow-hidden relative">
@@ -505,21 +541,38 @@ export default function Workspace() {
                   <div className="text-sm font-medium text-zinc-200">启用定时调度</div>
                   <div className="text-xs text-zinc-500">按设定的时间周期自动运行此工作流</div>
                 </div>
-                <Switch checked={true} />
+                <Switch checked={scheduleEnabled} onCheckedChange={setScheduleEnabled} />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-zinc-300">Cron 表达式</label>
-                <Input defaultValue="0 0 * * *" className="font-mono text-sm" />
-                <p className="text-xs text-zinc-500">每天凌晨 00:00 执行</p>
+                <Input
+                  value={scheduleCron}
+                  onChange={(event) => setScheduleCron(event.target.value)}
+                  className="font-mono text-sm"
+                  placeholder="例如：0 0 * * *"
+                  disabled={!scheduleEnabled}
+                />
+                <p className="text-xs text-zinc-500">支持标准 Cron 表达式，例如 `0 0 * * *` 表示每天凌晨 00:00。</p>
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-zinc-300">时区</label>
-                <select className="flex h-10 w-full rounded-md border border-white/[0.06] bg-zinc-900/50 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500">
+                <select
+                  value={scheduleTimezone}
+                  onChange={(event) => setScheduleTimezone(event.target.value)}
+                  disabled={!scheduleEnabled}
+                  className="flex h-10 w-full rounded-md border border-white/[0.06] bg-zinc-900/50 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50"
+                >
                   <option value="Asia/Shanghai" className="bg-zinc-800 text-zinc-200">
                     Asia/Shanghai (UTC+8)
                   </option>
                   <option value="UTC" className="bg-zinc-800 text-zinc-200">
                     UTC
+                  </option>
+                  <option value="Asia/Tokyo" className="bg-zinc-800 text-zinc-200">
+                    Asia/Tokyo (UTC+9)
+                  </option>
+                  <option value="America/New_York" className="bg-zinc-800 text-zinc-200">
+                    America/New_York (UTC-4/-5)
                   </option>
                 </select>
               </div>
@@ -566,9 +619,16 @@ export default function Workspace() {
             </Button>
             <Button
               className="bg-sky-600 hover:bg-sky-700 text-white border-transparent"
-              onClick={() => setSettingsOpen(false)}
+              onClick={async () => {
+                try {
+                  await persistWorkflow();
+                  setSettingsOpen(false);
+                } catch {
+                  // persistWorkflow already surfaces errors in the log panel.
+                }
+              }}
             >
-              保存配置
+              {isSavingWorkflow ? "保存中..." : "保存配置"}
             </Button>
           </div>
         </DialogContent>

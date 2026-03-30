@@ -1,6 +1,8 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Queue } from 'bullmq';
+import { Prisma, Workflow } from '@prisma/client';
+import { Job, Queue, Worker } from 'bullmq';
+import { parseExpression } from 'cron-parser';
 import IORedis from 'ioredis';
 import {
   TASK_CANCEL_CHANNEL,
@@ -8,6 +10,8 @@ import {
   TASK_EVENTS_CHANNEL,
   TASK_EXECUTION_JOB_NAME,
   TASK_QUEUE_NAME,
+  WORKFLOW_SCHEDULE_JOB_NAME,
+  WORKFLOW_SCHEDULER_QUEUE_NAME,
 } from 'src/common/constants/redis.constants';
 import {
   TaskExecutionEvent,
@@ -15,15 +19,26 @@ import {
   TaskLogLevel,
   TaskQueuePayload,
 } from 'src/common/types/execution-event.types';
+import { WorkflowDefinition } from 'src/common/types/workflow.types';
+import { PrismaService } from 'src/prisma/prisma.service';
+
+interface WorkflowSchedulePayload {
+  workflowId: string;
+}
 
 @Injectable()
-export class QueueService implements OnModuleDestroy {
+export class QueueService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(QueueService.name);
   private readonly queue: Queue<TaskQueuePayload>;
+  private readonly schedulerQueue: Queue<WorkflowSchedulePayload>;
+  private readonly schedulerWorker: Worker<WorkflowSchedulePayload>;
   private readonly connection: IORedis;
   private readonly publisher: IORedis;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly prismaService: PrismaService,
+  ) {
     const redisUrl = this.configService.get<string>('REDIS_URL', 'redis://127.0.0.1:6379');
 
     this.connection = new IORedis(redisUrl, {
@@ -43,6 +58,41 @@ export class QueueService implements OnModuleDestroy {
         removeOnFail: 1000,
       },
     });
+
+    this.schedulerQueue = new Queue<WorkflowSchedulePayload>(WORKFLOW_SCHEDULER_QUEUE_NAME, {
+      connection: this.connection,
+      defaultJobOptions: {
+        removeOnComplete: 100,
+        removeOnFail: 1000,
+      },
+    });
+
+    this.schedulerWorker = new Worker<WorkflowSchedulePayload>(
+      WORKFLOW_SCHEDULER_QUEUE_NAME,
+      async (job) => {
+        if (job.name !== WORKFLOW_SCHEDULE_JOB_NAME) {
+          return;
+        }
+
+        await this.handleScheduledWorkflow(job);
+      },
+      {
+        connection: this.connection,
+        concurrency: 1,
+      },
+    );
+
+    this.schedulerWorker.on('ready', () => {
+      this.logger.log('Workflow scheduler worker is ready');
+    });
+
+    this.schedulerWorker.on('failed', (job, error) => {
+      this.logger.error(`Workflow schedule job ${job?.id} failed`, error.stack);
+    });
+  }
+
+  async onModuleInit() {
+    await this.syncAllWorkflowSchedules();
   }
 
   async enqueueTask(payload: TaskQueuePayload) {
@@ -68,6 +118,61 @@ export class QueueService implements OnModuleDestroy {
 
     await job.remove();
     return true;
+  }
+
+  async validateWorkflowSchedule(schedule?: {
+    enabled?: boolean;
+    cron?: string | null;
+    timezone?: string | null;
+  }) {
+    if (!schedule?.enabled) {
+      return;
+    }
+
+    if (!schedule.cron?.trim()) {
+      throw new Error('启用定时调度时必须提供 Cron 表达式。');
+    }
+
+    parseExpression(schedule.cron.trim(), {
+      tz: schedule.timezone?.trim() || 'Asia/Shanghai',
+    });
+  }
+
+  async syncWorkflowSchedule(workflow: {
+    id: string;
+    scheduleEnabled: boolean;
+    scheduleCron: string | null;
+    scheduleTimezone: string | null;
+  }) {
+    const schedulerId = this.getSchedulerId(workflow.id);
+
+    if (!workflow.scheduleEnabled || !workflow.scheduleCron) {
+      await this.schedulerQueue.removeJobScheduler(schedulerId);
+      this.logger.log(`Removed scheduler for workflow ${workflow.id}`);
+      return;
+    }
+
+    await this.schedulerQueue.upsertJobScheduler(
+      schedulerId,
+      {
+        pattern: workflow.scheduleCron,
+        tz: workflow.scheduleTimezone || 'Asia/Shanghai',
+      },
+      {
+        name: WORKFLOW_SCHEDULE_JOB_NAME,
+        data: {
+          workflowId: workflow.id,
+        },
+        opts: {
+          removeOnComplete: 100,
+          removeOnFail: 1000,
+        },
+      },
+    );
+
+    this.logger.log(
+      `Synced scheduler for workflow ${workflow.id} with cron "${workflow.scheduleCron}" (${workflow.scheduleTimezone || 'Asia/Shanghai'})`,
+    );
   }
 
   async requestTaskCancellation(taskId: string) {
@@ -113,11 +218,65 @@ export class QueueService implements OnModuleDestroy {
     });
   }
 
+  private async syncAllWorkflowSchedules() {
+    const workflows = await this.prismaService.workflow.findMany({
+      select: {
+        id: true,
+        scheduleEnabled: true,
+        scheduleCron: true,
+        scheduleTimezone: true,
+      },
+    });
+
+    for (const workflow of workflows) {
+      await this.syncWorkflowSchedule(workflow);
+    }
+  }
+
+  private async handleScheduledWorkflow(job: Job<WorkflowSchedulePayload>) {
+    const workflow = await this.prismaService.workflow.findUnique({
+      where: { id: job.data.workflowId },
+    });
+
+    if (!workflow || !workflow.scheduleEnabled || !workflow.scheduleCron) {
+      await this.schedulerQueue.removeJobScheduler(this.getSchedulerId(job.data.workflowId));
+      return;
+    }
+
+    const task = await this.createTaskFromWorkflow(workflow);
+
+    await this.publishLog(task.id, `定时调度已触发工作流“${workflow.name}”。`, 'info');
+    await this.publishStatus(task.id, 'pending');
+  }
+
+  private async createTaskFromWorkflow(workflow: Workflow) {
+    const task = await this.prismaService.task.create({
+      data: {
+        workflowId: workflow.id,
+        status: 'pending',
+        workflowSnapshot: workflow.definition as Prisma.InputJsonValue,
+      },
+    });
+
+    await this.enqueueTask({
+      taskId: task.id,
+      workflow: workflow.definition as unknown as WorkflowDefinition,
+    });
+
+    return task;
+  }
+
+  private getSchedulerId(workflowId: string) {
+    return `workflow-scheduler:${workflowId}`;
+  }
+
   private getCancellationKey(taskId: string) {
     return `${TASK_CANCEL_KEY_PREFIX}${taskId}`;
   }
 
   async onModuleDestroy() {
+    await this.schedulerWorker.close();
+    await this.schedulerQueue.close();
     await this.queue.close();
     await this.publisher.quit();
     await this.connection.quit();

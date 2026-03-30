@@ -1,21 +1,35 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { QueueService } from 'src/queue/queue.service';
 import { CreateWorkflowDto } from './dto/create-workflow.dto';
 import { UpdateWorkflowDto } from './dto/update-workflow.dto';
 
 @Injectable()
 export class WorkflowService {
-  constructor(private readonly prismaService: PrismaService) {}
+  constructor(
+    private readonly prismaService: PrismaService,
+    private readonly queueService: QueueService,
+  ) {}
 
   async create(createWorkflowDto: CreateWorkflowDto) {
-    return this.prismaService.workflow.create({
+    await this.validateSchedule(createWorkflowDto.schedule);
+
+    const workflow = await this.prismaService.workflow.create({
       data: {
         name: createWorkflowDto.name,
         description: createWorkflowDto.description,
         definition: createWorkflowDto.definition as unknown as Prisma.InputJsonValue,
+        scheduleEnabled: createWorkflowDto.schedule?.enabled ?? false,
+        scheduleCron: createWorkflowDto.schedule?.enabled ? createWorkflowDto.schedule.cron?.trim() ?? null : null,
+        scheduleTimezone: createWorkflowDto.schedule?.enabled
+          ? createWorkflowDto.schedule.timezone?.trim() || 'Asia/Shanghai'
+          : null,
       },
     });
+
+    await this.queueService.syncWorkflowSchedule(workflow);
+    return workflow;
   }
 
   async findAll() {
@@ -39,9 +53,22 @@ export class WorkflowService {
   }
 
   async update(id: string, updateWorkflowDto: UpdateWorkflowDto) {
-    await this.findOne(id);
+    const existingWorkflow = await this.findOne(id);
+    const nextSchedule = updateWorkflowDto.schedule
+      ? {
+          enabled: updateWorkflowDto.schedule.enabled,
+          cron: updateWorkflowDto.schedule.cron,
+          timezone: updateWorkflowDto.schedule.timezone,
+        }
+      : {
+          enabled: existingWorkflow.scheduleEnabled,
+          cron: existingWorkflow.scheduleCron,
+          timezone: existingWorkflow.scheduleTimezone,
+        };
 
-    return this.prismaService.workflow.update({
+    await this.validateSchedule(nextSchedule);
+
+    const workflow = await this.prismaService.workflow.update({
       where: { id },
       data: {
         ...(updateWorkflowDto.name ? { name: updateWorkflowDto.name } : {}),
@@ -53,7 +80,35 @@ export class WorkflowService {
               definition: updateWorkflowDto.definition as unknown as Prisma.InputJsonValue,
             }
           : {}),
+        ...(updateWorkflowDto.schedule
+          ? {
+              scheduleEnabled: updateWorkflowDto.schedule.enabled,
+              scheduleCron: updateWorkflowDto.schedule.enabled
+                ? updateWorkflowDto.schedule.cron?.trim() ?? null
+                : null,
+              scheduleTimezone: updateWorkflowDto.schedule.enabled
+                ? updateWorkflowDto.schedule.timezone?.trim() || 'Asia/Shanghai'
+                : null,
+            }
+          : {}),
       },
     });
+
+    await this.queueService.syncWorkflowSchedule(workflow);
+    return workflow;
+  }
+
+  private async validateSchedule(schedule?: {
+    enabled?: boolean;
+    cron?: string | null;
+    timezone?: string | null;
+  }) {
+    try {
+      await this.queueService.validateWorkflowSchedule(schedule);
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : '工作流调度配置无效。',
+      );
+    }
   }
 }

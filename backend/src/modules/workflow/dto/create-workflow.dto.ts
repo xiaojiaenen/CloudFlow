@@ -1,4 +1,4 @@
-import { IsArray, IsNumber, IsObject, IsOptional, IsString, ValidateNested } from 'class-validator';
+import { IsArray, IsBoolean, IsNumber, IsObject, IsOptional, IsString, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 
 class WorkflowNodeDto {
@@ -55,6 +55,19 @@ class WorkflowCanvasDto {
   edges!: WorkflowCanvasEdgeDto[];
 }
 
+export class WorkflowScheduleDto {
+  @IsBoolean()
+  enabled!: boolean;
+
+  @IsOptional()
+  @IsString()
+  cron?: string;
+
+  @IsOptional()
+  @IsString()
+  timezone?: string;
+}
+
 export class WorkflowDefinitionDto {
   @IsArray()
   @ValidateNested({ each: true })
@@ -78,4 +91,9 @@ export class CreateWorkflowDto {
   @ValidateNested()
   @Type(() => WorkflowDefinitionDto)
   definition!: WorkflowDefinitionDto;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => WorkflowScheduleDto)
+  schedule?: WorkflowScheduleDto;
 }

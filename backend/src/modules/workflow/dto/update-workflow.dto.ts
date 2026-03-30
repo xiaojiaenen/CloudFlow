@@ -1,6 +1,6 @@
 import { Type } from 'class-transformer';
 import { IsOptional, IsString, ValidateNested } from 'class-validator';
-import { WorkflowDefinitionDto } from './create-workflow.dto';
+import { WorkflowDefinitionDto, WorkflowScheduleDto } from './create-workflow.dto';
 
 export class UpdateWorkflowDto {
   @IsOptional()
@@ -15,4 +15,9 @@ export class UpdateWorkflowDto {
   @ValidateNested()
   @Type(() => WorkflowDefinitionDto)
   definition?: WorkflowDefinitionDto;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => WorkflowScheduleDto)
+  schedule?: WorkflowScheduleDto;
 }
