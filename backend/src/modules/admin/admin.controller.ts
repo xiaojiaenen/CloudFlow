@@ -1,11 +1,27 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Put, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Put,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
+import { AuthenticatedRequest } from '../auth/auth.types';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { AdminService } from './admin.service';
 import { CreateTemplateDto } from './dto/create-template.dto';
+import { CreateUserDto } from './dto/create-user.dto';
+import { PublishWorkflowTemplateDto } from './dto/publish-workflow-template.dto';
+import { ResetUserPasswordDto } from './dto/reset-user-password.dto';
 import { UpdateSystemConfigDto } from './dto/update-system-config.dto';
 import { UpdateTemplateDto } from './dto/update-template.dto';
+import { UpdateUserDto } from './dto/update-user.dto';
 
 @UseGuards(AuthGuard, RolesGuard)
 @Roles('admin')
@@ -21,6 +37,28 @@ export class AdminController {
   @Get('users')
   getUsers() {
     return this.adminService.listUsers();
+  }
+
+  @Post('users')
+  createUser(@Body() payload: CreateUserDto) {
+    return this.adminService.createUser(payload);
+  }
+
+  @Patch('users/:id')
+  updateUser(
+    @Param('id') id: string,
+    @Body() payload: UpdateUserDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.adminService.updateUser(id, payload, request.user);
+  }
+
+  @Post('users/:id/reset-password')
+  resetUserPassword(
+    @Param('id') id: string,
+    @Body() payload: ResetUserPasswordDto,
+  ) {
+    return this.adminService.resetUserPassword(id, payload);
   }
 
   @Get('health')
@@ -54,6 +92,14 @@ export class AdminController {
   @Post('templates')
   createTemplate(@Body() payload: CreateTemplateDto) {
     return this.adminService.createTemplate(payload);
+  }
+
+  @Post('templates/publish-from-workflow')
+  publishTemplateFromWorkflow(
+    @Body() payload: PublishWorkflowTemplateDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.adminService.publishTemplateFromWorkflow(payload, request.user);
   }
 
   @Patch('templates/:id')

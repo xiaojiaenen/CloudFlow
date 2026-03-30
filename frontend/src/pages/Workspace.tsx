@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Edge, Node } from "@xyflow/react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { io, Socket } from "socket.io-client";
-import { Save, Settings } from "lucide-react";
+import { Save, Settings, UploadCloud } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Sidebar } from "@/src/components/Sidebar";
 import { Header } from "@/src/components/Header";
@@ -16,6 +16,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/src/components/ui/Ta
 import { Switch } from "@/src/components/ui/Switch";
 import { Button } from "@/src/components/ui/Button";
 import { Input } from "@/src/components/ui/Input";
+import { useAuth } from "@/src/context/AuthContext";
 import {
   buildWorkflowDefinition,
   cancelTask,
@@ -28,6 +29,7 @@ import {
   getWsBaseUrl,
   hydrateCanvasFromWorkflow,
   listTasks,
+  publishWorkflowTemplate,
   runTask,
   sanitizeCanvasEdges,
   sanitizeCanvasNodes,
@@ -89,6 +91,7 @@ function getLatestPersistedScreenshot(events: TaskExecutionRecord[]) {
 }
 
 export default function Workspace() {
+  const { user } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const workflowId = searchParams.get("workflowId");
@@ -115,6 +118,15 @@ export default function Workspace() {
   const [alertOnFailure, setAlertOnFailure] = useState(false);
   const [alertOnSuccess, setAlertOnSuccess] = useState(false);
   const [canvasVersion, setCanvasVersion] = useState(0);
+  const [publishDialogOpen, setPublishDialogOpen] = useState(false);
+  const [isPublishingTemplate, setIsPublishingTemplate] = useState(false);
+  const [publishForm, setPublishForm] = useState({
+    slug: "",
+    title: "",
+    description: "",
+    category: "浏览器自动化",
+    tags: "",
+  });
 
   const socketRef = useRef<Socket | null>(null);
   const activeNodeIdRef = useRef<string | null>(null);
@@ -477,6 +489,35 @@ export default function Workspace() {
     }
   }, [scheduleEnabled, workflowStatus]);
 
+  const handlePublishTemplate = useCallback(async () => {
+    if (user?.role !== "admin") {
+      return;
+    }
+
+    try {
+      setIsPublishingTemplate(true);
+      const workflow = await persistWorkflow({ silent: true });
+      const title = publishForm.title.trim() || workflow.name;
+      const description = publishForm.description.trim() || workflow.description || `${workflow.name} 模板`;
+      await publishWorkflowTemplate({
+        workflowId: workflow.id,
+        slug: publishForm.slug.trim(),
+        title,
+        description,
+        category: publishForm.category.trim() || "浏览器自动化",
+        tags: publishForm.tags.split(/[，,]/).map((item) => item.trim()).filter(Boolean),
+        published: true,
+        featured: false,
+      });
+      addLog("success", `工作流“${workflow.name}”已发布到商店模板。`);
+      setPublishDialogOpen(false);
+    } catch (error) {
+      addLog("error", error instanceof Error ? error.message : "发布模板失败。");
+    } finally {
+      setIsPublishingTemplate(false);
+    }
+  }, [addLog, persistWorkflow, publishForm, user?.role]);
+
   const toggleRun = useCallback(async () => {
     if (isRunning) {
       if (!taskId) {
@@ -554,6 +595,30 @@ export default function Workspace() {
               <Save className="w-3.5 h-3.5" />
               {isSavingWorkflow ? "保存中..." : "保存"}
             </Button>
+            {user?.role === "admin" && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setPublishForm({
+                    slug: workflowName
+                      .trim()
+                      .toLowerCase()
+                      .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-")
+                      .replace(/^-+|-+$/g, "") || "workflow-template",
+                    title: workflowName.trim(),
+                    description: workflowDescription.trim(),
+                    category: "浏览器自动化",
+                    tags: "",
+                  });
+                  setPublishDialogOpen(true);
+                }}
+                className="h-8 gap-2"
+              >
+                <UploadCloud className="w-3.5 h-3.5" />
+                发布模板
+              </Button>
+            )}
             <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)} className="h-8 gap-2">
               <Settings className="w-3.5 h-3.5" />
               全局配置
@@ -620,6 +685,59 @@ export default function Workspace() {
           </ReactFlowProvider>
         </div>
       </div>
+
+      <Dialog open={publishDialogOpen} onOpenChange={setPublishDialogOpen}>
+        <DialogHeader>
+          <DialogTitle>发布到工作流商店</DialogTitle>
+        </DialogHeader>
+        <DialogContent>
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <Input
+                value={publishForm.title}
+                onChange={(event) => setPublishForm((current) => ({ ...current, title: event.target.value }))}
+                placeholder="模板标题"
+              />
+              <Input
+                value={publishForm.slug}
+                onChange={(event) => setPublishForm((current) => ({ ...current, slug: event.target.value }))}
+                placeholder="模板 slug"
+              />
+              <Input
+                value={publishForm.category}
+                onChange={(event) => setPublishForm((current) => ({ ...current, category: event.target.value }))}
+                placeholder="分类"
+              />
+              <Input
+                value={publishForm.tags}
+                onChange={(event) => setPublishForm((current) => ({ ...current, tags: event.target.value }))}
+                placeholder="标签，使用中英文逗号分隔"
+              />
+            </div>
+            <Input
+              value={publishForm.description}
+              onChange={(event) => setPublishForm((current) => ({ ...current, description: event.target.value }))}
+              placeholder="模板描述"
+            />
+            <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-3 text-xs text-zinc-400">
+              发布时会自动保存当前工作流，并把当前工作流 JSON 作为模板定义同步到商店。
+            </div>
+            <div className="flex justify-end gap-3">
+              <Button variant="ghost" onClick={() => setPublishDialogOpen(false)}>
+                取消
+              </Button>
+              <Button
+                onClick={() => {
+                  void handlePublishTemplate();
+                }}
+                disabled={!publishForm.slug.trim() || !publishForm.title.trim() || isPublishingTemplate}
+              >
+                {isPublishingTemplate ? "发布中..." : "确认发布"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
         <DialogHeader>

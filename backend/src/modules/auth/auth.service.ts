@@ -101,7 +101,7 @@ export class AuthService implements OnModuleInit {
   }
 
   async ensureDefaultUsers() {
-    const total = await this.prismaService.user.count();
+    const total = await this.userModel.count();
     if (total > 0) {
       return;
     }

@@ -59,13 +59,16 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    this.schedulerQueue = new Queue<WorkflowSchedulePayload>(WORKFLOW_SCHEDULER_QUEUE_NAME, {
-      connection: this.connection,
-      defaultJobOptions: {
-        removeOnComplete: 100,
-        removeOnFail: 1000,
+    this.schedulerQueue = new Queue<WorkflowSchedulePayload>(
+      WORKFLOW_SCHEDULER_QUEUE_NAME,
+      {
+        connection: this.connection,
+        defaultJobOptions: {
+          removeOnComplete: 100,
+          removeOnFail: 1000,
+        },
       },
-    });
+    );
 
     this.schedulerWorker = new Worker<WorkflowSchedulePayload>(
       WORKFLOW_SCHEDULER_QUEUE_NAME,
@@ -183,7 +186,13 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
     const [redis, taskCounts, schedulerCounts] = await Promise.all([
       this.connection.ping(),
       this.queue.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed'),
-      this.schedulerQueue.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed'),
+      this.schedulerQueue.getJobCounts(
+        'waiting',
+        'active',
+        'completed',
+        'failed',
+        'delayed',
+      ),
     ]);
 
     return {
@@ -282,6 +291,7 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
     const task = await this.prismaService.task.create({
       data: {
         workflowId: workflow.id,
+        ownerId: workflow.ownerId,
         status: 'pending',
         triggerSource: 'schedule',
         workflowSnapshot: workflow.definition as Prisma.InputJsonValue,

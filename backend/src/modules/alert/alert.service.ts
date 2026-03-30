@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma, TaskStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { AuthenticatedUser } from '../auth/auth.types';
 
 type AlertLevel = 'error' | 'warning' | 'success';
 
@@ -8,15 +9,18 @@ type AlertLevel = 'error' | 'warning' | 'success';
 export class AlertService {
   constructor(private readonly prismaService: PrismaService) {}
 
-  async findAll(filters?: {
-    page?: string;
-    pageSize?: string;
-    level?: string;
-  }) {
-    const page = Math.max(1, Number(filters?.page ?? 1) || 1);
-    const pageSize = Math.min(50, Math.max(1, Number(filters?.pageSize ?? 10) || 10));
-    const level = this.isAlertLevel(filters?.level) ? filters?.level : undefined;
-    const where = this.buildAlertWhere(level);
+  async findAll(
+    filters: {
+      page?: string;
+      pageSize?: string;
+      level?: string;
+    } = {},
+    currentUser?: AuthenticatedUser,
+  ) {
+    const page = Math.max(1, Number(filters.page ?? 1) || 1);
+    const pageSize = Math.min(50, Math.max(1, Number(filters.pageSize ?? 10) || 10));
+    const level = this.isAlertLevel(filters.level) ? filters.level : undefined;
+    const where = this.buildAlertWhere(level, currentUser);
 
     const [events, total] = await Promise.all([
       this.prismaService.taskExecutionEvent.findMany({
@@ -110,9 +114,22 @@ export class AlertService {
     return ['error', 'warning', 'success'].includes(value ?? '');
   }
 
-  private buildAlertWhere(level?: AlertLevel): Prisma.TaskExecutionEventWhereInput {
+  private buildAlertWhere(
+    level?: AlertLevel,
+    currentUser?: AuthenticatedUser,
+  ): Prisma.TaskExecutionEventWhereInput {
+    const userScope =
+      !currentUser || currentUser.role === 'admin'
+        ? {}
+        : {
+            task: {
+              ownerId: currentUser.id,
+            },
+          };
+
     if (level === 'success') {
       return {
+        ...userScope,
         OR: [
           {
             type: 'status',
@@ -124,6 +141,7 @@ export class AlertService {
 
     if (level === 'warning') {
       return {
+        ...userScope,
         OR: [
           {
             type: 'status',
@@ -139,6 +157,7 @@ export class AlertService {
 
     if (level === 'error') {
       return {
+        ...userScope,
         OR: [
           {
             type: 'status',
@@ -153,6 +172,7 @@ export class AlertService {
     }
 
     return {
+      ...userScope,
       OR: [
         {
           type: 'status',

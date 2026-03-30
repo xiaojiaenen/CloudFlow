@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { Prisma, WorkflowLifecycleStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { QueueService } from 'src/queue/queue.service';
+import { AuthenticatedUser } from '../auth/auth.types';
 import { CreateWorkflowDto } from './dto/create-workflow.dto';
 import { UpdateWorkflowDto } from './dto/update-workflow.dto';
 
@@ -32,7 +33,7 @@ export class WorkflowService {
     private readonly queueService: QueueService,
   ) {}
 
-  async create(createWorkflowDto: CreateWorkflowDto) {
+  async create(createWorkflowDto: CreateWorkflowDto, currentUser: AuthenticatedUser) {
     const nextStatus = this.normalizeWorkflowStatus(createWorkflowDto.status);
     const normalizedSchedule = this.normalizeSchedulePayload(
       createWorkflowDto.schedule,
@@ -44,6 +45,7 @@ export class WorkflowService {
 
     const workflow = await this.prismaService.workflow.create({
       data: {
+        ownerId: currentUser.id,
         name: createWorkflowDto.name,
         description: createWorkflowDto.description,
         definition: createWorkflowDto.definition as unknown as Prisma.InputJsonValue,
@@ -61,23 +63,27 @@ export class WorkflowService {
     return workflow;
   }
 
-  async findAll(filters?: {
-    includeArchived?: string;
-    status?: string;
-    search?: string;
-  }) {
+  async findAll(
+    filters: {
+      includeArchived?: string;
+      status?: string;
+      search?: string;
+    } = {},
+    currentUser?: AuthenticatedUser,
+  ) {
     const where: Prisma.WorkflowWhereInput = {
       deletedAt: null,
-      ...(this.isWorkflowStatus(filters?.status)
-        ? { status: filters?.status }
-        : filters?.includeArchived === 'true'
+      ...this.buildWorkflowAccessWhere(currentUser),
+      ...(this.isWorkflowStatus(filters.status)
+        ? { status: filters.status }
+        : filters.includeArchived === 'true'
           ? {}
           : {
               status: {
                 in: ['draft', 'active'],
               },
             }),
-      ...(filters?.search?.trim()
+      ...(filters.search?.trim()
         ? {
             OR: [
               {
@@ -101,20 +107,23 @@ export class WorkflowService {
     });
   }
 
-  async findSchedules(filters?: {
-    page?: string;
-    pageSize?: string;
-    search?: string;
-    lastStatus?: string;
-  }): Promise<{
+  async findSchedules(
+    filters: {
+      page?: string;
+      pageSize?: string;
+      search?: string;
+      lastStatus?: string;
+    } = {},
+    currentUser?: AuthenticatedUser,
+  ): Promise<{
     items: ScheduleListItem[];
     page: number;
     pageSize: number;
     total: number;
     totalPages: number;
   }> {
-    const page = Math.max(1, Number(filters?.page ?? 1) || 1);
-    const pageSize = Math.min(50, Math.max(1, Number(filters?.pageSize ?? 8) || 8));
+    const page = Math.max(1, Number(filters.page ?? 1) || 1);
+    const pageSize = Math.min(50, Math.max(1, Number(filters.pageSize ?? 8) || 8));
 
     const workflows = await this.prismaService.workflow.findMany({
       where: {
@@ -123,7 +132,8 @@ export class WorkflowService {
         status: {
           not: 'archived',
         },
-        ...(filters?.search?.trim()
+        ...this.buildWorkflowAccessWhere(currentUser),
+        ...(filters.search?.trim()
           ? {
               OR: [
                 {
@@ -186,7 +196,7 @@ export class WorkflowService {
     );
 
     const filteredItems = enrichedItems.filter((item) => {
-      if (!filters?.lastStatus || filters.lastStatus === 'all') {
+      if (!filters.lastStatus || filters.lastStatus === 'all') {
         return true;
       }
 
@@ -202,12 +212,15 @@ export class WorkflowService {
     const safePage = Math.min(page, totalPages);
 
     if (safePage !== page) {
-      return this.findSchedules({
-        page: String(safePage),
-        pageSize: String(pageSize),
-        search: filters?.search,
-        lastStatus: filters?.lastStatus,
-      });
+      return this.findSchedules(
+        {
+          page: String(safePage),
+          pageSize: String(pageSize),
+          search: filters.search,
+          lastStatus: filters.lastStatus,
+        },
+        currentUser,
+      );
     }
 
     const start = (safePage - 1) * pageSize;
@@ -222,23 +235,31 @@ export class WorkflowService {
     };
   }
 
-  async findOne(id: string) {
-    const workflow = await this.prismaService.workflow.findUnique({
-      where: { id },
+  async findOne(id: string, currentUser: AuthenticatedUser) {
+    const workflow = await this.prismaService.workflow.findFirst({
+      where: {
+        id,
+        deletedAt: null,
+        ...this.buildWorkflowAccessWhere(currentUser),
+      },
     });
 
-    if (!workflow || workflow.deletedAt) {
+    if (!workflow) {
       throw new NotFoundException(`Workflow ${id} not found`);
     }
 
     return workflow;
   }
 
-  async duplicate(id: string) {
-    const existingWorkflow = await this.findOne(id);
+  async duplicate(id: string, currentUser: AuthenticatedUser) {
+    const existingWorkflow = await this.findOne(id, currentUser);
+    const ownerId = this.canAccessAll(currentUser)
+      ? currentUser.id
+      : existingWorkflow.ownerId ?? currentUser.id;
 
     const duplicatedWorkflow = await this.prismaService.workflow.create({
       data: {
+        ownerId,
         name: `${existingWorkflow.name} 副本`,
         description: existingWorkflow.description,
         definition: existingWorkflow.definition as Prisma.InputJsonValue,
@@ -256,8 +277,8 @@ export class WorkflowService {
     return duplicatedWorkflow;
   }
 
-  async update(id: string, updateWorkflowDto: UpdateWorkflowDto) {
-    const existingWorkflow = await this.findOne(id);
+  async update(id: string, updateWorkflowDto: UpdateWorkflowDto, currentUser: AuthenticatedUser) {
+    const existingWorkflow = await this.findOne(id, currentUser);
     const nextStatus = this.normalizeWorkflowStatus(
       updateWorkflowDto.status ?? existingWorkflow.status,
     );
@@ -325,8 +346,8 @@ export class WorkflowService {
     return workflow;
   }
 
-  async remove(id: string) {
-    const workflow = await this.findOne(id);
+  async remove(id: string, currentUser: AuthenticatedUser) {
+    const workflow = await this.findOne(id, currentUser);
 
     const deletedWorkflow = await this.prismaService.workflow.update({
       where: { id },
@@ -384,9 +405,7 @@ export class WorkflowService {
     }
   }
 
-  private normalizeWorkflowStatus(
-    status?: string | null,
-  ): WorkflowLifecycleStatus {
+  private normalizeWorkflowStatus(status?: string | null): WorkflowLifecycleStatus {
     return this.isWorkflowStatus(status) ? status : 'active';
   }
 
@@ -411,13 +430,25 @@ export class WorkflowService {
     return {
       enabled: schedule?.enabled ?? false,
       cron: schedule?.enabled ? schedule.cron?.trim() ?? null : null,
-      timezone: schedule?.enabled
-        ? schedule.timezone?.trim() || 'Asia/Shanghai'
-        : null,
+      timezone: schedule?.enabled ? schedule.timezone?.trim() || 'Asia/Shanghai' : null,
     };
   }
 
   private isWorkflowStatus(value?: string | null): value is WorkflowLifecycleStatus {
     return ['draft', 'active', 'archived'].includes(value ?? '');
+  }
+
+  private canAccessAll(currentUser?: AuthenticatedUser) {
+    return currentUser?.role === 'admin';
+  }
+
+  private buildWorkflowAccessWhere(currentUser?: AuthenticatedUser): Prisma.WorkflowWhereInput {
+    if (!currentUser || this.canAccessAll(currentUser)) {
+      return {};
+    }
+
+    return {
+      ownerId: currentUser.id,
+    };
   }
 }

@@ -3,6 +3,7 @@ import { Prisma, TaskStatus, TaskTriggerSource } from '@prisma/client';
 import { WorkflowDefinition } from 'src/common/types/workflow.types';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { QueueService } from 'src/queue/queue.service';
+import { AuthenticatedUser } from '../auth/auth.types';
 import { RunTaskDto } from './dto/run-task.dto';
 
 @Injectable()
@@ -12,10 +13,12 @@ export class TaskService {
     private readonly queueService: QueueService,
   ) {}
 
-  async run(runTaskDto: RunTaskDto) {
-    const workflow = await this.prismaService.workflow.findUnique({
+  async run(runTaskDto: RunTaskDto, currentUser: AuthenticatedUser) {
+    const workflow = await this.prismaService.workflow.findFirst({
       where: {
         id: runTaskDto.workflowId,
+        deletedAt: null,
+        ...this.buildWorkflowAccessWhere(currentUser),
       },
     });
 
@@ -23,13 +26,10 @@ export class TaskService {
       throw new NotFoundException(`Workflow ${runTaskDto.workflowId} not found`);
     }
 
-    if (workflow.deletedAt) {
-      throw new NotFoundException(`Workflow ${runTaskDto.workflowId} not found`);
-    }
-
     const task = await this.prismaService.task.create({
       data: {
         workflowId: workflow.id,
+        ownerId: workflow.ownerId ?? currentUser.id,
         status: 'pending',
         triggerSource: 'manual',
         workflowSnapshot: workflow.definition as Prisma.InputJsonValue,
@@ -47,27 +47,38 @@ export class TaskService {
     return task;
   }
 
-  async findOne(id: string) {
-    return this.getTaskOrThrow(id, true);
+  async findOne(id: string, currentUser: AuthenticatedUser) {
+    return this.getTaskOrThrow(id, currentUser, true);
   }
 
-  async findAll(filters?: {
-    page?: string;
-    pageSize?: string;
-    status?: string;
-    triggerSource?: string;
-    workflowId?: string;
-    activeOnly?: string;
-  }) {
-    const page = Math.max(1, Number(filters?.page ?? 1) || 1);
-    const pageSize = Math.min(50, Math.max(1, Number(filters?.pageSize ?? 10) || 10));
+  async findAll(
+    filters: {
+      page?: string;
+      pageSize?: string;
+      status?: string;
+      triggerSource?: string;
+      workflowId?: string;
+      activeOnly?: string;
+    } = {},
+    currentUser?: AuthenticatedUser,
+  ) {
+    const page = Math.max(1, Number(filters.page ?? 1) || 1);
+    const pageSize = Math.min(50, Math.max(1, Number(filters.pageSize ?? 10) || 10));
     const where: Prisma.TaskWhereInput = {
-      ...(this.isTaskStatus(filters?.status) ? { status: filters?.status } : {}),
-      ...(this.isTriggerSource(filters?.triggerSource)
-        ? { triggerSource: filters?.triggerSource }
+      ...this.buildTaskAccessWhere(currentUser),
+      ...(this.isTaskStatus(filters.status) ? { status: filters.status } : {}),
+      ...(this.isTriggerSource(filters.triggerSource)
+        ? { triggerSource: filters.triggerSource }
         : {}),
-      ...(filters?.workflowId ? { workflowId: filters.workflowId } : {}),
-      ...(filters?.activeOnly === 'true'
+      ...(filters.workflowId
+        ? {
+            workflowId: filters.workflowId,
+            workflow: {
+              deletedAt: null,
+            },
+          }
+        : {}),
+      ...(filters.activeOnly === 'true'
         ? {
             status: {
               in: ['pending', 'running'],
@@ -102,8 +113,9 @@ export class TaskService {
     };
   }
 
-  async findRecent(limit = 5) {
+  async findRecent(limit = 5, currentUser?: AuthenticatedUser) {
     return this.prismaService.task.findMany({
+      where: this.buildTaskAccessWhere(currentUser),
       include: {
         workflow: true,
       },
@@ -114,8 +126,8 @@ export class TaskService {
     });
   }
 
-  async cancel(id: string) {
-    const task = await this.getTaskOrThrow(id);
+  async cancel(id: string, currentUser: AuthenticatedUser) {
+    const task = await this.getTaskOrThrow(id, currentUser);
 
     if (task.status === 'success' || task.status === 'failed' || task.status === 'cancelled') {
       return task;
@@ -157,14 +169,25 @@ export class TaskService {
     });
 
     await this.queueService.requestTaskCancellation(task.id);
-    await this.queueService.publishLog(task.id, '已发送停止请求，正在等待 Worker 安全终止任务...', 'warn');
+    await this.queueService.publishLog(
+      task.id,
+      '已发送停止请求，正在等待 Worker 安全终止任务...',
+      'warn',
+    );
 
     return updatedTask;
   }
 
-  private async getTaskOrThrow(id: string, includeExecutionEvents = false) {
-    const task = await this.prismaService.task.findUnique({
-      where: { id },
+  private async getTaskOrThrow(
+    id: string,
+    currentUser?: AuthenticatedUser,
+    includeExecutionEvents = false,
+  ) {
+    const task = await this.prismaService.task.findFirst({
+      where: {
+        id,
+        ...this.buildTaskAccessWhere(currentUser),
+      },
       include: {
         workflow: true,
         executionEvents: includeExecutionEvents
@@ -183,12 +206,30 @@ export class TaskService {
   }
 
   private isTaskStatus(value?: string): value is TaskStatus {
-    return ['pending', 'running', 'success', 'failed', 'cancelled'].includes(
-      value ?? '',
-    );
+    return ['pending', 'running', 'success', 'failed', 'cancelled'].includes(value ?? '');
   }
 
   private isTriggerSource(value?: string): value is TaskTriggerSource {
     return ['manual', 'schedule'].includes(value ?? '');
+  }
+
+  private buildTaskAccessWhere(currentUser?: AuthenticatedUser): Prisma.TaskWhereInput {
+    if (!currentUser || currentUser.role === 'admin') {
+      return {};
+    }
+
+    return {
+      ownerId: currentUser.id,
+    };
+  }
+
+  private buildWorkflowAccessWhere(currentUser?: AuthenticatedUser): Prisma.WorkflowWhereInput {
+    if (!currentUser || currentUser.role === 'admin') {
+      return {};
+    }
+
+    return {
+      ownerId: currentUser.id,
+    };
   }
 }
