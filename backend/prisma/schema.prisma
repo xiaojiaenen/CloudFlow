@@ -15,6 +15,11 @@ enum TaskStatus {
   cancelled
 }
 
+enum TaskTriggerSource {
+  manual
+  schedule
+}
+
 enum TaskExecutionEventType {
   log
   screenshot
@@ -32,7 +37,7 @@ model Workflow {
   scheduleTimezone String?
   alertEmail       String?
   alertOnSuccess   Boolean  @default(false)
-  alertOnFailure   Boolean  @default(true)
+  alertOnFailure   Boolean  @default(false)
   tasks            Task[]
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -45,6 +50,7 @@ model Task {
   workflowId        String
   workflow          Workflow             @relation(fields: [workflowId], references: [id])
   status            TaskStatus           @default(pending)
+  triggerSource     TaskTriggerSource    @default(manual)
   workflowSnapshot  Json
   errorMessage      String?
   cancelRequestedAt DateTime?

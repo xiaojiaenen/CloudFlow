@@ -68,6 +68,7 @@ export interface TaskRecord {
   id: string;
   workflowId: string;
   status: "pending" | "running" | "success" | "failed" | "cancelled";
+  triggerSource?: "manual" | "schedule";
   errorMessage?: string | null;
   cancelRequestedAt?: string | null;
   createdAt: string;

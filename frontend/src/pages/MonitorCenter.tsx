@@ -14,6 +14,7 @@ import {
   Workflow,
   XCircle,
 } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 import { Sidebar } from "@/src/components/Sidebar";
 import { Button } from "@/src/components/ui/Button";
 import { cn } from "@/src/lib/utils";
@@ -88,6 +89,20 @@ function getStatusMeta(status: TaskRecord["status"]) {
   };
 }
 
+function getTriggerMeta(triggerSource?: TaskRecord["triggerSource"]) {
+  if (triggerSource === "schedule") {
+    return {
+      label: "定时触发",
+      className: "bg-violet-500/10 text-violet-300 border border-violet-500/20",
+    };
+  }
+
+  return {
+    label: "手动触发",
+    className: "bg-zinc-500/10 text-zinc-300 border border-zinc-500/20",
+  };
+}
+
 function getPayloadString(payload: Record<string, unknown> | null | undefined, key: string) {
   const value = payload?.[key];
   return typeof value === "string" ? value : "";
@@ -144,8 +159,10 @@ function getExecutionEventMeta(event: TaskExecutionRecord) {
 }
 
 export function MonitorCenter() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const taskIdFromQuery = searchParams.get("taskId");
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(() => taskIdFromQuery);
   const [selectedTask, setSelectedTask] = useState<TaskRecord | null>(null);
   const [selectedScreenshotId, setSelectedScreenshotId] = useState<string | null>(null);
   const [isLoadingTasks, setIsLoadingTasks] = useState(false);
@@ -155,15 +172,24 @@ export function MonitorCenter() {
     try {
       setIsLoadingTasks(true);
       const data = await listTasks();
-      setTasks(data);
+      setTasks((current) => {
+        if (!selectedTaskId || data.some((task) => task.id === selectedTaskId)) {
+          return data;
+        }
 
-      if (!selectedTaskId && data.length > 0) {
+        const pinnedTask = current.find((task) => task.id === selectedTaskId);
+        return pinnedTask ? [pinnedTask, ...data.filter((task) => task.id !== selectedTaskId)] : data;
+      });
+
+      if (taskIdFromQuery) {
+        setSelectedTaskId(taskIdFromQuery);
+      } else if (!selectedTaskId && data.length > 0) {
         setSelectedTaskId(data[0].id);
       }
     } finally {
       setIsLoadingTasks(false);
     }
-  }, [selectedTaskId]);
+  }, [selectedTaskId, taskIdFromQuery]);
 
   const loadTaskDetail = useCallback(async (taskId: string) => {
     try {
@@ -184,6 +210,24 @@ export function MonitorCenter() {
 
     return () => window.clearInterval(interval);
   }, [loadTasks]);
+
+  useEffect(() => {
+    if (taskIdFromQuery && taskIdFromQuery !== selectedTaskId) {
+      setSelectedTaskId(taskIdFromQuery);
+    }
+  }, [selectedTaskId, taskIdFromQuery]);
+
+  useEffect(() => {
+    if (!selectedTaskId) {
+      return;
+    }
+
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.set("taskId", selectedTaskId);
+      return next;
+    }, { replace: true });
+  }, [selectedTaskId, setSearchParams]);
 
   useEffect(() => {
     if (!selectedTaskId) {
@@ -312,6 +356,7 @@ export function MonitorCenter() {
                 {tasks.map((task) => {
                   const statusMeta = getStatusMeta(task.status);
                   const StatusIcon = statusMeta.icon;
+                  const triggerMeta = getTriggerMeta(task.triggerSource);
 
                   return (
                     <button
@@ -327,7 +372,12 @@ export function MonitorCenter() {
                           <div className="text-sm font-medium text-zinc-100 truncate">
                             {task.workflow?.name || "未命名工作流"}
                           </div>
-                          <div className="text-xs text-zinc-500 mt-1 font-mono truncate">{task.id}</div>
+                          <div className="mt-1 flex items-center gap-2 flex-wrap">
+                            <div className="text-xs text-zinc-500 font-mono truncate">{task.id}</div>
+                            <div className={cn("px-2 py-0.5 rounded text-[10px] font-medium", triggerMeta.className)}>
+                              {triggerMeta.label}
+                            </div>
+                          </div>
                         </div>
 
                         <div className={cn("px-2 py-1 rounded text-[10px] font-medium flex items-center gap-1.5 shrink-0", statusMeta.className)}>
@@ -407,6 +457,20 @@ export function MonitorCenter() {
                         <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4">
                           <div className="text-zinc-500 mb-2">持久化截图</div>
                           <div className="text-zinc-100">{screenshotEvents.length}</div>
+                        </div>
+                        <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4">
+                          <div className="text-zinc-500 mb-2">触发来源</div>
+                          <div className={cn("inline-flex px-2 py-1 rounded text-xs font-medium", getTriggerMeta(selectedTask.triggerSource).className)}>
+                            {getTriggerMeta(selectedTask.triggerSource).label}
+                          </div>
+                        </div>
+                        <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4">
+                          <div className="text-zinc-500 mb-2">告警配置</div>
+                          <div className="text-zinc-100 text-xs leading-6">
+                            {selectedTask.workflow?.alertEmail
+                              ? `${selectedTask.workflow.alertEmail} · ${selectedTask.workflow.alertOnFailure ? "失败通知" : ""}${selectedTask.workflow.alertOnFailure && selectedTask.workflow.alertOnSuccess ? " / " : ""}${selectedTask.workflow.alertOnSuccess ? "成功通知" : ""}`
+                              : "未配置"}
+                          </div>
                         </div>
                       </div>
 

@@ -91,7 +91,7 @@ export default function Workspace() {
   const [scheduleCron, setScheduleCron] = useState("0 0 * * *");
   const [scheduleTimezone, setScheduleTimezone] = useState("Asia/Shanghai");
   const [alertEmail, setAlertEmail] = useState("");
-  const [alertOnFailure, setAlertOnFailure] = useState(true);
+  const [alertOnFailure, setAlertOnFailure] = useState(false);
   const [alertOnSuccess, setAlertOnSuccess] = useState(false);
   const [canvasVersion, setCanvasVersion] = useState(0);
 
@@ -133,7 +133,7 @@ export default function Workspace() {
     setScheduleCron(workflow?.scheduleCron ?? "0 0 * * *");
     setScheduleTimezone(workflow?.scheduleTimezone ?? "Asia/Shanghai");
     setAlertEmail(workflow?.alertEmail ?? "");
-    setAlertOnFailure(workflow?.alertOnFailure ?? true);
+    setAlertOnFailure(workflow?.alertOnFailure ?? false);
     setAlertOnSuccess(workflow?.alertOnSuccess ?? false);
     setFlowNodes(graph.nodes);
     setFlowEdges(graph.edges);

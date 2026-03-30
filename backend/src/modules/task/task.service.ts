@@ -27,6 +27,7 @@ export class TaskService {
       data: {
         workflowId: workflow.id,
         status: 'pending',
+        triggerSource: 'manual',
         workflowSnapshot: workflow.definition as Prisma.InputJsonValue,
       },
       include: {

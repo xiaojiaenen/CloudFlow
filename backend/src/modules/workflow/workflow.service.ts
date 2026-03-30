@@ -27,7 +27,7 @@ export class WorkflowService {
           ? createWorkflowDto.schedule.timezone?.trim() || 'Asia/Shanghai'
           : null,
         alertEmail: createWorkflowDto.alerts?.email?.trim() || null,
-        alertOnFailure: createWorkflowDto.alerts?.onFailure ?? true,
+        alertOnFailure: createWorkflowDto.alerts?.onFailure ?? false,
         alertOnSuccess: createWorkflowDto.alerts?.onSuccess ?? false,
       },
     });
@@ -83,7 +83,7 @@ export class WorkflowService {
         };
 
     await this.validateSchedule(nextSchedule);
-    this.validateAlerts(nextAlerts);
+    this.validateAlerts(nextAlerts, Boolean(updateWorkflowDto.alerts));
 
     const workflow = await this.prismaService.workflow.update({
       where: { id },
@@ -140,8 +140,12 @@ export class WorkflowService {
     email?: string | null;
     onFailure?: boolean;
     onSuccess?: boolean;
-  }) {
+  }, strict = true) {
     const shouldNotify = alerts?.onFailure || alerts?.onSuccess;
+
+    if (!strict && !alerts?.email?.trim()) {
+      return;
+    }
 
     if (shouldNotify && !alerts?.email?.trim()) {
       throw new BadRequestException('启用邮件告警时必须填写通知邮箱。');

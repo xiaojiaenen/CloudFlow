@@ -254,6 +254,7 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
       data: {
         workflowId: workflow.id,
         status: 'pending',
+        triggerSource: 'schedule',
         workflowSnapshot: workflow.definition as Prisma.InputJsonValue,
       },
     });
