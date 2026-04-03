@@ -3,6 +3,39 @@ import { getNodeDefinition } from "@/src/registry/nodes";
 
 export type ExecutionNodeStatus = "idle" | "running" | "success" | "error" | "cancelled";
 export type WorkflowStatus = "draft" | "active" | "archived";
+export type WorkflowInputFieldType = "text" | "textarea" | "password" | "number" | "select" | "date" | "email";
+export type WorkflowCredentialRequirementType = "account" | "api_key" | "cookie" | "smtp" | "custom";
+
+export interface WorkflowInputFieldOption {
+  label: string;
+  value: string;
+}
+
+export interface WorkflowInputField {
+  key: string;
+  label: string;
+  type: WorkflowInputFieldType;
+  required?: boolean;
+  sensitive?: boolean;
+  placeholder?: string;
+  description?: string;
+  defaultValue?: string;
+  options?: WorkflowInputFieldOption[];
+}
+
+export interface WorkflowCredentialRequirement {
+  key: string;
+  label: string;
+  type: WorkflowCredentialRequirementType;
+  required?: boolean;
+  provider?: string;
+  description?: string;
+}
+
+export interface WorkflowRuntimeContext {
+  inputs?: Record<string, string>;
+  maskedInputs?: Record<string, string>;
+}
 
 export interface CanvasNodeData {
   label: string;
@@ -26,6 +59,8 @@ export interface SanitizedCanvasEdge {
   id: string;
   source: string;
   target: string;
+  sourceHandle?: string | null;
+  targetHandle?: string | null;
 }
 
 export interface WorkflowCanvasSnapshot {
@@ -36,6 +71,9 @@ export interface WorkflowCanvasSnapshot {
 export interface WorkflowApiDefinition {
   nodes: Array<Record<string, unknown>>;
   canvas?: WorkflowCanvasSnapshot;
+  inputSchema?: WorkflowInputField[];
+  credentialRequirements?: WorkflowCredentialRequirement[];
+  runtime?: WorkflowRuntimeContext;
 }
 
 export interface WorkflowRecord {
@@ -79,8 +117,18 @@ export interface TaskRecord {
   workflowId: string;
   status: "pending" | "running" | "success" | "failed" | "cancelled";
   triggerSource?: "manual" | "schedule";
+  queuePriority?: number;
   errorMessage?: string | null;
   cancelRequestedAt?: string | null;
+  tempDir?: string | null;
+  workerPid?: number | null;
+  resourceHeartbeatAt?: string | null;
+  memoryRssMb?: number | null;
+  peakMemoryRssMb?: number | null;
+  heapUsedMb?: number | null;
+  peakHeapUsedMb?: number | null;
+  cpuPercent?: number | null;
+  peakCpuPercent?: number | null;
   createdAt: string;
   updatedAt: string;
   startedAt?: string | null;
@@ -204,6 +252,10 @@ export interface SystemConfigRecord {
   screenshotIntervalMs: number;
   taskRetentionDays: number;
   monitorPageSize: number;
+  globalTaskConcurrency: number;
+  perUserTaskConcurrency: number;
+  manualTaskPriority: number;
+  scheduledTaskPriority: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -880,14 +932,14 @@ export async function listAlerts(params?: {
   return (await response.json()) as PaginatedResponse<AlertRecord>;
 }
 
-export async function runTask(workflowId: string) {
+export async function runTask(workflowId: string, inputs?: Record<string, string>) {
   const response = await fetch(`${API_BASE_URL}/tasks/run`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...buildAuthHeaders(),
     },
-    body: JSON.stringify({ workflowId }),
+    body: JSON.stringify({ workflowId, inputs }),
   });
 
   if (!response.ok) {
@@ -1067,8 +1119,36 @@ export async function resetAdminUserPassword(id: string, newPassword?: string) {
   return (await response.json()) as ResetUserPasswordResult;
 }
 
-export function buildWorkflowDefinition(nodes: Node<CanvasNodeData>[], edges: Edge[]): WorkflowApiDefinition {
-  const supportedTypes = new Set(["open_page", "click", "input", "wait", "scroll", "extract", "screenshot"]);
+export function buildWorkflowDefinition(
+  nodes: Node<CanvasNodeData>[],
+  edges: Edge[],
+  options?: {
+    inputSchema?: WorkflowInputField[];
+    credentialRequirements?: WorkflowCredentialRequirement[];
+  },
+): WorkflowApiDefinition {
+  const supportedTypes = new Set([
+    "open_page",
+    "click",
+    "input",
+    "hover",
+    "press_key",
+    "select_option",
+    "check",
+    "uncheck",
+    "set_variable",
+    "condition",
+    "wait",
+    "wait_for_element",
+    "wait_for_text",
+    "wait_for_class",
+    "wait_for_url",
+    "switch_iframe",
+    "switch_main_frame",
+    "scroll",
+    "extract",
+    "screenshot",
+  ]);
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const incomingCounts = new Map<string, number>();
   const outgoing = new Map<string, string[]>();
@@ -1121,7 +1201,7 @@ export function buildWorkflowDefinition(nodes: Node<CanvasNodeData>[], edges: Ed
   const unsupportedNodes = orderedNodes.filter((node) => !supportedTypes.has(String(node.data.type)));
   if (unsupportedNodes.length > 0) {
     const labels = unsupportedNodes.map((node) => node.data.label || node.id).join("、");
-    throw new Error(`当前后端仅支持打开网页、点击元素、输入文本、等待、滚动、提取和截图节点。请移除不支持的节点：${labels}`);
+    throw new Error(`当前存在后端尚未支持的节点，请先移除：${labels}`);
   }
 
   return {
@@ -1139,16 +1219,60 @@ export function buildWorkflowDefinition(nodes: Node<CanvasNodeData>[], edges: Ed
       } else if (type === "input") {
         baseNode.selector = String(node.data.selector ?? "");
         baseNode.value = String(node.data.value ?? "");
+      } else if (type === "hover") {
+        baseNode.selector = String(node.data.selector ?? "");
+      } else if (type === "press_key") {
+        baseNode.key = String(node.data.key ?? "");
+      } else if (type === "select_option") {
+        baseNode.selector = String(node.data.selector ?? "");
+        baseNode.value = String(node.data.value ?? "");
+      } else if (type === "check" || type === "uncheck") {
+        baseNode.selector = String(node.data.selector ?? "");
+      } else if (type === "set_variable") {
+        baseNode.key = String(node.data.key ?? "");
+        baseNode.value = String(node.data.value ?? "");
+      } else if (type === "condition") {
+        baseNode.left = String(node.data.left ?? "");
+        baseNode.operator = String(node.data.operator ?? "equals");
+        baseNode.right = String(node.data.right ?? "");
       } else if (type === "wait") {
         baseNode.time = Number(node.data.time ?? 1000);
+      } else if (type === "wait_for_element") {
+        baseNode.selector = String(node.data.selector ?? "");
+        baseNode.state = String(node.data.state ?? "visible");
+        baseNode.timeout = Number(node.data.timeout ?? 10000);
+      } else if (type === "wait_for_text") {
+        baseNode.selector = String(node.data.selector ?? "");
+        baseNode.text = String(node.data.text ?? "");
+        baseNode.matchMode = String(node.data.matchMode ?? "contains");
+        baseNode.timeout = Number(node.data.timeout ?? 10000);
+      } else if (type === "wait_for_class") {
+        baseNode.selector = String(node.data.selector ?? "");
+        baseNode.className = String(node.data.className ?? "");
+        baseNode.condition = String(node.data.condition ?? "contains");
+        baseNode.timeout = Number(node.data.timeout ?? 10000);
+      } else if (type === "wait_for_url") {
+        baseNode.urlIncludes = String(node.data.urlIncludes ?? "");
+        baseNode.waitUntil = String(node.data.waitUntil ?? "load");
+        baseNode.timeout = Number(node.data.timeout ?? 10000);
+      } else if (type === "switch_iframe") {
+        baseNode.selector = String(node.data.selector ?? "");
+        baseNode.name = String(node.data.name ?? "");
+        baseNode.urlIncludes = String(node.data.urlIncludes ?? "");
+        baseNode.timeout = Number(node.data.timeout ?? 10000);
+      } else if (type === "switch_main_frame") {
+        // No extra config needed.
       } else if (type === "scroll") {
         baseNode.direction = String(node.data.direction ?? "down");
         baseNode.distance = Number(node.data.distance ?? 500);
       } else if (type === "extract") {
         baseNode.selector = String(node.data.selector ?? "");
         baseNode.property = String(node.data.property ?? "text");
+        baseNode.attributeName = String(node.data.attributeName ?? "");
+        baseNode.saveAs = String(node.data.saveAs ?? "");
       } else if (type === "screenshot") {
         baseNode.scope = String(node.data.scope ?? "viewport");
+        baseNode.selector = String(node.data.selector ?? "");
       }
 
       return baseNode;
@@ -1157,6 +1281,8 @@ export function buildWorkflowDefinition(nodes: Node<CanvasNodeData>[], edges: Ed
       nodes: sanitizeCanvasNodes(nodes),
       edges: sanitizeCanvasEdges(edges),
     },
+    inputSchema: options?.inputSchema ?? [],
+    credentialRequirements: options?.credentialRequirements ?? [],
   };
 }
 
@@ -1234,5 +1360,7 @@ export function sanitizeCanvasEdges(edges: Edge[]): SanitizedCanvasEdge[] {
     id: edge.id,
     source: edge.source,
     target: edge.target,
+    sourceHandle: edge.sourceHandle ?? null,
+    targetHandle: edge.targetHandle ?? null,
   }));
 }

@@ -224,7 +224,7 @@ export default function Settings() {
               </Card>
             </div>
 
-            <Card>
+            <Card className="xl:flex xl:max-h-[680px] xl:flex-col">
               <CardHeader className="flex flex-row items-center justify-between gap-4">
                 <div className="flex items-center gap-2 mb-1">
                   <CalendarClock className="w-5 h-5 text-sky-400 shrink-0" />
@@ -237,7 +237,7 @@ export default function Settings() {
                   {isLoading ? "正在同步..." : `第 ${page} / ${totalPages} 页 · 共 ${total} 个调度`}
                 </div>
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent className="space-y-4 xl:min-h-0 xl:flex-1 xl:flex-col">
                 <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_180px_180px] gap-3">
                   <Input
                     value={search}
@@ -270,20 +270,21 @@ export default function Settings() {
                   </Button>
                 </div>
 
-                {schedules.length === 0 && !isLoading && (
-                  <div className="rounded-xl border border-dashed border-white/[0.08] bg-white/[0.02] p-8 text-center text-sm text-zinc-500 space-y-4">
-                    <div>当前没有启用中的定时工作流。你可以先在工作区里为某个工作流开启 Cron 调度。</div>
-                    <Button variant="outline" className="gap-2" onClick={() => navigate("/")}>
-                      <Workflow className="w-4 h-4" />
-                      前往工作区
-                    </Button>
-                  </div>
-                )}
+                <div className="space-y-4 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
+                  {schedules.length === 0 && !isLoading && (
+                    <div className="rounded-xl border border-dashed border-white/[0.08] bg-white/[0.02] p-8 text-center text-sm text-zinc-500 space-y-4">
+                      <div>当前没有启用中的定时工作流。你可以先在工作区里为某个工作流开启 Cron 调度。</div>
+                      <Button variant="outline" className="gap-2" onClick={() => navigate("/")}>
+                        <Workflow className="w-4 h-4" />
+                        前往工作区
+                      </Button>
+                    </div>
+                  )}
 
-                {schedules.map((item) => {
-                  const taskStatusMeta = getTaskStatusMeta(item.lastScheduledTask?.status);
-                  return (
-                    <div key={item.id} className="rounded-xl border border-white/[0.05] bg-white/[0.02] p-5 space-y-4">
+                  {schedules.map((item) => {
+                    const taskStatusMeta = getTaskStatusMeta(item.lastScheduledTask?.status);
+                    return (
+                      <div key={item.id} className="rounded-xl border border-white/[0.05] bg-white/[0.02] p-5 space-y-4">
                       <div className="flex items-start justify-between gap-4">
                         <div className="min-w-0 flex items-start gap-3">
                           <input
@@ -383,9 +384,10 @@ export default function Settings() {
                           <div className="text-zinc-500 text-xs mt-2">如需修改 Cron 或告警策略，请打开工作流调整。</div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
+                      </div>
+                    );
+                  })}
+                </div>
 
                 <div className="pt-2 flex items-center justify-between gap-4">
                   <div className="text-xs text-zinc-500">调度中心已启用分页，避免列表过长难以管理。</div>

@@ -25,29 +25,32 @@ export function NodePalette() {
   };
 
   return (
-    <div className="w-64 border-r border-white/[0.08] bg-zinc-950/50 backdrop-blur-md flex flex-col h-full z-10">
-      <div className="p-4 border-b border-white/[0.05]">
+    <div className="z-10 flex h-full w-64 flex-col border-r border-white/[0.08] bg-zinc-950/50 backdrop-blur-md">
+      <div className="border-b border-white/[0.05] p-4">
         <h3 className="text-sm font-medium text-zinc-200">添加节点</h3>
-        <p className="text-xs text-zinc-500 mt-1">拖拽节点到右侧画布中</p>
+        <p className="mt-1 text-xs text-zinc-500">拖拽节点到右侧画布，按业务流程串起来执行。</p>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-3 space-y-4">
+      <div className="flex-1 space-y-4 overflow-y-auto p-3">
         {groupedNodes.map((category) => (
           <div key={category.title} className="space-y-2">
             <div
-              className="flex items-center justify-between text-xs font-medium text-zinc-400 uppercase tracking-wider cursor-pointer hover:text-zinc-200 transition-colors px-1"
+              className="cursor-pointer px-1 text-xs font-medium uppercase tracking-wider text-zinc-400 transition-colors hover:text-zinc-200 flex items-center justify-between"
               onClick={() => toggleCategory(category.title)}
             >
               {category.title}
               <ChevronDown
-                className={cn("w-3.5 h-3.5 transition-transform duration-200", openCategories[category.title] ? "" : "-rotate-90")}
+                className={cn(
+                  "h-3.5 w-3.5 transition-transform duration-200",
+                  openCategories[category.title] ? "" : "-rotate-90",
+                )}
               />
             </div>
 
             <div
               className={cn(
                 "space-y-2 overflow-hidden transition-all duration-300",
-                openCategories[category.title] ? "max-h-[500px] opacity-100" : "max-h-0 opacity-0",
+                openCategories[category.title] ? "max-h-[1200px] opacity-100" : "max-h-0 opacity-0",
               )}
             >
               {category.nodes.map((node) => {
@@ -55,14 +58,19 @@ export function NodePalette() {
                 return (
                   <div
                     key={node.type}
-                    className="flex items-center gap-3 p-3 rounded-lg border border-white/[0.05] bg-white/[0.02] hover:bg-white/[0.06] hover:border-white/[0.1] cursor-grab active:cursor-grabbing transition-colors"
+                    className="cursor-grab rounded-lg border border-white/[0.05] bg-white/[0.02] p-3 transition-colors active:cursor-grabbing hover:border-white/[0.1] hover:bg-white/[0.06]"
                     draggable
                     onDragStart={(event) => onDragStart(event, node.type, node.label)}
                   >
-                    <div className={cn("p-1.5 rounded-md bg-white/[0.05]", node.color.split(" ")[0])}>
-                      <Icon className="w-4 h-4" />
+                    <div className="flex items-center gap-3">
+                      <div className={cn("rounded-md bg-white/[0.05] p-1.5", node.color.split(" ")[0])}>
+                        <Icon className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-zinc-300">{node.label}</div>
+                        <div className="truncate text-[11px] text-zinc-500">{node.type}</div>
+                      </div>
                     </div>
-                    <span className="text-sm text-zinc-300 font-medium">{node.label}</span>
                   </div>
                 );
               })}

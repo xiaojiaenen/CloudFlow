@@ -77,9 +77,19 @@ model Task {
   owner             User                 @relation("UserTasks", fields: [ownerId], references: [id])
   status            TaskStatus           @default(pending)
   triggerSource     TaskTriggerSource    @default(manual)
+  queuePriority     Int                  @default(1)
   workflowSnapshot  Json
   errorMessage      String?
   cancelRequestedAt DateTime?
+  tempDir           String?
+  workerPid         Int?
+  resourceHeartbeatAt DateTime?
+  memoryRssMb       Float?
+  peakMemoryRssMb   Float?
+  heapUsedMb        Float?
+  peakHeapUsedMb    Float?
+  cpuPercent        Float?
+  peakCpuPercent    Float?
   executionEvents   TaskExecutionEvent[]
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
@@ -151,6 +161,10 @@ model SystemConfig {
   screenshotIntervalMs Int      @default(500)
   taskRetentionDays    Int      @default(30)
   monitorPageSize      Int      @default(10)
+  globalTaskConcurrency Int     @default(2)
+  perUserTaskConcurrency Int    @default(1)
+  manualTaskPriority   Int      @default(1)
+  scheduledTaskPriority Int     @default(10)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 }

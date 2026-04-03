@@ -290,7 +290,7 @@ export function Sidebar() {
                 const active = currentWorkflowId === workflow.id && isWorkspacePage;
 
                 return (
-                  <button
+                  <div
                     key={workflow.id}
                     onClick={() => selectWorkflow(workflow.id)}
                     title={isCollapsed ? workflow.name : undefined}
@@ -368,7 +368,7 @@ export function Sidebar() {
                         </button>
                       </div>
                     )}
-                  </button>
+                  </div>
                 );
               })}
             </div>

@@ -298,6 +298,18 @@ export class AdminService {
         ...(payload.monitorPageSize !== undefined
           ? { monitorPageSize: payload.monitorPageSize }
           : {}),
+        ...(payload.globalTaskConcurrency !== undefined
+          ? { globalTaskConcurrency: payload.globalTaskConcurrency }
+          : {}),
+        ...(payload.perUserTaskConcurrency !== undefined
+          ? { perUserTaskConcurrency: payload.perUserTaskConcurrency }
+          : {}),
+        ...(payload.manualTaskPriority !== undefined
+          ? { manualTaskPriority: payload.manualTaskPriority }
+          : {}),
+        ...(payload.scheduledTaskPriority !== undefined
+          ? { scheduledTaskPriority: payload.scheduledTaskPriority }
+          : {}),
       },
     });
   }
@@ -468,6 +480,10 @@ export class AdminService {
     return this.prismaService.systemConfig.create({
       data: {
         platformName: 'CloudFlow',
+        globalTaskConcurrency: 2,
+        perUserTaskConcurrency: 1,
+        manualTaskPriority: 1,
+        scheduledTaskPriority: 10,
       },
     });
   }

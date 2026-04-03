@@ -35,6 +35,7 @@ export function NodeConfigPanel({ nodeId, onClose }: NodeConfigPanelProps) {
     if (!["label", "type", "status", "params"].includes(key)) {
       const nextParams = Object.entries(nextData)
         .filter(([entryKey]) => !["label", "type", "status", "params"].includes(entryKey))
+        .filter(([, entryValue]) => entryValue !== undefined && entryValue !== null && String(entryValue) !== "")
         .map(([entryKey, entryValue]) => `${entryKey}: ${entryValue}`)
         .join(", ");
 
@@ -43,24 +44,28 @@ export function NodeConfigPanel({ nodeId, onClose }: NodeConfigPanelProps) {
   };
 
   return (
-    <div className="w-[400px] bg-[#0A0A0A] flex flex-col h-full shadow-2xl">
-      <div className="h-14 border-b border-white/[0.08] flex items-center justify-between px-4">
-        <h3 className="text-sm font-medium text-zinc-200">配置: {String(localData.label || nodeType)}</h3>
-        <button onClick={onClose} className="text-zinc-500 hover:text-zinc-300 transition-colors">
-          <X className="w-4 h-4" />
+    <div className="flex h-full w-[400px] flex-col bg-[#0A0A0A] shadow-2xl">
+      <div className="flex h-14 items-center justify-between border-b border-white/[0.08] px-4">
+        <h3 className="text-sm font-medium text-zinc-200">配置节点：{String(localData.label || nodeType)}</h3>
+        <button onClick={onClose} className="text-zinc-500 transition-colors hover:text-zinc-300">
+          <X className="h-4 w-4" />
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6 space-y-6">
+      <div className="flex-1 space-y-6 overflow-y-auto p-6">
         <div className="space-y-4">
+          <div className="rounded-lg border border-sky-500/10 bg-sky-500/5 px-3 py-3 text-xs text-sky-100">
+            支持引用运行参数和变量，例如 <code>{`{{inputs.keyword}}`}</code>、<code>{`{{variables.token}}`}</code>。
+          </div>
+
           <div className="space-y-2">
-            <label className="text-xs font-medium text-zinc-400 uppercase tracking-wider">节点名称</label>
+            <label className="text-xs font-medium uppercase tracking-wider text-zinc-400">节点名称</label>
             <Input value={String(localData.label || "")} onChange={(event) => handleChange("label", event.target.value)} />
           </div>
 
           {definition?.fields.map((field) => (
             <div key={field.name} className="space-y-2">
-              <label className="text-xs font-medium text-zinc-400 uppercase tracking-wider">{field.label}</label>
+              <label className="text-xs font-medium uppercase tracking-wider text-zinc-400">{field.label}</label>
               {field.type === "select" ? (
                 <select
                   value={String(localData[field.name] || field.defaultValue || "")}
@@ -76,13 +81,19 @@ export function NodeConfigPanel({ nodeId, onClose }: NodeConfigPanelProps) {
               ) : (
                 <Input
                   type={field.type}
-                  value={String(localData[field.name] || "")}
+                  value={String(localData[field.name] || field.defaultValue || "")}
                   onChange={(event) => handleChange(field.name, event.target.value)}
                   placeholder={field.placeholder}
                 />
               )}
             </div>
           ))}
+
+          {definition?.fields.length === 0 && (
+            <div className="rounded-lg border border-dashed border-white/[0.08] bg-white/[0.02] px-3 py-3 text-xs text-zinc-500">
+              这个节点没有额外配置项，执行时会直接作用于当前页面上下文。
+            </div>
+          )}
         </div>
       </div>
     </div>

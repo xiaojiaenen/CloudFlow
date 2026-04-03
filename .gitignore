@@ -21,6 +21,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 backend/runtime-*.log
+.logs/
+.run-logs/
+backend/runtime/
 
 # IDE / OS
 .DS_Store

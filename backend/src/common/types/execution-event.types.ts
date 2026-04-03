@@ -45,5 +45,9 @@ export interface TaskExecutionEvent {
 
 export interface TaskQueuePayload {
   taskId: string;
+  ownerId: string;
+  triggerSource: 'manual' | 'schedule';
+  priority: number;
   workflow: WorkflowDefinition;
+  inputs?: Record<string, string>;
 }

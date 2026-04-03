@@ -51,6 +51,14 @@ class WorkflowCanvasEdgeDto {
 
   @IsString()
   target!: string;
+
+  @IsOptional()
+  @IsString()
+  sourceHandle?: string;
+
+  @IsOptional()
+  @IsString()
+  targetHandle?: string;
 }
 
 class WorkflowCanvasDto {
@@ -63,6 +71,76 @@ class WorkflowCanvasDto {
   @ValidateNested({ each: true })
   @Type(() => WorkflowCanvasEdgeDto)
   edges!: WorkflowCanvasEdgeDto[];
+}
+
+class WorkflowInputFieldOptionDto {
+  @IsString()
+  label!: string;
+
+  @IsString()
+  value!: string;
+}
+
+class WorkflowInputFieldDto {
+  @IsString()
+  key!: string;
+
+  @IsString()
+  label!: string;
+
+  @IsString()
+  @IsIn(['text', 'textarea', 'password', 'number', 'select', 'date', 'email'])
+  type!: 'text' | 'textarea' | 'password' | 'number' | 'select' | 'date' | 'email';
+
+  @IsOptional()
+  @IsBoolean()
+  required?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  sensitive?: boolean;
+
+  @IsOptional()
+  @IsString()
+  placeholder?: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @IsOptional()
+  @IsString()
+  defaultValue?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => WorkflowInputFieldOptionDto)
+  options?: WorkflowInputFieldOptionDto[];
+}
+
+class WorkflowCredentialRequirementDto {
+  @IsString()
+  key!: string;
+
+  @IsString()
+  label!: string;
+
+  @IsString()
+  @IsIn(['account', 'api_key', 'cookie', 'smtp', 'custom'])
+  type!: 'account' | 'api_key' | 'cookie' | 'smtp' | 'custom';
+
+  @IsOptional()
+  @IsBoolean()
+  required?: boolean;
+
+  @IsOptional()
+  @IsString()
+  provider?: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
 }
 
 export class WorkflowScheduleDto {
@@ -100,6 +178,18 @@ export class WorkflowDefinitionDto {
   @ValidateNested()
   @Type(() => WorkflowCanvasDto)
   canvas?: WorkflowCanvasDto;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => WorkflowInputFieldDto)
+  inputSchema?: WorkflowInputFieldDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => WorkflowCredentialRequirementDto)
+  credentialRequirements?: WorkflowCredentialRequirementDto[];
 }
 
 export class CreateWorkflowDto {

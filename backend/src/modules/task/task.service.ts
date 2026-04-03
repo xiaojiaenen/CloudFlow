@@ -1,5 +1,9 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, TaskStatus, TaskTriggerSource } from '@prisma/client';
+import {
+  buildWorkflowExecutionSnapshot,
+  resolveWorkflowRuntimeInputs,
+} from 'src/common/utils/workflow-runtime';
 import { WorkflowDefinition } from 'src/common/types/workflow.types';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { QueueService } from 'src/queue/queue.service';
@@ -26,13 +30,25 @@ export class TaskService {
       throw new NotFoundException(`Workflow ${runTaskDto.workflowId} not found`);
     }
 
+    const workflowDefinition = workflow.definition as unknown as WorkflowDefinition;
+    const runtimeContext = resolveWorkflowRuntimeInputs(
+      workflowDefinition.inputSchema ?? [],
+      runTaskDto.inputs,
+    );
+    const executionSnapshot = buildWorkflowExecutionSnapshot(
+      workflowDefinition,
+      runtimeContext.inputs,
+    );
+    const priority = await this.queueService.resolveTaskPriority('manual');
+
     const task = await this.prismaService.task.create({
       data: {
         workflowId: workflow.id,
         ownerId: workflow.ownerId ?? currentUser.id,
         status: 'pending',
         triggerSource: 'manual',
-        workflowSnapshot: workflow.definition as Prisma.InputJsonValue,
+        queuePriority: priority,
+        workflowSnapshot: executionSnapshot as unknown as Prisma.InputJsonValue,
       },
       include: {
         workflow: true,
@@ -41,7 +57,11 @@ export class TaskService {
 
     await this.queueService.enqueueTask({
       taskId: task.id,
-      workflow: workflow.definition as unknown as WorkflowDefinition,
+      ownerId: task.ownerId,
+      triggerSource: 'manual',
+      priority,
+      workflow: executionSnapshot,
+      inputs: runtimeContext.inputs,
     });
 
     return task;
@@ -275,6 +295,7 @@ export class TaskService {
 
   async retry(id: string, currentUser: AuthenticatedUser) {
     const task = await this.getTaskOrThrow(id, currentUser);
+    const priority = await this.queueService.resolveTaskPriority('manual');
 
     const retriedTask = await this.prismaService.task.create({
       data: {
@@ -282,6 +303,7 @@ export class TaskService {
         ownerId: task.ownerId,
         status: 'pending',
         triggerSource: 'manual',
+        queuePriority: priority,
         workflowSnapshot: task.workflowSnapshot as Prisma.InputJsonValue,
       },
       include: {
@@ -291,7 +313,20 @@ export class TaskService {
 
     await this.queueService.enqueueTask({
       taskId: retriedTask.id,
+      ownerId: retriedTask.ownerId,
+      triggerSource: 'manual',
+      priority,
       workflow: task.workflowSnapshot as unknown as WorkflowDefinition,
+      inputs:
+        (
+          task.workflowSnapshot as Record<string, unknown> | null
+        )?.runtime &&
+        typeof (task.workflowSnapshot as Record<string, unknown>).runtime === 'object'
+          ? (((task.workflowSnapshot as Record<string, unknown>).runtime as Record<
+              string,
+              unknown
+            >).inputs as Record<string, string> | undefined) ?? {}
+          : {},
     });
 
     return retriedTask;

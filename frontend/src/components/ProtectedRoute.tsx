@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/src/context/AuthContext";
 
@@ -5,7 +6,7 @@ export function ProtectedRoute({
   children,
   requireAdmin = false,
 }: {
-  children: React.ReactNode;
+  children: ReactNode;
   requireAdmin?: boolean;
 }) {
   const location = useLocation();

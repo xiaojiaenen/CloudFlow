@@ -58,4 +58,28 @@ export class UpdateSystemConfigDto {
   @Min(5)
   @Max(100)
   monitorPageSize?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  @Max(32)
+  globalTaskConcurrency?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  @Max(16)
+  perUserTaskConcurrency?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  @Max(100)
+  manualTaskPriority?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  @Max(100)
+  scheduledTaskPriority?: number;
 }

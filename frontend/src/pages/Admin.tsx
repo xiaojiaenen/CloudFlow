@@ -41,6 +41,10 @@ const emptyConfig: SystemConfigRecord = {
   screenshotIntervalMs: 500,
   taskRetentionDays: 30,
   monitorPageSize: 10,
+  globalTaskConcurrency: 2,
+  perUserTaskConcurrency: 1,
+  manualTaskPriority: 1,
+  scheduledTaskPriority: 10,
   createdAt: "",
   updatedAt: "",
 };
@@ -116,7 +120,7 @@ export default function Admin() {
           </Button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-8">
+        <div className="flex-1 overflow-y-auto p-6 xl:p-8">
           <div className="max-w-7xl mx-auto space-y-8">
             <div>
               <h2 className="text-2xl font-semibold tracking-tight mb-1">系统管理中心</h2>
@@ -130,13 +134,13 @@ export default function Admin() {
             )}
 
             <Tabs defaultValue="overview">
-              <TabsList>
+              <TabsList className="sticky top-0 z-10 w-fit backdrop-blur-md">
                 <TabsTrigger value="overview">角色与总览</TabsTrigger>
                 <TabsTrigger value="templates">模板后台</TabsTrigger>
                 <TabsTrigger value="system">系统配置</TabsTrigger>
               </TabsList>
 
-              <TabsContent value="overview" className="space-y-6">
+              <TabsContent value="overview" className="space-y-6 xl:max-h-[calc(100vh-14rem)] xl:overflow-y-auto xl:pr-1">
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
                   <MetricCard label="活跃工作流" value={overview?.metrics.activeWorkflows ?? 0} desc={`草稿 ${overview?.metrics.draftWorkflows ?? 0} · 归档 ${overview?.metrics.archivedWorkflows ?? 0}`} icon={<Activity className="w-4 h-4 text-sky-400" />} />
                   <MetricCard label="商店模板" value={overview?.metrics.templateTotal ?? 0} desc={`已发布 ${overview?.metrics.publishedTemplates ?? 0}`} icon={<ShoppingBag className="w-4 h-4 text-violet-400" />} />
@@ -200,7 +204,7 @@ export default function Admin() {
                         {isCreatingUser ? "创建中..." : "创建用户"}
                       </Button>
                     </div>
-                    <div className="space-y-3">
+                    <div className="space-y-3 max-h-[360px] overflow-y-auto pr-1">
                       {users.map((user) => (
                         <div key={user.id} className="rounded-xl border border-white/[0.05] bg-white/[0.02] p-4 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
                           <div>
@@ -241,7 +245,7 @@ export default function Admin() {
                 </Card>
               </TabsContent>
 
-              <TabsContent value="templates" className="space-y-6">
+              <TabsContent value="templates" className="space-y-6 xl:max-h-[calc(100vh-14rem)] xl:overflow-y-auto xl:pr-1">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <MetricCard label="当前模板数" value={templateStats.total} desc="" icon={<ShoppingBag className="w-4 h-4 text-zinc-400" />} />
                   <MetricCard label="已发布" value={templateStats.published} desc="" icon={<ShoppingBag className="w-4 h-4 text-emerald-400" />} />
@@ -303,7 +307,7 @@ export default function Admin() {
                       </select>
                     </div>
                   </CardHeader>
-                  <CardContent className="space-y-3">
+                  <CardContent className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
                     {templates.map((template) => (
                       <div key={template.id} className="rounded-xl border border-white/[0.05] bg-white/[0.02] p-4 flex items-center justify-between gap-4">
                         <div className="min-w-0">
@@ -329,7 +333,7 @@ export default function Admin() {
                 </Card>
               </TabsContent>
 
-              <TabsContent value="system" className="space-y-6">
+              <TabsContent value="system" className="space-y-6 xl:max-h-[calc(100vh-14rem)] xl:overflow-y-auto xl:pr-1">
                 <Card>
                   <CardHeader><CardTitle>系统参数</CardTitle><CardDescription>平台级参数会影响截图频率、监控分页和通知行为。</CardDescription></CardHeader>
                   <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">

@@ -11,6 +11,8 @@ import { ExecutionPanel } from "@/src/components/ExecutionPanel";
 import { LogEntry } from "@/src/components/LogPanel";
 import { NodeConfigPanel } from "@/src/components/NodeConfigPanel";
 import { NodePalette } from "@/src/components/NodePalette";
+import { RunWorkflowDialog } from "@/src/components/RunWorkflowDialog";
+import { WorkflowInputsDesigner } from "@/src/components/WorkflowInputsDesigner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/src/components/ui/Dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/src/components/ui/Tabs";
 import { Switch } from "@/src/components/ui/Switch";
@@ -24,8 +26,8 @@ import {
   createEmptyCanvasGraph,
   createWorkflow,
   ExecutionNodeStatus,
-  getTask,
   getAuthToken,
+  getTask,
   getWorkflow,
   getWsBaseUrl,
   hydrateCanvasFromWorkflow,
@@ -39,10 +41,13 @@ import {
   TaskEvent,
   TaskExecutionRecord,
   updateWorkflow,
+  WorkflowCredentialRequirement,
+  WorkflowInputField,
+  WorkflowRecord,
+  WorkflowRuntimeContext,
+  WorkflowStatus,
   WORKFLOW_OPEN_BLANK_EVENT,
   WORKFLOW_SAVED_EVENT,
-  WorkflowRecord,
-  WorkflowStatus,
 } from "@/src/lib/cloudflow";
 
 function toLogTimestamp(timestamp?: string) {
@@ -91,6 +96,68 @@ function getLatestPersistedScreenshot(events: TaskExecutionRecord[]) {
   return screenshots.length > 0 ? screenshots[screenshots.length - 1].imageBase64 ?? null : null;
 }
 
+function buildInitialRunValues(schema: WorkflowInputField[]) {
+  return schema.reduce<Record<string, string>>((acc, field) => {
+    acc[field.key] = field.defaultValue ?? "";
+    return acc;
+  }, {});
+}
+
+function buildRuntimePreview(
+  schema: WorkflowInputField[],
+  values: Record<string, string>,
+): WorkflowRuntimeContext {
+  const inputs: Record<string, string> = {};
+  const maskedInputs: Record<string, string> = {};
+
+  for (const field of schema) {
+    const value = values[field.key] ?? field.defaultValue ?? "";
+    inputs[field.key] = value;
+    maskedInputs[field.key] = field.sensitive
+      ? value
+        ? `${"*".repeat(Math.max(4, value.length - 2))}${value.slice(-2)}`
+        : ""
+      : value;
+  }
+
+  return {
+    inputs,
+    maskedInputs,
+  };
+}
+
+function buildWorkflowDraftSnapshot(params: {
+  name: string;
+  description: string;
+  status: WorkflowStatus;
+  scheduleEnabled: boolean;
+  scheduleCron: string;
+  scheduleTimezone: string;
+  alertEmail: string;
+  alertOnFailure: boolean;
+  alertOnSuccess: boolean;
+  inputSchema: WorkflowInputField[];
+  credentialRequirements: WorkflowCredentialRequirement[];
+  flowNodes: SanitizedCanvasNode[];
+  flowEdges: SanitizedCanvasEdge[];
+}) {
+  return JSON.stringify({
+    name: params.name.trim(),
+    description: params.description.trim(),
+    status: params.status,
+    scheduleEnabled: params.scheduleEnabled,
+    scheduleCron: params.scheduleCron.trim(),
+    scheduleTimezone: params.scheduleTimezone,
+    alertEmail: params.alertEmail.trim(),
+    alertOnFailure: params.alertOnFailure,
+    alertOnSuccess: params.alertOnSuccess,
+    inputSchema: params.inputSchema,
+    credentialRequirements: params.credentialRequirements,
+    flowNodes: params.flowNodes,
+    flowEdges: params.flowEdges,
+  });
+}
+
 export default function Workspace() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -106,6 +173,7 @@ export default function Workspace() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [screenshot, setScreenshot] = useState<string | null>(null);
+  const [taskRuntimeContext, setTaskRuntimeContext] = useState<WorkflowRuntimeContext | null>(null);
   const [flowNodes, setFlowNodes] = useState<SanitizedCanvasNode[]>([]);
   const [flowEdges, setFlowEdges] = useState<SanitizedCanvasEdge[]>([]);
   const [nodeStatuses, setNodeStatuses] = useState<Record<string, ExecutionNodeStatus>>({});
@@ -118,9 +186,15 @@ export default function Workspace() {
   const [alertEmail, setAlertEmail] = useState("");
   const [alertOnFailure, setAlertOnFailure] = useState(false);
   const [alertOnSuccess, setAlertOnSuccess] = useState(false);
+  const [inputSchema, setInputSchema] = useState<WorkflowInputField[]>([]);
+  const [credentialRequirements, setCredentialRequirements] = useState<WorkflowCredentialRequirement[]>([]);
   const [canvasVersion, setCanvasVersion] = useState(0);
   const [publishDialogOpen, setPublishDialogOpen] = useState(false);
   const [isPublishingTemplate, setIsPublishingTemplate] = useState(false);
+  const [runDialogOpen, setRunDialogOpen] = useState(false);
+  const [isStartingRun, setIsStartingRun] = useState(false);
+  const [pendingRunWorkflowId, setPendingRunWorkflowId] = useState<string | null>(null);
+  const [runFormValues, setRunFormValues] = useState<Record<string, string>>({});
   const [publishForm, setPublishForm] = useState({
     slug: "",
     title: "",
@@ -132,6 +206,7 @@ export default function Workspace() {
   const socketRef = useRef<Socket | null>(null);
   const activeNodeIdRef = useRef<string | null>(null);
   const lastFlowSnapshotRef = useRef<string>("");
+  const persistedWorkflowSnapshotRef = useRef<string>("");
 
   const pageUrl = useMemo(() => getPrimaryPageUrl(flowNodes), [flowNodes]);
   const scheduleSummary = useMemo(() => {
@@ -142,10 +217,7 @@ export default function Workspace() {
     return `定时调度已启用 · ${scheduleCron || "--"} · ${scheduleTimezone || "Asia/Shanghai"}`;
   }, [scheduleCron, scheduleEnabled, scheduleTimezone]);
   const alertSummary = useMemo(() => {
-    const flags = [
-      alertOnFailure ? "失败" : "",
-      alertOnSuccess ? "成功" : "",
-    ].filter(Boolean);
+    const flags = [alertOnFailure ? "失败" : "", alertOnSuccess ? "成功" : ""].filter(Boolean);
 
     if (!alertEmail || flags.length === 0) {
       return "未启用邮件告警";
@@ -164,6 +236,44 @@ export default function Workspace() {
 
     return "已发布";
   }, [workflowStatus]);
+  const parameterSummary = useMemo(
+    () => `参数 ${inputSchema.length} 项 · 凭据要求 ${credentialRequirements.length} 项`,
+    [credentialRequirements.length, inputSchema.length],
+  );
+  const workflowDraftSnapshot = useMemo(
+    () =>
+      buildWorkflowDraftSnapshot({
+        name: workflowName,
+        description: workflowDescription,
+        status: workflowStatus,
+        scheduleEnabled,
+        scheduleCron,
+        scheduleTimezone,
+        alertEmail,
+        alertOnFailure,
+        alertOnSuccess,
+        inputSchema,
+        credentialRequirements,
+        flowNodes,
+        flowEdges,
+      }),
+    [
+      alertEmail,
+      alertOnFailure,
+      alertOnSuccess,
+      credentialRequirements,
+      flowEdges,
+      flowNodes,
+      inputSchema,
+      scheduleCron,
+      scheduleEnabled,
+      scheduleTimezone,
+      workflowDescription,
+      workflowName,
+      workflowStatus,
+    ],
+  );
+  const hasUnsavedWorkflowChanges = workflowDraftSnapshot !== persistedWorkflowSnapshotRef.current;
 
   const resetCanvasWithWorkflow = useCallback((workflow?: WorkflowRecord | null) => {
     const graph = workflow ? hydrateCanvasFromWorkflow(workflow.definition) : createEmptyCanvasGraph();
@@ -181,12 +291,31 @@ export default function Workspace() {
     setAlertEmail(workflow?.alertEmail ?? "");
     setAlertOnFailure(workflow?.alertOnFailure ?? false);
     setAlertOnSuccess(workflow?.alertOnSuccess ?? false);
+    setInputSchema(workflow?.definition.inputSchema ?? []);
+    setCredentialRequirements(workflow?.definition.credentialRequirements ?? []);
+    setRunFormValues(buildInitialRunValues(workflow?.definition.inputSchema ?? []));
+    setTaskRuntimeContext(workflow?.definition.runtime ?? null);
     setFlowNodes(graph.nodes);
     setFlowEdges(graph.edges);
     setNodeStatuses(buildIdleNodeStatuses(graph.nodes));
     setSelectedNodeId(null);
     activeNodeIdRef.current = null;
     lastFlowSnapshotRef.current = snapshot;
+    persistedWorkflowSnapshotRef.current = buildWorkflowDraftSnapshot({
+      name: workflow?.name ?? "未命名工作流",
+      description: workflow?.description ?? "由前端画布编辑的工作流",
+      status: workflow?.status ?? "draft",
+      scheduleEnabled: workflow?.scheduleEnabled ?? false,
+      scheduleCron: workflow?.scheduleCron ?? "0 0 * * *",
+      scheduleTimezone: workflow?.scheduleTimezone ?? "Asia/Shanghai",
+      alertEmail: workflow?.alertEmail ?? "",
+      alertOnFailure: workflow?.alertOnFailure ?? false,
+      alertOnSuccess: workflow?.alertOnSuccess ?? false,
+      inputSchema: workflow?.definition.inputSchema ?? [],
+      credentialRequirements: workflow?.definition.credentialRequirements ?? [],
+      flowNodes: graph.nodes,
+      flowEdges: graph.edges,
+    });
     setCanvasVersion((value) => value + 1);
   }, []);
 
@@ -229,7 +358,10 @@ export default function Workspace() {
 
   const persistWorkflow = useCallback(
     async (options?: { silent?: boolean }) => {
-      const definition = buildWorkflowDefinition(flowNodes, flowEdges);
+      const definition = buildWorkflowDefinition(flowNodes, flowEdges, {
+        inputSchema,
+        credentialRequirements,
+      });
       const payload = {
         name: workflowName.trim() || "未命名工作流",
         description: workflowDescription.trim() || "由前端画布编辑的工作流",
@@ -264,6 +396,22 @@ export default function Workspace() {
           addLog("success", `工作流“${workflow.name}”已保存。`);
         }
 
+        persistedWorkflowSnapshotRef.current = buildWorkflowDraftSnapshot({
+          name: payload.name,
+          description: payload.description,
+          status: payload.status,
+          scheduleEnabled: payload.schedule.enabled,
+          scheduleCron: payload.schedule.cron ?? "",
+          scheduleTimezone: payload.schedule.timezone ?? "Asia/Shanghai",
+          alertEmail: payload.alerts.email ?? "",
+          alertOnFailure: payload.alerts.onFailure,
+          alertOnSuccess: payload.alerts.onSuccess,
+          inputSchema,
+          credentialRequirements,
+          flowNodes,
+          flowEdges,
+        });
+
         return workflow;
       } catch (error) {
         addLog("error", error instanceof Error ? error.message : "保存工作流失败。");
@@ -287,6 +435,8 @@ export default function Workspace() {
       workflowDescription,
       workflowId,
       workflowName,
+      inputSchema,
+      credentialRequirements,
     ],
   );
 
@@ -405,8 +555,11 @@ export default function Workspace() {
       setTaskId(null);
       setIsRunning(false);
       setIsCancelling(false);
+      setRunDialogOpen(false);
+      setPendingRunWorkflowId(null);
       setLogs([]);
       setScreenshot(null);
+      setTaskRuntimeContext(null);
 
       try {
         if (!workflowId) {
@@ -433,16 +586,14 @@ export default function Workspace() {
           setIsCancelling(Boolean(taskDetail.cancelRequestedAt));
           setLogs(buildRestoredLogs(taskDetail.executionEvents ?? []));
           setScreenshot(getLatestPersistedScreenshot(taskDetail.executionEvents ?? []));
-        } else {
-          setTaskId(null);
-          setIsRunning(false);
-          setIsCancelling(false);
+          setTaskRuntimeContext(taskDetail.workflowSnapshot?.runtime ?? null);
         }
       } catch (error) {
         addLog("error", error instanceof Error ? error.message : "读取工作流失败。");
         setTaskId(null);
         setIsRunning(false);
         setIsCancelling(false);
+        setTaskRuntimeContext(null);
         resetCanvasWithWorkflow(null);
       } finally {
         setIsLoadingWorkflow(false);
@@ -459,7 +610,10 @@ export default function Workspace() {
       setTaskId(null);
       setIsRunning(false);
       setIsCancelling(false);
+      setRunDialogOpen(false);
+      setPendingRunWorkflowId(null);
       setIsLoadingWorkflow(false);
+      setTaskRuntimeContext(null);
       resetCanvasWithWorkflow(null);
     };
 
@@ -493,6 +647,49 @@ export default function Workspace() {
     }
   }, [scheduleEnabled, workflowStatus]);
 
+  useEffect(() => {
+    const hasMeaningfulChanges =
+      Boolean(workflowId) ||
+      flowNodes.length > 0 ||
+      flowEdges.length > 0 ||
+      inputSchema.length > 0 ||
+      credentialRequirements.length > 0 ||
+      workflowName.trim() !== "未命名工作流" ||
+      workflowDescription.trim() !== "由前端画布编辑的工作流" ||
+      workflowStatus !== "draft" ||
+      scheduleEnabled ||
+      Boolean(alertEmail.trim()) ||
+      alertOnFailure ||
+      alertOnSuccess;
+
+    if (!hasMeaningfulChanges || !hasUnsavedWorkflowChanges || isLoadingWorkflow || isSavingWorkflow) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void persistWorkflow({ silent: true }).catch(() => undefined);
+    }, 1200);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    alertEmail,
+    alertOnFailure,
+    alertOnSuccess,
+    credentialRequirements.length,
+    flowEdges.length,
+    flowNodes.length,
+    hasUnsavedWorkflowChanges,
+    inputSchema.length,
+    isLoadingWorkflow,
+    isSavingWorkflow,
+    persistWorkflow,
+    scheduleEnabled,
+    workflowDescription,
+    workflowId,
+    workflowName,
+    workflowStatus,
+  ]);
+
   const handlePublishTemplate = useCallback(async () => {
     if (user?.role !== "admin") {
       return;
@@ -521,6 +718,37 @@ export default function Workspace() {
       setIsPublishingTemplate(false);
     }
   }, [addLog, persistWorkflow, publishForm, user?.role]);
+
+  const startWorkflowRun = useCallback(
+    async (workflowExecutionId: string, inputs: Record<string, string>) => {
+      try {
+        setIsStartingRun(true);
+        addLog("info", "工作流已保存，正在创建执行任务...");
+        const task = await runTask(workflowExecutionId, inputs);
+        setTaskId(task.id);
+        setIsRunning(true);
+        setTaskRuntimeContext(buildRuntimePreview(inputSchema, inputs));
+        addLog("info", `任务 ${task.id} 已入队，等待 Worker 执行...`);
+      } catch (error) {
+        setIsRunning(false);
+        setIsCancelling(false);
+        addLog("error", error instanceof Error ? error.message : "执行任务时发生未知错误。");
+      } finally {
+        setIsStartingRun(false);
+      }
+    },
+    [addLog, inputSchema],
+  );
+
+  const handleConfirmRun = useCallback(async () => {
+    if (!pendingRunWorkflowId) {
+      return;
+    }
+
+    await startWorkflowRun(pendingRunWorkflowId, runFormValues);
+    setRunDialogOpen(false);
+    setPendingRunWorkflowId(null);
+  }, [pendingRunWorkflowId, runFormValues, startWorkflowRun]);
 
   const toggleRun = useCallback(async () => {
     if (isRunning) {
@@ -553,6 +781,7 @@ export default function Workspace() {
     setLogs([]);
     setScreenshot(null);
     setTaskId(null);
+    setTaskRuntimeContext(null);
     setIsCancelling(false);
     activeNodeIdRef.current = null;
     setNodeStatuses(buildIdleNodeStatuses(flowNodes));
@@ -561,16 +790,39 @@ export default function Workspace() {
       const workflow = await persistWorkflow({ silent: true });
       addLog("info", "工作流已保存，正在创建执行任务...");
 
-      const task = await runTask(workflow.id);
+      const nextRunValues = {
+        ...buildInitialRunValues(inputSchema),
+        ...runFormValues,
+      };
+      setRunFormValues(nextRunValues);
+
+      if (inputSchema.length > 0 || credentialRequirements.length > 0) {
+        setPendingRunWorkflowId(workflow.id);
+        setRunDialogOpen(true);
+        return;
+      }
+
+      const task = await runTask(workflow.id, nextRunValues);
       setTaskId(task.id);
       setIsRunning(true);
+      setTaskRuntimeContext(buildRuntimePreview(inputSchema, nextRunValues));
       addLog("info", `任务 ${task.id} 已入队，等待 Worker 执行...`);
     } catch (error) {
       setIsRunning(false);
       setIsCancelling(false);
       addLog("error", error instanceof Error ? error.message : "执行任务时发生未知错误。");
     }
-  }, [addLog, flowNodes, isCancelling, isRunning, persistWorkflow, taskId]);
+  }, [
+    addLog,
+    credentialRequirements.length,
+    flowNodes,
+    inputSchema,
+    isCancelling,
+    isRunning,
+    persistWorkflow,
+    runFormValues,
+    taskId,
+  ]);
 
   return (
     <div className="h-screen w-screen bg-[#09090b] text-zinc-50 flex overflow-hidden font-sans selection:bg-sky-500/30">
@@ -587,6 +839,9 @@ export default function Workspace() {
               className="h-8 w-56"
               placeholder="输入工作流名称"
             />
+            <div className="min-w-[88px] text-right text-xs text-zinc-500">
+              {isSavingWorkflow ? "自动保存中..." : hasUnsavedWorkflowChanges ? "等待自动保存" : "已自动保存"}
+            </div>
             <Button
               variant="outline"
               size="sm"
@@ -597,7 +852,7 @@ export default function Workspace() {
               className="h-8 gap-2"
             >
               <Save className="w-3.5 h-3.5" />
-              {isSavingWorkflow ? "保存中..." : "保存"}
+              {isSavingWorkflow ? "保存中..." : "立即保存"}
             </Button>
             {user?.role === "admin" && (
               <Button
@@ -635,7 +890,7 @@ export default function Workspace() {
             {workflowId ? `当前工作流 ID: ${workflowId}` : "当前为未保存工作流"}
           </div>
           <div className="text-xs text-zinc-500">
-            {isLoadingWorkflow ? "正在加载工作流..." : `${workflowDescription} · 状态：${workflowStatusLabel} · ${scheduleSummary} · ${alertSummary}`}
+            {isLoadingWorkflow ? "正在加载工作流..." : `${workflowDescription} · 状态：${workflowStatusLabel} · ${parameterSummary} · ${scheduleSummary} · ${alertSummary}`}
           </div>
         </div>
 
@@ -643,34 +898,35 @@ export default function Workspace() {
           <ReactFlowProvider>
             <NodePalette />
 
-            <WorkflowCanvas
-              key={`${workflowId ?? "draft"}-${canvasVersion}`}
-              isRunning={isRunning}
-              nodeStatuses={nodeStatuses}
-              initialNodes={flowNodes}
-              initialEdges={flowEdges}
-              onWorkflowChange={({ nodes, edges }) => {
-                const sanitizedNodes = sanitizeCanvasNodes(nodes);
-                const sanitizedEdges = sanitizeCanvasEdges(edges);
-                const snapshot = JSON.stringify({
-                  nodes: sanitizedNodes,
-                  edges: sanitizedEdges,
-                });
+            <div key={`${workflowId ?? "draft"}-${canvasVersion}`} className="contents">
+              <WorkflowCanvas
+                isRunning={isRunning}
+                nodeStatuses={nodeStatuses}
+                initialNodes={flowNodes}
+                initialEdges={flowEdges}
+                onWorkflowChange={({ nodes, edges }) => {
+                  const sanitizedNodes = sanitizeCanvasNodes(nodes);
+                  const sanitizedEdges = sanitizeCanvasEdges(edges);
+                  const snapshot = JSON.stringify({
+                    nodes: sanitizedNodes,
+                    edges: sanitizedEdges,
+                  });
 
-                if (snapshot === lastFlowSnapshotRef.current) {
-                  return;
-                }
+                  if (snapshot === lastFlowSnapshotRef.current) {
+                    return;
+                  }
 
-                lastFlowSnapshotRef.current = snapshot;
-                setFlowNodes(sanitizedNodes);
-                setFlowEdges(sanitizedEdges);
-              }}
-              onNodeSelect={(id) => {
-                if (!isRunning) {
-                  setSelectedNodeId(id);
-                }
-              }}
-            />
+                  lastFlowSnapshotRef.current = snapshot;
+                  setFlowNodes(sanitizedNodes);
+                  setFlowEdges(sanitizedEdges);
+                }}
+                onNodeSelect={(id) => {
+                  if (!isRunning) {
+                    setSelectedNodeId(id);
+                  }
+                }}
+              />
+            </div>
 
             <div className="h-full z-10 flex border-l border-white/[0.05]">
               {selectedNodeId && !isRunning ? (
@@ -682,6 +938,8 @@ export default function Workspace() {
                   screenshot={screenshot}
                   taskId={taskId}
                   pageUrl={pageUrl}
+                  runtimeContext={taskRuntimeContext}
+                  inputSchema={inputSchema}
                   onClearLogs={() => setLogs([])}
                 />
               )}
@@ -689,6 +947,23 @@ export default function Workspace() {
           </ReactFlowProvider>
         </div>
       </div>
+
+      <RunWorkflowDialog
+        open={runDialogOpen}
+        workflowName={workflowName}
+        inputSchema={inputSchema}
+        credentialRequirements={credentialRequirements}
+        values={runFormValues}
+        isSubmitting={isStartingRun}
+        onOpenChange={(open) => {
+          setRunDialogOpen(open);
+          if (!open) {
+            setPendingRunWorkflowId(null);
+          }
+        }}
+        onValuesChange={setRunFormValues}
+        onSubmit={() => void handleConfirmRun()}
+      />
 
       <Dialog open={publishDialogOpen} onOpenChange={setPublishDialogOpen}>
         <DialogHeader>
@@ -745,103 +1020,109 @@ export default function Workspace() {
 
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
         <DialogHeader>
-          <DialogTitle>工作流全局配置</DialogTitle>
+          <DialogTitle>工作流设置</DialogTitle>
         </DialogHeader>
-        <DialogContent>
-          <Tabs defaultValue="schedule">
-            <TabsList className="w-full grid grid-cols-2 mb-6">
-              <TabsTrigger value="schedule">调度执行</TabsTrigger>
-              <TabsTrigger value="alerts">告警规则</TabsTrigger>
-            </TabsList>
+        <DialogContent className="flex min-h-0 flex-1 flex-col p-0">
+          <Tabs defaultValue="schedule" className="flex min-h-0 flex-1 flex-col">
+            <div className="sticky top-0 z-10 border-b border-white/[0.05] bg-zinc-950/95 px-6 py-4 backdrop-blur">
+              <TabsList className="grid w-full grid-cols-3">
+                <TabsTrigger value="schedule">调度</TabsTrigger>
+                <TabsTrigger value="alerts">告警</TabsTrigger>
+                <TabsTrigger value="inputs">参数与凭据</TabsTrigger>
+              </TabsList>
+            </div>
 
-            <TabsContent value="schedule" className="space-y-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-medium text-zinc-200">工作流状态</div>
-                  <div className="text-xs text-zinc-500">草稿适合继续编辑，归档会自动停用调度。</div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+              <TabsContent value="schedule" className="mt-0 space-y-6 pb-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-zinc-200">工作流状态</div>
+                    <div className="text-xs text-zinc-500">草稿便于持续编辑；归档后会自动停用调度，避免继续触发。</div>
+                  </div>
+                  <select
+                    value={workflowStatus}
+                    onChange={(event) => setWorkflowStatus(event.target.value as WorkflowStatus)}
+                    className="flex h-10 w-40 rounded-md border border-white/[0.06] bg-zinc-900/50 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                  >
+                    <option value="draft">草稿</option>
+                    <option value="active">已发布</option>
+                    <option value="archived">已归档</option>
+                  </select>
                 </div>
-                <select
-                  value={workflowStatus}
-                  onChange={(event) => setWorkflowStatus(event.target.value as WorkflowStatus)}
-                  className="flex h-10 w-40 rounded-md border border-white/[0.06] bg-zinc-900/50 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                >
-                  <option value="draft">草稿</option>
-                  <option value="active">已发布</option>
-                  <option value="archived">已归档</option>
-                </select>
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-medium text-zinc-200">启用定时调度</div>
-                  <div className="text-xs text-zinc-500">按设定的时间周期自动运行此工作流</div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-zinc-200">启用定时调度</div>
+                    <div className="text-xs text-zinc-500">按设定周期自动运行这个工作流，适合日报、巡检、同步等场景。</div>
+                  </div>
+                  <Switch checked={scheduleEnabled} onCheckedChange={setScheduleEnabled} disabled={workflowStatus === "archived"} />
                 </div>
-                <Switch checked={scheduleEnabled} onCheckedChange={setScheduleEnabled} disabled={workflowStatus === "archived"} />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-zinc-300">Cron 表达式</label>
-                <Input
-                  value={scheduleCron}
-                  onChange={(event) => setScheduleCron(event.target.value)}
-                  className="font-mono text-sm"
-                  placeholder="例如：0 0 * * *"
-                  disabled={!scheduleEnabled || workflowStatus === "archived"}
-                />
-                <p className="text-xs text-zinc-500">支持标准 Cron 表达式，例如 `0 0 * * *` 表示每天凌晨 00:00。</p>
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-zinc-300">时区</label>
-                <select
-                  value={scheduleTimezone}
-                  onChange={(event) => setScheduleTimezone(event.target.value)}
-                  disabled={!scheduleEnabled || workflowStatus === "archived"}
-                  className="flex h-10 w-full rounded-md border border-white/[0.06] bg-zinc-900/50 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50"
-                >
-                  <option value="Asia/Shanghai" className="bg-zinc-800 text-zinc-200">
-                    Asia/Shanghai (UTC+8)
-                  </option>
-                  <option value="UTC" className="bg-zinc-800 text-zinc-200">
-                    UTC
-                  </option>
-                  <option value="Asia/Tokyo" className="bg-zinc-800 text-zinc-200">
-                    Asia/Tokyo (UTC+9)
-                  </option>
-                  <option value="America/New_York" className="bg-zinc-800 text-zinc-200">
-                    America/New_York (UTC-4/-5)
-                  </option>
-                </select>
-              </div>
-            </TabsContent>
-
-            <TabsContent value="alerts" className="space-y-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-medium text-zinc-200">执行失败</div>
-                  <div className="text-xs text-zinc-500">节点报错或超时</div>
-                </div>
-                <Switch checked={alertOnFailure} onCheckedChange={setAlertOnFailure} />
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-medium text-zinc-200">执行成功</div>
-                  <div className="text-xs text-zinc-500">工作流完整运行结束</div>
-                </div>
-                <Switch checked={alertOnSuccess} onCheckedChange={setAlertOnSuccess} />
-              </div>
-              <div className="pt-4 border-t border-white/[0.05] space-y-4">
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-zinc-300">通知邮箱</label>
+                  <label className="text-sm font-medium text-zinc-300">Cron 表达式</label>
                   <Input
-                    value={alertEmail}
-                    onChange={(event) => setAlertEmail(event.target.value)}
-                    placeholder="admin@example.com"
+                    value={scheduleCron}
+                    onChange={(event) => setScheduleCron(event.target.value)}
+                    className="font-mono text-sm"
+                    placeholder="例如：0 * * * *"
+                    disabled={!scheduleEnabled || workflowStatus === "archived"}
                   />
-                  <p className="text-xs text-zinc-500">当前版本仅支持邮件通知。请在后端环境变量中配置 SMTP 参数后使用。</p>
+                  <p className="text-xs text-zinc-500">支持标准 Cron 表达式，例如 `0 0 * * *` 表示每天凌晨 00:00 执行一次。</p>
                 </div>
-              </div>
-            </TabsContent>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-zinc-300">时区</label>
+                  <select
+                    value={scheduleTimezone}
+                    onChange={(event) => setScheduleTimezone(event.target.value)}
+                    disabled={!scheduleEnabled || workflowStatus === "archived"}
+                    className="flex h-10 w-full rounded-md border border-white/[0.06] bg-zinc-900/50 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50"
+                  >
+                    <option value="Asia/Shanghai" className="bg-zinc-800 text-zinc-200">Asia/Shanghai (UTC+8)</option>
+                    <option value="UTC" className="bg-zinc-800 text-zinc-200">UTC</option>
+                    <option value="Asia/Tokyo" className="bg-zinc-800 text-zinc-200">Asia/Tokyo (UTC+9)</option>
+                    <option value="America/New_York" className="bg-zinc-800 text-zinc-200">America/New_York (UTC-4/-5)</option>
+                  </select>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="alerts" className="mt-0 space-y-6 pb-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-zinc-200">执行失败</div>
+                    <div className="text-xs text-zinc-500">节点报错、超时或任务被 Worker 异常中断时通知。</div>
+                  </div>
+                  <Switch checked={alertOnFailure} onCheckedChange={setAlertOnFailure} />
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-zinc-200">执行成功</div>
+                    <div className="text-xs text-zinc-500">工作流完整执行完成且最终状态为成功时通知。</div>
+                  </div>
+                  <Switch checked={alertOnSuccess} onCheckedChange={setAlertOnSuccess} />
+                </div>
+                <div className="space-y-4 border-t border-white/[0.05] pt-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-zinc-300">通知邮箱</label>
+                    <Input
+                      value={alertEmail}
+                      onChange={(event) => setAlertEmail(event.target.value)}
+                      placeholder="admin@example.com"
+                    />
+                    <p className="text-xs text-zinc-500">当前版本仅支持邮件通知。请先在后台完成 SMTP 配置，再启用这里的告警接收。</p>
+                  </div>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="inputs" className="mt-0 space-y-6 pb-2">
+                <WorkflowInputsDesigner
+                  inputSchema={inputSchema}
+                  credentialRequirements={credentialRequirements}
+                  onInputSchemaChange={setInputSchema}
+                  onCredentialRequirementsChange={setCredentialRequirements}
+                />
+              </TabsContent>
+            </div>
           </Tabs>
 
-          <div className="mt-8 flex justify-end gap-3">
+          <div className="sticky bottom-0 z-10 flex justify-end gap-3 border-t border-white/[0.05] bg-zinc-950/95 px-6 py-4 backdrop-blur">
             <Button variant="ghost" onClick={() => setSettingsOpen(false)}>
               取消
             </Button>

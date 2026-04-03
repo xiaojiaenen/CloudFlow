@@ -1,9 +1,13 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma, Workflow } from '@prisma/client';
+import { Prisma, TaskTriggerSource, Workflow } from '@prisma/client';
 import { Job, Queue, Worker } from 'bullmq';
 import { parseExpression } from 'cron-parser';
 import IORedis from 'ioredis';
+import {
+  DEFAULT_TASK_EXECUTION_POLICY,
+  TaskExecutionPolicySnapshot,
+} from 'src/common/constants/task-execution.constants';
 import {
   TASK_CANCEL_CHANNEL,
   TASK_CANCEL_KEY_PREFIX,
@@ -19,12 +23,25 @@ import {
   TaskLogLevel,
   TaskQueuePayload,
 } from 'src/common/types/execution-event.types';
+import {
+  buildWorkflowExecutionSnapshot,
+  resolveWorkflowRuntimeInputs,
+} from 'src/common/utils/workflow-runtime';
 import { WorkflowDefinition } from 'src/common/types/workflow.types';
 import { PrismaService } from 'src/prisma/prisma.service';
 
 interface WorkflowSchedulePayload {
   workflowId: string;
 }
+
+type TaskExecutionPolicyConfig = Pick<
+  TaskExecutionPolicySnapshot,
+  | 'screenshotIntervalMs'
+  | 'globalTaskConcurrency'
+  | 'perUserTaskConcurrency'
+  | 'manualTaskPriority'
+  | 'scheduledTaskPriority'
+>;
 
 @Injectable()
 export class QueueService implements OnModuleInit, OnModuleDestroy {
@@ -101,9 +118,45 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
   async enqueueTask(payload: TaskQueuePayload) {
     const job = await this.queue.add(TASK_EXECUTION_JOB_NAME, payload, {
       jobId: payload.taskId,
+      priority: payload.priority,
     });
     this.logger.log(`Task ${payload.taskId} enqueued as job ${job.id}`);
     return job;
+  }
+
+  async getTaskExecutionPolicy(): Promise<TaskExecutionPolicyConfig> {
+    const config = await this.prismaService.systemConfig.findFirst({
+      orderBy: {
+        updatedAt: 'desc',
+      },
+      select: {
+        screenshotIntervalMs: true,
+        globalTaskConcurrency: true,
+        perUserTaskConcurrency: true,
+        manualTaskPriority: true,
+        scheduledTaskPriority: true,
+      },
+    });
+
+    return {
+      screenshotIntervalMs:
+        config?.screenshotIntervalMs ?? DEFAULT_TASK_EXECUTION_POLICY.screenshotIntervalMs,
+      globalTaskConcurrency:
+        config?.globalTaskConcurrency ?? DEFAULT_TASK_EXECUTION_POLICY.globalTaskConcurrency,
+      perUserTaskConcurrency:
+        config?.perUserTaskConcurrency ?? DEFAULT_TASK_EXECUTION_POLICY.perUserTaskConcurrency,
+      manualTaskPriority:
+        config?.manualTaskPriority ?? DEFAULT_TASK_EXECUTION_POLICY.manualTaskPriority,
+      scheduledTaskPriority:
+        config?.scheduledTaskPriority ?? DEFAULT_TASK_EXECUTION_POLICY.scheduledTaskPriority,
+    };
+  }
+
+  async resolveTaskPriority(triggerSource: TaskTriggerSource) {
+    const policy = await this.getTaskExecutionPolicy();
+    return triggerSource === 'schedule'
+      ? policy.scheduledTaskPriority
+      : policy.manualTaskPriority;
   }
 
   async cancelPendingTask(taskId: string) {
@@ -288,19 +341,35 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async createTaskFromWorkflow(workflow: Workflow) {
+    const priority = await this.resolveTaskPriority('schedule');
+    const workflowDefinition = workflow.definition as unknown as WorkflowDefinition;
+    const runtimeContext = resolveWorkflowRuntimeInputs(
+      workflowDefinition.inputSchema ?? [],
+      {},
+    );
+    const executionSnapshot = buildWorkflowExecutionSnapshot(
+      workflowDefinition,
+      runtimeContext.inputs,
+    );
+
     const task = await this.prismaService.task.create({
       data: {
         workflowId: workflow.id,
         ownerId: workflow.ownerId,
         status: 'pending',
         triggerSource: 'schedule',
-        workflowSnapshot: workflow.definition as Prisma.InputJsonValue,
+        queuePriority: priority,
+        workflowSnapshot: executionSnapshot as unknown as Prisma.InputJsonValue,
       },
     });
 
     await this.enqueueTask({
       taskId: task.id,
-      workflow: workflow.definition as unknown as WorkflowDefinition,
+      ownerId: workflow.ownerId,
+      triggerSource: 'schedule',
+      priority,
+      workflow: executionSnapshot,
+      inputs: runtimeContext.inputs,
     });
 
     return task;
