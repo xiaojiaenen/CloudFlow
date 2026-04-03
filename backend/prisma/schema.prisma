@@ -113,6 +113,10 @@ model TaskExecutionEvent {
   status       TaskStatus?
   mimeType     String?
   imageBase64  String?                @db.LongText
+  storageProvider String?
+  storageBucket String?
+  storageKey   String?
+  sizeBytes    Int?
   payload      Json?
   createdAt    DateTime               @default(now())
 
@@ -158,7 +162,14 @@ model SystemConfig {
   smtpPass             String?
   smtpSecure           Boolean  @default(false)
   smtpFrom             String?
+  minioEndpoint        String?
+  minioPort            Int      @default(9000)
+  minioUseSSL          Boolean  @default(false)
+  minioAccessKey       String?
+  minioSecretKey       String?
+  minioBucket          String?  @default("cloudflow-task-artifacts")
   screenshotIntervalMs Int      @default(500)
+  screenshotPersistIntervalMs Int @default(3000)
   taskRetentionDays    Int      @default(30)
   monitorPageSize      Int      @default(10)
   globalTaskConcurrency Int     @default(2)

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import {
   Prisma,
   TaskStatus,
@@ -51,6 +51,22 @@ interface NotificationTaskDetail {
   recentActivities: RecentActivityItem[];
   extractSummaries: ExtractSummaryItem[];
 }
+
+type SmtpOverrideConfig = {
+  smtpHost?: string | null;
+  smtpPort?: number | null;
+  smtpUser?: string | null;
+  smtpPass?: string | null;
+  smtpSecure?: boolean | null;
+};
+
+type ResolvedSmtpConfig = {
+  host: string;
+  port: number;
+  user: string;
+  pass: string;
+  secure: boolean;
+};
 
 @Injectable()
 export class NotificationService {
@@ -111,6 +127,27 @@ export class NotificationService {
       html: this.buildHtml(task),
       text: this.buildText(task),
     });
+  }
+
+  async testSmtpConnection(overrides?: SmtpOverrideConfig) {
+    const config = await this.resolveSmtpConfig(overrides);
+    const transporter = nodemailer.createTransport({
+      host: config.host,
+      port: config.port,
+      secure: config.secure,
+      auth: {
+        user: config.user,
+        pass: config.pass,
+      },
+    });
+
+    await transporter.verify();
+
+    return {
+      host: config.host,
+      port: config.port,
+      secure: config.secure,
+    };
   }
 
   private async loadTaskDetail(taskId: string): Promise<NotificationTaskDetail | null> {
@@ -519,27 +556,29 @@ export class NotificationService {
   }
 
   private async getTransporter() {
-    const systemConfig = await this.prismaService.systemConfig.findFirst({
-      orderBy: {
-        updatedAt: 'desc',
-      },
-    });
+    let config: ResolvedSmtpConfig;
 
-    const host =
-      systemConfig?.smtpHost || this.configService.get<string>('SMTP_HOST');
-    const port =
-      systemConfig?.smtpPort ||
-      Number(this.configService.get<string>('SMTP_PORT') || 587);
-    const user =
-      systemConfig?.smtpUser || this.configService.get<string>('SMTP_USER');
-    const pass =
-      systemConfig?.smtpPass || this.configService.get<string>('SMTP_PASS');
-    const secure =
-      systemConfig?.smtpSecure ??
-      (this.configService.get<string>('SMTP_SECURE') === 'true');
-    const signature = [host, port, user, pass, secure].join('|');
+    try {
+      config = await this.resolveSmtpConfig();
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        this.transporter = null;
+        this.transporterSignature = null;
+        return null;
+      }
 
-    if (!host || !user || !pass) {
+      throw error;
+    }
+
+    const signature = [
+      config.host,
+      config.port,
+      config.user,
+      config.pass,
+      config.secure,
+    ].join('|');
+
+    if (!config.host || !config.user || !config.pass) {
       this.transporter = null;
       this.transporterSignature = null;
       return null;
@@ -547,18 +586,81 @@ export class NotificationService {
 
     if (!this.transporter || this.transporterSignature !== signature) {
       this.transporter = nodemailer.createTransport({
-        host,
-        port,
-        secure,
+        host: config.host,
+        port: config.port,
+        secure: config.secure,
         auth: {
-          user,
-          pass,
+          user: config.user,
+          pass: config.pass,
         },
       });
       this.transporterSignature = signature;
     }
 
     return this.transporter;
+  }
+
+  private async resolveSmtpConfig(
+    overrides?: SmtpOverrideConfig,
+  ): Promise<ResolvedSmtpConfig> {
+    const systemConfig = await this.prismaService.systemConfig.findFirst({
+      orderBy: {
+        updatedAt: 'desc',
+      },
+    });
+
+    const host = this.pickString(
+      overrides?.smtpHost,
+      systemConfig?.smtpHost,
+      this.configService.get<string>('SMTP_HOST'),
+    );
+    const user = this.pickString(
+      overrides?.smtpUser,
+      systemConfig?.smtpUser,
+      this.configService.get<string>('SMTP_USER'),
+    );
+    const pass = this.pickString(
+      overrides?.smtpPass,
+      systemConfig?.smtpPass,
+      this.configService.get<string>('SMTP_PASS'),
+    );
+    const port =
+      overrides?.smtpPort ??
+      systemConfig?.smtpPort ??
+      Number(this.configService.get<string>('SMTP_PORT') || 587);
+    const secure =
+      overrides?.smtpSecure ??
+      systemConfig?.smtpSecure ??
+      (this.configService.get<string>('SMTP_SECURE') === 'true');
+
+    if (!host || !user || !pass) {
+      throw new BadRequestException(
+        '请先填写完整的 SMTP Host、SMTP User 和 SMTP Password 后再测试连接。',
+      );
+    }
+
+    return {
+      host,
+      port,
+      user,
+      pass,
+      secure,
+    };
+  }
+
+  private pickString(...values: Array<string | null | undefined>) {
+    for (const value of values) {
+      if (typeof value !== 'string') {
+        continue;
+      }
+
+      const trimmed = value.trim();
+      if (trimmed) {
+        return trimmed;
+      }
+    }
+
+    return '';
   }
 
   private getStatusMeta(status: TaskStatus) {

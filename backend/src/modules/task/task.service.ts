@@ -8,6 +8,7 @@ import { WorkflowDefinition } from 'src/common/types/workflow.types';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { QueueService } from 'src/queue/queue.service';
 import { AuthenticatedUser } from '../auth/auth.types';
+import { TaskArtifactStorageService } from '../storage/task-artifact-storage.service';
 import { RunTaskDto } from './dto/run-task.dto';
 
 @Injectable()
@@ -15,6 +16,7 @@ export class TaskService {
   constructor(
     private readonly prismaService: PrismaService,
     private readonly queueService: QueueService,
+    private readonly storageService: TaskArtifactStorageService,
   ) {}
 
   async run(runTaskDto: RunTaskDto, currentUser: AuthenticatedUser) {
@@ -330,6 +332,47 @@ export class TaskService {
     });
 
     return retriedTask;
+  }
+
+  async getScreenshotAsset(
+    taskId: string,
+    eventId: string,
+    currentUser?: AuthenticatedUser,
+  ) {
+    await this.getTaskOrThrow(taskId, currentUser);
+
+    const event = await this.prismaService.taskExecutionEvent.findFirst({
+      where: {
+        id: eventId,
+        taskId,
+        type: 'screenshot',
+      },
+      select: {
+        mimeType: true,
+        imageBase64: true,
+        storageProvider: true,
+        storageBucket: true,
+        storageKey: true,
+      },
+    });
+
+    if (!event) {
+      throw new NotFoundException(
+        `Screenshot event ${eventId} not found for task ${taskId}`,
+      );
+    }
+
+    const buffer = await this.storageService.readScreenshot(event);
+    if (!buffer) {
+      throw new NotFoundException(
+        `Screenshot content ${eventId} not found for task ${taskId}`,
+      );
+    }
+
+    return {
+      buffer,
+      mimeType: event.mimeType || 'image/jpeg',
+    };
   }
 
   private async getTaskOrThrow(

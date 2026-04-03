@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { Download, Layers3, RefreshCw, Search, Sparkles, Star } from "lucide-react";
+import { AppTopbar } from "@/src/components/AppTopbar";
 import { Sidebar } from "@/src/components/Sidebar";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/src/components/ui/Card";
-import { Button } from "@/src/components/ui/Button";
 import { Badge } from "@/src/components/ui/Badge";
-import { Download, Search, Sparkles, Star, RefreshCw } from "lucide-react";
+import { Button } from "@/src/components/ui/Button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/src/components/ui/Card";
 import { Input } from "@/src/components/ui/Input";
+import { Select } from "@/src/components/ui/Select";
 import {
   createWorkflow,
   listStoreTemplates,
@@ -51,8 +53,19 @@ export default function Store() {
   }, [workflows]);
 
   const categories = useMemo(() => {
-    return ["all", ...Array.from(new Set(templates.map((item) => item.category)))];
+    return ["all", ...Array.from(new Set(templates.map((item) => item.category).filter(Boolean)))];
   }, [templates]);
+
+  const categoryOptions = useMemo(() => {
+    return categories.map((item) => ({
+      value: item,
+      label: item === "all" ? "全部分类" : item,
+      description: item === "all" ? "查看所有可安装模板" : `筛选 ${item} 分类模板`,
+      icon: <Layers3 className="h-3.5 w-3.5" />,
+      group: "模板分类",
+      keywords: [item],
+    }));
+  }, [categories]);
 
   const handleInstall = async (item: WorkflowTemplateRecord) => {
     const existingWorkflow = installedWorkflows.get(item.title);
@@ -77,71 +90,69 @@ export default function Store() {
   };
 
   return (
-    <div className="h-screen w-screen bg-[#0B0C10] text-zinc-50 flex overflow-hidden font-sans selection:bg-white/20">
+    <div className="flex h-screen w-screen overflow-hidden bg-[#0B0C10] font-sans text-zinc-50 selection:bg-white/20">
       <Sidebar />
-      <div className="flex-1 flex flex-col min-w-0 bg-[#0B0C10] relative">
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-blue-900/10 via-transparent to-transparent pointer-events-none" />
+      <div className="relative flex min-w-0 flex-1 flex-col bg-[#0B0C10]">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-blue-900/10 via-transparent to-transparent" />
+        <AppTopbar
+          title="发现工作流模板"
+          subtitle="模板来自后台发布流程，支持分类、推荐位和安装统计。安装后可直接继续编辑和运行。"
+          badge="Store"
+          actions={
+            <Button variant="outline" size="sm" onClick={() => void loadData()} className="gap-2">
+              <RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} />
+              刷新
+            </Button>
+          }
+        />
 
-        <div className="h-14 border-b border-white/[0.08] bg-[#0A0A0A] flex items-center px-6 z-10">
-          <h1 className="text-sm font-medium text-zinc-100">工作流商店</h1>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-8 z-10">
-          <div className="max-w-6xl mx-auto space-y-8">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div>
-                <h2 className="text-2xl font-semibold tracking-tight mb-1">发现工作流</h2>
-                <p className="text-sm text-zinc-400">模板现在已经完全来自后端，可由管理员发布、下架、分类和推荐。</p>
-              </div>
-              <div className="flex items-center gap-3 flex-wrap">
+        <div className="z-10 flex-1 overflow-y-auto p-8">
+          <div className="mx-auto max-w-6xl space-y-6">
+            <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-center">
+              <div className="text-sm text-zinc-500">共找到 {templates.length} 个可用模板，支持搜索、分类筛选和一键安装。</div>
+              <div className="flex flex-wrap items-center gap-3">
                 <div className="relative w-full md:w-72">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
                   <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索模板..." className="pl-9" />
                 </div>
-                <select
+                <Select
                   value={category}
-                  onChange={(event) => setCategory(event.target.value)}
-                  className="flex h-10 rounded-md border border-white/[0.06] bg-zinc-900/50 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                >
-                  {categories.map((item) => (
-                    <option key={item} value={item}>
-                      {item === "all" ? "全部分类" : item}
-                    </option>
-                  ))}
-                </select>
-                <Button variant="outline" size="sm" onClick={() => void loadData()} className="gap-2">
-                  <RefreshCw className={cn("w-4 h-4", isLoading && "animate-spin")} />
-                  刷新
-                </Button>
+                  onChange={setCategory}
+                  options={categoryOptions}
+                  className="min-w-[220px]"
+                  searchable
+                  searchPlaceholder="搜索分类"
+                />
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
               {templates.map((item) => {
                 const installedWorkflow = installedWorkflows.get(item.title);
                 return (
-                  <Card key={item.id} className="flex flex-col hover:border-white/[0.15] transition-colors bg-[#121212]/80 backdrop-blur-sm">
+                  <Card
+                    key={item.id}
+                    className="flex flex-col border-white/[0.08] bg-[#121212]/80 backdrop-blur-sm transition-colors hover:border-white/[0.15]"
+                  >
                     <CardHeader>
-                      <div className="flex justify-between items-start mb-2 gap-3">
+                      <div className="mb-2 flex items-start justify-between gap-3">
                         <div className="space-y-2">
-                          <div className="flex items-center gap-2 flex-wrap">
+                          <div className="flex flex-wrap items-center gap-2">
                             <CardTitle className="text-lg">{item.title}</CardTitle>
-                            {item.featured && (
+                            {item.featured ? (
                               <Badge variant="success" className="gap-1">
-                                <Sparkles className="w-3 h-3" />
+                                <Sparkles className="h-3 w-3" />
                                 推荐
                               </Badge>
-                            )}
+                            ) : null}
                           </div>
                           <div className="text-xs text-zinc-500">
                             {item.authorName} · {item.category}
                           </div>
                         </div>
-                        {installedWorkflow && <Badge variant="success">已导入</Badge>}
+                        {installedWorkflow ? <Badge variant="success">已导入</Badge> : null}
                       </div>
-                      <CardDescription className="line-clamp-3 min-h-[60px]">
-                        {item.description}
-                      </CardDescription>
+                      <CardDescription className="line-clamp-3 min-h-[60px]">{item.description}</CardDescription>
                     </CardHeader>
                     <CardContent className="flex-1 space-y-4">
                       <div className="flex flex-wrap gap-2">
@@ -151,16 +162,18 @@ export default function Store() {
                           </Badge>
                         ))}
                       </div>
-                      <div className="text-xs text-zinc-500">包含 {item.definition.nodes.length} 个核心节点，可直接在工作区继续编辑。</div>
+                      <div className="text-xs text-zinc-500">
+                        包含 {item.definition.nodes.length} 个核心节点，安装后可直接在工作区继续编辑。
+                      </div>
                     </CardContent>
-                    <div className="px-6 pb-6 pt-0 mt-auto flex items-center justify-between gap-3">
+                    <div className="mt-auto flex items-center justify-between gap-3 px-6 pb-6 pt-0">
                       <div className="flex items-center gap-4 text-xs text-zinc-500">
                         <div className="flex items-center gap-1">
-                          <Download className="w-3.5 h-3.5" />
+                          <Download className="h-3.5 w-3.5" />
                           {item.installCount.toLocaleString()}
                         </div>
                         <div className="flex items-center gap-1">
-                          <Star className="w-3.5 h-3.5 text-amber-400" />
+                          <Star className="h-3.5 w-3.5 text-amber-400" />
                           {item.rating.toFixed(1)}
                         </div>
                       </div>
@@ -178,11 +191,11 @@ export default function Store() {
               })}
             </div>
 
-            {templates.length === 0 && !isLoading && (
+            {templates.length === 0 && !isLoading ? (
               <div className="rounded-xl border border-dashed border-white/[0.08] bg-white/[0.02] p-10 text-center text-sm text-zinc-500">
                 当前没有符合条件的模板，试试切换分类或清空搜索词。
               </div>
-            )}
+            ) : null}
           </div>
         </div>
       </div>

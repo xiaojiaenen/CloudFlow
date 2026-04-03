@@ -1,11 +1,14 @@
-import type { ReactNode } from "react";
+﻿import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { AppTopbar } from "@/src/components/AppTopbar";
 import { Sidebar } from "@/src/components/Sidebar";
 import { Badge } from "@/src/components/ui/Badge";
 import { Button } from "@/src/components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/src/components/ui/Card";
 import { Input } from "@/src/components/ui/Input";
+import { Select } from "@/src/components/ui/Select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/src/components/ui/Tabs";
+import { useOverlayDialog } from "@/src/context/OverlayDialogContext";
 import {
   AdminOverviewRecord,
   createAdminTemplate,
@@ -16,9 +19,13 @@ import {
   HealthRecord,
   listAdminTemplates,
   listUsers,
+  MinioTestResult,
   resetAdminUserPassword,
   ResetUserPasswordResult,
+  SmtpTestResult,
   SystemConfigRecord,
+  testSystemMinioConnection,
+  testSystemSmtpConnection,
   updateAdminTemplate,
   updateAdminUser,
   updateSystemConfig,
@@ -38,7 +45,14 @@ const emptyConfig: SystemConfigRecord = {
   smtpPass: "",
   smtpSecure: false,
   smtpFrom: "",
+  minioEndpoint: "",
+  minioPort: 9000,
+  minioUseSSL: false,
+  minioAccessKey: "",
+  minioSecretKey: "",
+  minioBucket: "cloudflow-task-artifacts",
   screenshotIntervalMs: 500,
+  screenshotPersistIntervalMs: 3000,
   taskRetentionDays: 30,
   monitorPageSize: 10,
   globalTaskConcurrency: 2,
@@ -61,6 +75,7 @@ function HealthBadge({ value }: { value: string | boolean }) {
 }
 
 export default function Admin() {
+  const { confirm } = useOverlayDialog();
   const [overview, setOverview] = useState<AdminOverviewRecord | null>(null);
   const [health, setHealth] = useState<HealthRecord | null>(null);
   const [config, setConfig] = useState<SystemConfigRecord>(emptyConfig);
@@ -70,10 +85,16 @@ export default function Admin() {
   const [templateFilter, setTemplateFilter] = useState<"all" | "true" | "false">("all");
   const [isLoading, setIsLoading] = useState(false);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
+  const [isTestingSmtp, setIsTestingSmtp] = useState(false);
+  const [minioTestMode, setMinioTestMode] = useState<"connection" | "bucket" | null>(null);
   const [isCreatingTemplate, setIsCreatingTemplate] = useState(false);
   const [isCreatingUser, setIsCreatingUser] = useState(false);
   const [activeUserId, setActiveUserId] = useState<string | null>(null);
   const [resetPasswordResult, setResetPasswordResult] = useState<ResetUserPasswordResult | null>(null);
+  const [smtpTestResult, setSmtpTestResult] = useState<SmtpTestResult | null>(null);
+  const [smtpTestError, setSmtpTestError] = useState<string | null>(null);
+  const [minioTestResult, setMinioTestResult] = useState<MinioTestResult | null>(null);
+  const [minioTestError, setMinioTestError] = useState<string | null>(null);
   const [newTemplate, setNewTemplate] = useState({ slug: "", title: "", description: "", category: "", tags: "", authorName: "CloudFlow 官方" });
   const [newUser, setNewUser] = useState({ email: "", name: "", role: "user" as "admin" | "user", password: "" });
 
@@ -107,26 +128,50 @@ export default function Admin() {
     featured: templates.filter((item) => item.featured).length,
   }), [templates]);
 
+  const systemConfigPayload = {
+    platformName: config.platformName,
+    supportEmail: config.supportEmail,
+    smtpHost: config.smtpHost,
+    smtpPort: config.smtpPort,
+    smtpUser: config.smtpUser,
+    smtpPass: config.smtpPass,
+    smtpSecure: config.smtpSecure,
+    smtpFrom: config.smtpFrom,
+    minioEndpoint: config.minioEndpoint,
+    minioPort: config.minioPort,
+    minioUseSSL: config.minioUseSSL,
+    minioAccessKey: config.minioAccessKey,
+    minioSecretKey: config.minioSecretKey,
+    minioBucket: config.minioBucket,
+    screenshotIntervalMs: config.screenshotIntervalMs,
+    screenshotPersistIntervalMs: config.screenshotPersistIntervalMs,
+    taskRetentionDays: config.taskRetentionDays,
+    monitorPageSize: config.monitorPageSize,
+    globalTaskConcurrency: config.globalTaskConcurrency,
+    perUserTaskConcurrency: config.perUserTaskConcurrency,
+    manualTaskPriority: config.manualTaskPriority,
+    scheduledTaskPriority: config.scheduledTaskPriority,
+  };
+
   return (
     <div className="h-screen w-screen bg-[#09090b] text-zinc-50 flex overflow-hidden font-sans selection:bg-indigo-500/30">
       <div className="fixed inset-0 z-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(56,189,248,0.12),rgba(255,255,255,0))] pointer-events-none" />
       <Sidebar />
       <div className="flex-1 flex flex-col min-w-0 relative z-10">
-        <div className="h-14 border-b border-white/[0.05] bg-zinc-950/50 backdrop-blur-md flex items-center justify-between px-6">
-          <h1 className="text-sm font-medium text-zinc-100">管理后台</h1>
-          <Button variant="outline" onClick={() => void loadAll()} className="gap-2">
-            <RefreshCw className={cn("w-4 h-4", isLoading && "animate-spin")} />
-            刷新后台数据
-          </Button>
-        </div>
+        <AppTopbar
+          title="系统管理中心"
+          subtitle="这里承接平台级能力，包括用户管理、模板运营、SMTP 配置、对象存储与健康检查。"
+          badge="Admin"
+          actions={
+            <Button variant="outline" onClick={() => void loadAll()} className="gap-2">
+              <RefreshCw className={cn("w-4 h-4", isLoading && "animate-spin")} />
+              刷新后台数据
+            </Button>
+          }
+        />
 
         <div className="flex-1 overflow-y-auto p-6 xl:p-8">
           <div className="max-w-7xl mx-auto space-y-8">
-            <div>
-              <h2 className="text-2xl font-semibold tracking-tight mb-1">系统管理中心</h2>
-              <p className="text-sm text-zinc-400">这里承接平台级能力，包括用户管理、模板运营、SMTP 配置与健康检查。</p>
-            </div>
-
             {resetPasswordResult && (
               <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
                 {resetPasswordResult.email} 的临时密码：<span className="font-mono">{resetPasswordResult.temporaryPassword}</span>
@@ -181,10 +226,14 @@ export default function Admin() {
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                       <Input value={newUser.name} onChange={(event) => setNewUser((current) => ({ ...current, name: event.target.value }))} placeholder="用户名称" />
                       <Input value={newUser.email} onChange={(event) => setNewUser((current) => ({ ...current, email: event.target.value }))} placeholder="邮箱地址" />
-                      <select value={newUser.role} onChange={(event) => setNewUser((current) => ({ ...current, role: event.target.value as "admin" | "user" }))} className="flex h-10 rounded-md border border-white/[0.06] bg-zinc-900/50 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500">
-                        <option value="user">普通用户</option>
-                        <option value="admin">管理员</option>
-                      </select>
+                      <Select
+                        value={newUser.role}
+                        onChange={(value) => setNewUser((current) => ({ ...current, role: value as "admin" | "user" }))}
+                        options={[
+                          { value: "user", label: "普通用户", description: "仅管理自己的工作流、任务与调度", group: "角色" },
+                          { value: "admin", label: "管理员", description: "可管理用户、模板与系统配置", group: "角色" },
+                        ]}
+                      />
                       <Input value={newUser.password} onChange={(event) => setNewUser((current) => ({ ...current, password: event.target.value }))} placeholder="初始密码，至少 8 位" type="password" />
                     </div>
                     <div className="flex justify-end">
@@ -214,13 +263,13 @@ export default function Admin() {
                           <div className="flex items-center gap-2 flex-wrap">
                             <Badge variant={user.role === "admin" ? "default" : "secondary"}>{user.role === "admin" ? "管理员" : "普通用户"}</Badge>
                             <Badge variant={user.status === "active" ? "success" : "outline"}>{user.status === "active" ? "启用中" : "已停用"}</Badge>
-                            <Button variant="outline" size="sm" disabled={activeUserId === user.id} onClick={async () => { try { setActiveUserId(user.id); await updateAdminUser(user.id, { role: user.role === "admin" ? "user" : "admin" }); await loadAll(); } finally { setActiveUserId(null); } }}>
+                            <Button variant="outline" size="sm" disabled={activeUserId === user.id} onClick={async () => { const confirmed = await confirm({ title: "切换用户角色", description: `确认将 ${user.name} ${user.role === "admin" ? "改为普通用户" : "提升为管理员"}吗？`, confirmText: "确认切换", cancelText: "取消" }); if (!confirmed) { return; } try { setActiveUserId(user.id); await updateAdminUser(user.id, { role: user.role === "admin" ? "user" : "admin" }); await loadAll(); } finally { setActiveUserId(null); } }}>
                               {user.role === "admin" ? "设为普通用户" : "设为管理员"}
                             </Button>
-                            <Button variant="outline" size="sm" disabled={activeUserId === user.id} onClick={async () => { try { setActiveUserId(user.id); await updateAdminUser(user.id, { status: user.status === "active" ? "suspended" : "active" }); await loadAll(); } finally { setActiveUserId(null); } }}>
+                            <Button variant="outline" size="sm" disabled={activeUserId === user.id} onClick={async () => { const confirmed = await confirm({ title: user.status === "active" ? "停用用户" : "恢复用户", description: user.status === "active" ? `确认停用 ${user.name} 吗？停用后该用户将无法登录。` : `确认恢复 ${user.name} 吗？恢复后该用户可以重新登录。`, confirmText: user.status === "active" ? "确认停用" : "确认恢复", cancelText: "取消", tone: user.status === "active" ? "danger" : "default" }); if (!confirmed) { return; } try { setActiveUserId(user.id); await updateAdminUser(user.id, { status: user.status === "active" ? "suspended" : "active" }); await loadAll(); } finally { setActiveUserId(null); } }}>
                               {user.status === "active" ? "停用用户" : "恢复启用"}
                             </Button>
-                            <Button variant="outline" size="sm" disabled={activeUserId === user.id} onClick={async () => { try { setActiveUserId(user.id); setResetPasswordResult(await resetAdminUserPassword(user.id)); } finally { setActiveUserId(null); } }}>
+                            <Button variant="outline" size="sm" disabled={activeUserId === user.id} onClick={async () => { const confirmed = await confirm({ title: "重置用户密码", description: `确认重置 ${user.name} 的登录密码吗？系统将生成新的临时密码。`, confirmText: "确认重置", cancelText: "取消", tone: "danger" }); if (!confirmed) { return; } try { setActiveUserId(user.id); setResetPasswordResult(await resetAdminUserPassword(user.id)); } finally { setActiveUserId(null); } }}>
                               重置密码
                             </Button>
                           </div>
@@ -235,11 +284,12 @@ export default function Admin() {
                     <CardTitle>系统健康</CardTitle>
                     <CardDescription>帮助管理员快速判断平台依赖是否正常、队列是否堆积。</CardDescription>
                   </CardHeader>
-                  <CardContent className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
+                  <CardContent className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4">
                     <HealthCell label="API" value={health?.api ?? "down"} />
                     <HealthCell label="数据库" value={health?.database ?? "down"} />
                     <HealthCell label="Redis" value={health?.redis ?? "down"} />
                     <HealthCell label="SMTP" value={health?.smtpConfigured ?? false} />
+                    <HealthCell label="对象存储" value={health?.storageConfigured ?? false} />
                     <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4 space-y-2"><div className="text-xs text-zinc-500">检查时间</div><div className="text-sm text-zinc-200">{health?.checkedAt ? new Date(health.checkedAt).toLocaleString("zh-CN", { hour12: false }) : "--"}</div></div>
                   </CardContent>
                 </Card>
@@ -302,9 +352,16 @@ export default function Admin() {
                     </div>
                     <div className="flex items-center gap-3">
                       <Input value={templateSearch} onChange={(event) => setTemplateSearch(event.target.value)} placeholder="搜索模板标题、描述、分类" className="w-72" />
-                      <select value={templateFilter} onChange={(event) => setTemplateFilter(event.target.value as typeof templateFilter)} className="flex h-10 rounded-md border border-white/[0.06] bg-zinc-900/50 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500">
-                        <option value="all">全部</option><option value="true">仅已发布</option><option value="false">仅未发布</option>
-                      </select>
+                      <Select
+                        value={templateFilter}
+                        onChange={(value) => setTemplateFilter(value as typeof templateFilter)}
+                        options={[
+                          { value: "all", label: "全部模板", description: "显示所有模板", group: "发布状态" },
+                          { value: "true", label: "仅已发布", description: "只看已上架模板", group: "发布状态" },
+                          { value: "false", label: "仅未发布", description: "只看草稿或已下架模板", group: "发布状态" },
+                        ]}
+                        className="w-40"
+                      />
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
@@ -320,10 +377,10 @@ export default function Admin() {
                           <div className="text-sm text-zinc-400 mt-2">{template.description}</div>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
-                          <Button variant="outline" size="sm" onClick={async () => { await updateAdminTemplate(template.id, { published: !template.published }); await loadAll(); }}>
+                          <Button variant="outline" size="sm" onClick={async () => { const confirmed = await confirm({ title: template.published ? "下架模板" : "发布模板", description: template.published ? `确认下架模板“${template.title}”吗？` : `确认发布模板“${template.title}”吗？`, confirmText: template.published ? "确认下架" : "确认发布", cancelText: "取消" }); if (!confirmed) { return; } await updateAdminTemplate(template.id, { published: !template.published }); await loadAll(); }}>
                             {template.published ? "下架" : "发布"}
                           </Button>
-                          <Button variant="outline" size="sm" onClick={async () => { await updateAdminTemplate(template.id, { featured: !template.featured }); await loadAll(); }}>
+                          <Button variant="outline" size="sm" onClick={async () => { const confirmed = await confirm({ title: template.featured ? "取消推荐" : "设为推荐", description: template.featured ? `确认取消模板“${template.title}”的推荐位吗？` : `确认将模板“${template.title}”设为推荐吗？`, confirmText: template.featured ? "确认取消" : "确认推荐", cancelText: "取消" }); if (!confirmed) { return; } await updateAdminTemplate(template.id, { featured: !template.featured }); await loadAll(); }}>
                             {template.featured ? "取消推荐" : "设为推荐"}
                           </Button>
                         </div>
@@ -340,6 +397,7 @@ export default function Admin() {
                     <Input value={config.platformName} onChange={(event) => setConfig((current) => ({ ...current, platformName: event.target.value }))} placeholder="平台名称" />
                     <Input value={config.supportEmail ?? ""} onChange={(event) => setConfig((current) => ({ ...current, supportEmail: event.target.value }))} placeholder="支持邮箱" />
                     <Input value={String(config.screenshotIntervalMs)} onChange={(event) => setConfig((current) => ({ ...current, screenshotIntervalMs: Number(event.target.value) || 500 }))} placeholder="截图间隔毫秒" />
+                    <Input value={String(config.screenshotPersistIntervalMs)} onChange={(event) => setConfig((current) => ({ ...current, screenshotPersistIntervalMs: Number(event.target.value) || 3000 }))} placeholder="历史截图落盘间隔毫秒" />
                     <Input value={String(config.taskRetentionDays)} onChange={(event) => setConfig((current) => ({ ...current, taskRetentionDays: Number(event.target.value) || 30 }))} placeholder="任务保留天数" />
                     <Input value={String(config.monitorPageSize)} onChange={(event) => setConfig((current) => ({ ...current, monitorPageSize: Number(event.target.value) || 10 }))} placeholder="监控中心分页大小" />
                     <div className="rounded-xl border border-white/[0.05] bg-white/[0.02] p-4 flex items-center justify-between"><div><div className="text-sm text-zinc-100">SMTP SSL/TLS</div><div className="text-xs text-zinc-500 mt-1">开启后使用安全连接发送邮件。</div></div><Button variant="outline" size="sm" onClick={() => setConfig((current) => ({ ...current, smtpSecure: !current.smtpSecure }))}>{config.smtpSecure ? "已开启" : "已关闭"}</Button></div>
@@ -354,11 +412,163 @@ export default function Admin() {
                     <Input value={config.smtpUser ?? ""} onChange={(event) => setConfig((current) => ({ ...current, smtpUser: event.target.value }))} placeholder="SMTP User" />
                     <Input value={config.smtpPass ?? ""} onChange={(event) => setConfig((current) => ({ ...current, smtpPass: event.target.value }))} placeholder="SMTP Password" />
                     <Input value={config.smtpFrom ?? ""} onChange={(event) => setConfig((current) => ({ ...current, smtpFrom: event.target.value }))} placeholder="发件人地址" className="md:col-span-2" />
+                    {smtpTestResult ? (
+                      <div className="md:col-span-2 rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+                        <div className="font-medium">{smtpTestResult.message}</div>
+                        <div className="mt-1 text-xs text-emerald-200/80">
+                          测试时间：{new Date(smtpTestResult.checkedAt).toLocaleString("zh-CN", { hour12: false })}
+                        </div>
+                      </div>
+                    ) : null}
+                    {smtpTestError ? (
+                      <div className="md:col-span-2 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+                        {smtpTestError}
+                      </div>
+                    ) : null}
                     <div className="md:col-span-2 flex justify-end">
-                      <Button className="gap-2" disabled={isSavingConfig} onClick={async () => { try { setIsSavingConfig(true); await updateSystemConfig({ platformName: config.platformName, supportEmail: config.supportEmail, smtpHost: config.smtpHost, smtpPort: config.smtpPort, smtpUser: config.smtpUser, smtpPass: config.smtpPass, smtpSecure: config.smtpSecure, smtpFrom: config.smtpFrom, screenshotIntervalMs: config.screenshotIntervalMs, taskRetentionDays: config.taskRetentionDays, monitorPageSize: config.monitorPageSize }); await loadAll(); } finally { setIsSavingConfig(false); } }}>
-                        <Settings2 className="w-4 h-4" />
-                        {isSavingConfig ? "保存中..." : "保存系统配置"}
+                      <div className="flex items-center gap-3">
+                        <Button
+                          variant="outline"
+                          className="gap-2"
+                          disabled={isTestingSmtp}
+                          onClick={async () => {
+                            try {
+                              setIsTestingSmtp(true);
+                              setSmtpTestResult(null);
+                              setSmtpTestError(null);
+                              const result = await testSystemSmtpConnection({
+                                smtpHost: config.smtpHost,
+                                smtpPort: config.smtpPort,
+                                smtpUser: config.smtpUser,
+                                smtpPass: config.smtpPass,
+                                smtpSecure: config.smtpSecure,
+                              });
+                              setSmtpTestResult(result);
+                            } catch (error) {
+                              setSmtpTestError(error instanceof Error ? error.message : "SMTP 测试连接失败");
+                            } finally {
+                              setIsTestingSmtp(false);
+                            }
+                          }}
+                        >
+                          <Mail className="w-4 h-4" />
+                          {isTestingSmtp ? "测试中..." : "测试连接"}
+                        </Button>
+                        <Button className="gap-2" disabled={isSavingConfig} onClick={async () => { try { setIsSavingConfig(true); await updateSystemConfig(systemConfigPayload); await loadAll(); } finally { setIsSavingConfig(false); } }}>
+                          <Settings2 className="w-4 h-4" />
+                          {isSavingConfig ? "保存中..." : "保存系统配置"}
+                        </Button>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader><div className="flex items-center gap-2"><Server className="w-4 h-4 text-cyan-400" /><CardTitle>MinIO 存储配置</CardTitle></div><CardDescription>历史截图会存入 MinIO，对数据库只保留对象路径与元数据。未配置时会回退到本地文件存储。</CardDescription></CardHeader>
+                  <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <Input value={config.minioEndpoint ?? ""} onChange={(event) => setConfig((current) => ({ ...current, minioEndpoint: event.target.value }))} placeholder="MinIO Endpoint" />
+                    <Input value={String(config.minioPort)} onChange={(event) => setConfig((current) => ({ ...current, minioPort: Number(event.target.value) || 9000 }))} placeholder="MinIO Port" />
+                    <Input value={config.minioAccessKey ?? ""} onChange={(event) => setConfig((current) => ({ ...current, minioAccessKey: event.target.value }))} placeholder="MinIO Access Key" />
+                    <Input value={config.minioSecretKey ?? ""} onChange={(event) => setConfig((current) => ({ ...current, minioSecretKey: event.target.value }))} placeholder="MinIO Secret Key" />
+                    <Input value={config.minioBucket ?? ""} onChange={(event) => setConfig((current) => ({ ...current, minioBucket: event.target.value }))} placeholder="Bucket 名称" />
+                    <div className="rounded-xl border border-white/[0.05] bg-white/[0.02] p-4 flex items-center justify-between">
+                      <div>
+                        <div className="text-sm text-zinc-100">MinIO SSL/TLS</div>
+                        <div className="text-xs text-zinc-500 mt-1">HTTPS / TLS 部署时打开，适配对象存储安全连接。</div>
+                      </div>
+                      <Button variant="outline" size="sm" onClick={() => setConfig((current) => ({ ...current, minioUseSSL: !current.minioUseSSL }))}>
+                        {config.minioUseSSL ? "已开启" : "已关闭"}
                       </Button>
+                    </div>
+                    {minioTestResult ? (
+                      <div
+                        className={cn(
+                          "md:col-span-2 rounded-xl px-4 py-3 text-sm",
+                          minioTestResult.bucketExists
+                            ? "border border-emerald-500/20 bg-emerald-500/10 text-emerald-100"
+                            : "border border-amber-500/20 bg-amber-500/10 text-amber-100",
+                        )}
+                      >
+                        <div className="font-medium">{minioTestResult.message}</div>
+                        <div className="mt-2 grid gap-1 text-xs opacity-90 md:grid-cols-2">
+                          <div>Endpoint：{minioTestResult.endpoint}:{minioTestResult.port}</div>
+                          <div>协议：{minioTestResult.useSSL ? "HTTPS / SSL" : "HTTP"}</div>
+                          <div>Bucket：{minioTestResult.bucket}</div>
+                          <div>状态：{minioTestResult.bucketExists ? "Bucket 已存在" : "Bucket 不存在"}</div>
+                        </div>
+                        <div className="mt-2 text-xs opacity-80">
+                          测试时间：{new Date(minioTestResult.checkedAt).toLocaleString("zh-CN", { hour12: false })}
+                        </div>
+                      </div>
+                    ) : null}
+                    {minioTestError ? (
+                      <div className="md:col-span-2 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+                        {minioTestError}
+                      </div>
+                    ) : null}
+                    <div className="md:col-span-2 flex justify-end">
+                      <div className="flex items-center gap-3">
+                        <Button
+                          variant="outline"
+                          className="gap-2"
+                          disabled={Boolean(minioTestMode)}
+                          onClick={async () => {
+                            try {
+                              setMinioTestMode("connection");
+                              setMinioTestResult(null);
+                              setMinioTestError(null);
+                              const result = await testSystemMinioConnection({
+                                minioEndpoint: config.minioEndpoint,
+                                minioPort: config.minioPort,
+                                minioUseSSL: config.minioUseSSL,
+                                minioAccessKey: config.minioAccessKey,
+                                minioSecretKey: config.minioSecretKey,
+                                minioBucket: config.minioBucket,
+                              });
+                              setMinioTestResult(result);
+                            } catch (error) {
+                              setMinioTestError(error instanceof Error ? error.message : "MinIO 连接测试失败");
+                            } finally {
+                              setMinioTestMode(null);
+                            }
+                          }}
+                        >
+                          <Server className="w-4 h-4" />
+                          {minioTestMode === "connection" ? "连接测试中..." : "测试连接"}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="gap-2"
+                          disabled={Boolean(minioTestMode)}
+                          onClick={async () => {
+                            try {
+                              setMinioTestMode("bucket");
+                              setMinioTestResult(null);
+                              setMinioTestError(null);
+                              const result = await testSystemMinioConnection({
+                                minioEndpoint: config.minioEndpoint,
+                                minioPort: config.minioPort,
+                                minioUseSSL: config.minioUseSSL,
+                                minioAccessKey: config.minioAccessKey,
+                                minioSecretKey: config.minioSecretKey,
+                                minioBucket: config.minioBucket,
+                              });
+                              setMinioTestResult(result);
+                            } catch (error) {
+                              setMinioTestError(error instanceof Error ? error.message : "MinIO Bucket 测试失败");
+                            } finally {
+                              setMinioTestMode(null);
+                            }
+                          }}
+                        >
+                          <ShieldCheck className="w-4 h-4" />
+                          {minioTestMode === "bucket" ? "Bucket 测试中..." : "测试 bucket"}
+                        </Button>
+                        <Button className="gap-2" disabled={isSavingConfig} onClick={async () => { try { setIsSavingConfig(true); await updateSystemConfig(systemConfigPayload); await loadAll(); } finally { setIsSavingConfig(false); } }}>
+                          <Settings2 className="w-4 h-4" />
+                          {isSavingConfig ? "保存中..." : "保存系统配置"}
+                        </Button>
+                      </div>
                     </div>
                   </CardContent>
                 </Card>

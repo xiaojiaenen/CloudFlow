@@ -1,7 +1,8 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   Archive,
+  CalendarClock,
   Copy,
   LayoutGrid,
   MoreHorizontal,
@@ -9,16 +10,15 @@ import {
   PanelLeftOpen,
   PencilLine,
   Plus,
+  Search,
   Settings,
   ShieldAlert,
-  SlidersHorizontal,
   Store,
   Trash2,
-  Workflow,
-  X,
 } from "lucide-react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/src/context/AuthContext";
+import { useOverlayDialog } from "@/src/context/OverlayDialogContext";
 import { cn } from "@/src/lib/utils";
 import {
   buildWorkflowDefinition,
@@ -33,6 +33,18 @@ import {
   WORKFLOW_SAVED_EVENT,
   WorkflowRecord,
 } from "@/src/lib/cloudflow";
+import { BRAND } from "@/src/lib/brand";
+import { BrandMark } from "@/src/components/BrandMark";
+import { Button } from "@/src/components/ui/Button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/src/components/ui/Dialog";
+import { Input } from "@/src/components/ui/Input";
 
 const navItems = [
   { path: "/", icon: LayoutGrid, label: "我的工作区" },
@@ -40,17 +52,20 @@ const navItems = [
   { path: "/store", icon: Store, label: "工作流商店" },
   { path: "/alerts", icon: ShieldAlert, label: "告警中心" },
   { path: "/admin", icon: Settings, label: "管理后台" },
-  { path: "/settings", icon: SlidersHorizontal, label: "系统设置" },
+  { path: "/settings", icon: CalendarClock, label: "调度管理中心" },
 ];
 
 export function Sidebar() {
   const { user } = useAuth();
+  const { confirm, prompt } = useOverlayDialog();
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const currentWorkflowId = searchParams.get("workflowId");
+
   const [isCollapsed, setIsCollapsed] = useState(() => localStorage.getItem("sidebarCollapsed") === "true");
   const [workflows, setWorkflows] = useState<WorkflowRecord[]>([]);
+  const [workflowSearch, setWorkflowSearch] = useState("");
   const [isLoadingWorkflows, setIsLoadingWorkflows] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isCreatingWorkflow, setIsCreatingWorkflow] = useState(false);
@@ -86,19 +101,37 @@ export function Sidebar() {
     return () => window.removeEventListener(WORKFLOW_SAVED_EVENT, handleSaved);
   }, [fetchWorkflows]);
 
-  const isActive = (path: string) => location.pathname === path;
-  const visibleWorkflows = useMemo(
-    () => workflows.filter((workflow) => workflow.status !== "archived").slice(0, 12),
-    [workflows],
-  );
   const visibleNavItems = useMemo(
     () => navItems.filter((item) => item.path !== "/admin" || user?.role === "admin"),
     [user?.role],
   );
 
-  const handleCreateWorkflow = async (event: FormEvent, mode: "empty" | "demo" = "empty") => {
-    event.preventDefault();
+  const visibleWorkflows = useMemo(() => {
+    const keyword = workflowSearch.trim().toLowerCase();
+    return workflows.filter((workflow) => {
+      if (workflow.status === "archived") {
+        return false;
+      }
 
+      if (!keyword) {
+        return true;
+      }
+
+      return (
+        workflow.name.toLowerCase().includes(keyword) ||
+        (workflow.description ?? "").toLowerCase().includes(keyword)
+      );
+    });
+  }, [workflowSearch, workflows]);
+
+  const totalVisibleWorkflowCount = useMemo(
+    () => workflows.filter((workflow) => workflow.status !== "archived").length,
+    [workflows],
+  );
+
+  const isActive = (path: string) => location.pathname === path;
+
+  const createWorkflowWithMode = async (mode: "empty" | "demo") => {
     if (!newWorkflowName.trim()) {
       return;
     }
@@ -109,7 +142,7 @@ export function Sidebar() {
       setIsCreatingWorkflow(true);
       const createdWorkflow = await createWorkflow({
         name: newWorkflowName.trim(),
-        description: mode === "demo" ? "从前端工作区创建的示例工作流" : "从前端工作区创建的空白工作流",
+        description: mode === "demo" ? "从工作区创建的示例工作流" : "从工作区创建的空白工作流",
         status: mode === "demo" ? "active" : "draft",
         definition: {
           ...buildWorkflowDefinition(graph.nodes, graph.edges),
@@ -136,7 +169,13 @@ export function Sidebar() {
   };
 
   const removeWorkflow = async (workflow: WorkflowRecord) => {
-    const confirmed = window.confirm(`确认删除工作流“${workflow.name}”吗？删除后会从工作区隐藏，但历史任务仍会保留。`);
+    const confirmed = await confirm({
+      title: "删除工作流",
+      description: `确认删除“${workflow.name}”吗？删除后会从工作区隐藏，但历史任务仍会保留。`,
+      confirmText: "确认删除",
+      cancelText: "暂不删除",
+      tone: "danger",
+    });
     if (!confirmed) {
       return;
     }
@@ -156,13 +195,28 @@ export function Sidebar() {
   };
 
   const renameWorkflow = async (workflow: WorkflowRecord) => {
-    const nextName = window.prompt("输入新的工作流名称", workflow.name);
-    if (!nextName || !nextName.trim() || nextName.trim() === workflow.name) {
+    const nextName = await prompt({
+      title: "重命名工作流",
+      description: "修改后会立即同步到工作区和任务入口。",
+      label: "工作流名称",
+      placeholder: "输入新的工作流名称",
+      defaultValue: workflow.name,
+      inputHint: "建议使用清晰的业务名称，方便在侧边栏、监控中心和调度中心快速识别。",
+      confirmText: "保存名称",
+      cancelText: "取消",
+    });
+
+    if (nextName === null) {
+      return;
+    }
+
+    const normalizedName = nextName.trim();
+    if (!normalizedName || normalizedName === workflow.name) {
       return;
     }
 
     await updateWorkflow(workflow.id, {
-      name: nextName.trim(),
+      name: normalizedName,
     });
     window.dispatchEvent(new CustomEvent(WORKFLOW_SAVED_EVENT));
   };
@@ -174,7 +228,12 @@ export function Sidebar() {
   };
 
   const archiveWorkflow = async (workflow: WorkflowRecord) => {
-    const confirmed = window.confirm(`确认将工作流“${workflow.name}”归档吗？归档后会从常用工作区隐藏，并自动停用调度。`);
+    const confirmed = await confirm({
+      title: "归档工作流",
+      description: `确认归档“${workflow.name}”吗？归档后会从常用工作区隐藏，并自动停用调度。`,
+      confirmText: "确认归档",
+      cancelText: "保留在工作区",
+    });
     if (!confirmed) {
       return;
     }
@@ -197,258 +256,287 @@ export function Sidebar() {
     <>
       <div
         className={cn(
-          "border-r border-white/[0.05] bg-zinc-950/50 backdrop-blur-xl flex flex-col h-full z-20 transition-all duration-300 relative",
-          isCollapsed ? "w-16" : "w-64",
+          "relative z-20 flex h-full flex-col border-r border-white/[0.06] bg-[linear-gradient(180deg,rgba(5,10,18,0.96),rgba(8,9,12,0.94))] backdrop-blur-xl transition-all duration-300",
+          isCollapsed ? "w-16" : "w-80",
         )}
       >
         <button
-          onClick={() => setIsCollapsed(!isCollapsed)}
-          className="absolute -right-3 top-16 bg-zinc-900 border border-white/[0.1] text-zinc-400 hover:text-zinc-100 rounded-full p-1 z-50 shadow-md transition-transform hover:scale-110"
+          type="button"
+          onClick={() => setIsCollapsed((current) => !current)}
+          className="absolute -right-3 top-16 z-50 rounded-full border border-white/[0.1] bg-zinc-900 text-zinc-400 shadow-md transition-transform hover:scale-110 hover:text-zinc-100"
+          title={isCollapsed ? "展开侧边栏" : "收起侧边栏"}
         >
-          {isCollapsed ? <PanelLeftOpen className="w-3.5 h-3.5" /> : <PanelLeftClose className="w-3.5 h-3.5" />}
+          {isCollapsed ? <PanelLeftOpen className="h-7 w-7 p-1.5" /> : <PanelLeftClose className="h-7 w-7 p-1.5" />}
         </button>
 
-        <div
+        <button
+          type="button"
+          onClick={() => navigate("/")}
           className={cn(
-            "h-14 flex items-center border-b border-white/[0.05] cursor-pointer overflow-hidden",
+            "group flex h-16 items-center border-b border-white/[0.06] transition-colors",
             isCollapsed ? "justify-center" : "px-4",
           )}
-          onClick={() => navigate("/")}
         >
-          <div className="flex items-center gap-2.5 text-zinc-100 font-medium">
-            <div className="min-w-[28px] w-7 h-7 rounded-lg bg-gradient-to-br from-sky-400 to-blue-600 flex items-center justify-center shadow-[0_0_15px_rgba(14,165,233,0.3)] border border-sky-300/20 shrink-0">
-              <Workflow className="w-4 h-4 text-white" />
-            </div>
-            {!isCollapsed && (
-              <span className="text-sm font-black tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-zinc-100 to-zinc-400 whitespace-nowrap animate-in fade-in duration-300">
-                CLOUDFLOW
-              </span>
-            )}
-          </div>
-        </div>
-
-        <div
-          className={cn(
-            "flex-1 overflow-y-auto py-4 flex flex-col gap-6 overflow-x-hidden",
-            isCollapsed ? "px-2" : "px-3",
-          )}
-        >
-          <div>
-            {!isCollapsed && (
-              <div className="text-[11px] font-medium text-zinc-500 mb-2 px-2 uppercase tracking-wider whitespace-nowrap">
-                导航
+          <div className="flex items-center gap-3">
+            <BrandMark compact />
+            {!isCollapsed ? (
+              <div className="min-w-0 text-left">
+                <div className="text-sm font-semibold tracking-[0.2em] text-zinc-50">{BRAND.name.toUpperCase()}</div>
+                <div className="mt-0.5 text-[11px] text-zinc-500">{BRAND.tagline}</div>
               </div>
-            )}
-            <div className="space-y-0.5">
+            ) : null}
+          </div>
+        </button>
+
+        <div className={cn("flex min-h-0 flex-1 flex-col", isCollapsed ? "px-2 py-4" : "px-3 py-4")}>
+          <div>
+            {!isCollapsed ? (
+              <div className="mb-2 px-2 text-[11px] font-medium uppercase tracking-[0.24em] text-zinc-500">导航</div>
+            ) : null}
+            <div className="space-y-1">
               {visibleNavItems.map((item) => {
                 const Icon = item.icon;
                 return (
                   <button
                     key={item.path}
+                    type="button"
                     onClick={() => navigate(item.path)}
                     title={isCollapsed ? item.label : undefined}
                     className={cn(
-                      "w-full flex items-center rounded-md text-sm transition-colors",
-                      isCollapsed ? "justify-center py-2.5" : "gap-2 px-2 py-1.5",
+                      "flex w-full items-center rounded-xl text-sm transition-colors",
+                      isCollapsed ? "justify-center py-2.5" : "gap-3 px-3 py-2.5",
                       isActive(item.path)
-                        ? "bg-white/[0.08] text-zinc-100"
+                        ? "border border-sky-400/15 bg-sky-500/10 text-zinc-50 shadow-[inset_0_1px_0_rgba(125,211,252,0.08)]"
                         : "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200",
                     )}
                   >
-                    <Icon className="w-4 h-4 opacity-70 shrink-0" />
-                    {!isCollapsed && <span className="whitespace-nowrap">{item.label}</span>}
+                    <Icon className="h-4 w-4 shrink-0 opacity-80" />
+                    {!isCollapsed ? <span className="truncate">{item.label}</span> : null}
                   </button>
                 );
               })}
             </div>
           </div>
 
-          <div>
-            {!isCollapsed && (
-              <div className="flex items-center justify-between mb-2 px-2">
-                <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider whitespace-nowrap">
-                  工作流
-                </div>
-                {isWorkspacePage && (
-                  <button onClick={openBlankWorkflow} className="text-[11px] text-sky-400 hover:text-sky-300 transition-colors">
-                    新建空白
-                  </button>
-                )}
-              </div>
-            )}
-
-            <div className="space-y-0.5">
-              {isLoadingWorkflows && !isCollapsed && (
-                <div className="px-2 py-2 text-xs text-zinc-500">正在加载工作流...</div>
-              )}
-
-              {!isLoadingWorkflows && visibleWorkflows.length === 0 && !isCollapsed && (
-                <div className="px-2 py-2 text-xs text-zinc-500">还没有保存的工作流</div>
-              )}
-
-              {visibleWorkflows.map((workflow) => {
-                const active = currentWorkflowId === workflow.id && isWorkspacePage;
-
-                return (
-                  <div
-                    key={workflow.id}
-                    onClick={() => selectWorkflow(workflow.id)}
-                    title={isCollapsed ? workflow.name : undefined}
-                    className={cn(
-                      "w-full flex items-center rounded-md text-sm transition-colors group",
-                      isCollapsed ? "justify-center py-2.5" : "justify-between px-2 py-1.5",
-                      active
-                        ? "bg-white/[0.08] text-zinc-100"
-                        : "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200",
-                    )}
-                  >
-                    <div className="flex items-center gap-2 overflow-hidden">
-                      <div
-                        className={cn(
-                          "w-1.5 h-1.5 rounded-full shrink-0",
-                          active ? "bg-sky-500 shadow-[0_0_8px_rgba(14,165,233,0.8)]" : "bg-zinc-600",
-                        )}
-                      />
-                      {!isCollapsed && (
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="truncate whitespace-nowrap">{workflow.name}</span>
-                          {workflow.status === "draft" && (
-                            <span className="px-1.5 py-0.5 rounded text-[10px] border border-amber-500/20 bg-amber-500/10 text-amber-300 shrink-0">
-                              草稿
-                            </span>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                    {!isCollapsed && (
-                      <div className="flex items-center gap-1 shrink-0">
-                        {active && (
-                          <MoreHorizontal className="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
-                        )}
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void renameWorkflow(workflow);
-                          }}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-500 hover:text-zinc-200"
-                        >
-                          <PencilLine className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void duplicateExistingWorkflow(workflow);
-                          }}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-500 hover:text-sky-300"
-                        >
-                          <Copy className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void archiveWorkflow(workflow);
-                          }}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-500 hover:text-amber-300"
-                        >
-                          <Archive className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          disabled={deletingWorkflowId === workflow.id}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void removeWorkflow(workflow);
-                          }}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-500 hover:text-red-300 disabled:opacity-50"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    )}
+          <div className="mt-6 flex min-h-0 flex-1 flex-col">
+            {!isCollapsed ? (
+              <div className="mb-3 flex items-start justify-between gap-3 px-2">
+                <div>
+                  <div className="text-[11px] font-medium uppercase tracking-[0.24em] text-zinc-500">工作流</div>
+                  <div className="mt-1 text-xs text-zinc-600">
+                    {visibleWorkflows.length} / {totalVisibleWorkflowCount} 个可见
                   </div>
-                );
-              })}
+                </div>
+                {isWorkspacePage ? (
+                  <button
+                    type="button"
+                    onClick={openBlankWorkflow}
+                    className="rounded-full border border-sky-400/20 bg-sky-500/10 px-2.5 py-1 text-[11px] text-sky-200 transition-colors hover:bg-sky-500/15"
+                  >
+                    空白新建
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+
+            {!isCollapsed ? (
+              <div className="mb-3 px-2">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
+                  <Input
+                    value={workflowSearch}
+                    onChange={(event) => setWorkflowSearch(event.target.value)}
+                    placeholder="搜索工作流"
+                    className="h-9 rounded-xl border-white/[0.06] bg-white/[0.03] pl-9"
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            <div
+              className={cn("min-h-0 flex-1", !isCollapsed && "rounded-2xl border border-white/[0.04] bg-white/[0.02] p-2")}
+            >
+              <div className="h-full space-y-1 overflow-y-auto pr-1">
+                {isLoadingWorkflows && !isCollapsed ? (
+                  <div className="px-3 py-3 text-xs text-zinc-500">正在加载工作流...</div>
+                ) : null}
+
+                {!isLoadingWorkflows && visibleWorkflows.length === 0 && !isCollapsed ? (
+                  <div className="rounded-xl border border-dashed border-white/[0.08] bg-black/20 px-3 py-4 text-xs leading-6 text-zinc-500">
+                    {workflowSearch.trim()
+                      ? "没有匹配的工作流，试试换一个关键词。"
+                      : "还没有可用的工作流，先创建一个空白画布开始搭建吧。"}
+                  </div>
+                ) : null}
+
+                {visibleWorkflows.map((workflow) => {
+                  const active = currentWorkflowId === workflow.id && isWorkspacePage;
+
+                  return (
+                    <div
+                      key={workflow.id}
+                      onClick={() => selectWorkflow(workflow.id)}
+                      title={workflow.name}
+                      className={cn(
+                        "group flex cursor-pointer rounded-xl text-sm transition-colors",
+                        isCollapsed ? "items-center justify-center py-2.5" : "items-start justify-between gap-3 px-3 py-2.5",
+                        active
+                          ? "border border-sky-400/15 bg-sky-500/10 text-zinc-50"
+                          : "text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200",
+                      )}
+                    >
+                      <div className="flex min-w-0 items-start gap-2.5">
+                        <div
+                          className={cn(
+                            "mt-1.5 h-2 w-2 shrink-0 rounded-full",
+                            active ? "bg-sky-400 shadow-[0_0_10px_rgba(56,189,248,0.8)]" : "bg-zinc-600",
+                          )}
+                        />
+                        {!isCollapsed ? (
+                          <div className="min-w-0 flex-1">
+                            <div className="max-w-[180px] truncate text-[13px] font-medium leading-5" title={workflow.name}>
+                              {workflow.name}
+                            </div>
+                            <div className="mt-1 flex flex-wrap items-center gap-2">
+                              {workflow.status === "draft" ? (
+                                <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-300">
+                                  草稿
+                                </span>
+                              ) : null}
+                              {workflow.scheduleEnabled ? (
+                                <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-300">
+                                  已调度
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+
+                      {!isCollapsed ? (
+                        <div className="flex shrink-0 items-center gap-1">
+                          {active ? <MoreHorizontal className="h-4 w-4 text-zinc-600" /> : null}
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void renameWorkflow(workflow);
+                            }}
+                            className="rounded-md p-1 text-zinc-500 opacity-0 transition-opacity hover:bg-white/[0.06] hover:text-zinc-200 group-hover:opacity-100"
+                            title="重命名"
+                          >
+                            <PencilLine className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void duplicateExistingWorkflow(workflow);
+                            }}
+                            className="rounded-md p-1 text-zinc-500 opacity-0 transition-opacity hover:bg-sky-500/10 hover:text-sky-300 group-hover:opacity-100"
+                            title="复制"
+                          >
+                            <Copy className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void archiveWorkflow(workflow);
+                            }}
+                            className="rounded-md p-1 text-zinc-500 opacity-0 transition-opacity hover:bg-amber-500/10 hover:text-amber-300 group-hover:opacity-100"
+                            title="归档"
+                          >
+                            <Archive className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={deletingWorkflowId === workflow.id}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void removeWorkflow(workflow);
+                            }}
+                            className="rounded-md p-1 text-zinc-500 opacity-0 transition-opacity hover:bg-red-500/10 hover:text-red-300 group-hover:opacity-100 disabled:opacity-40"
+                            title="删除"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
         </div>
 
-        <div className="p-3 border-t border-white/[0.05]">
-          <button
+        <div className="border-t border-white/[0.06] p-3">
+          <Button
+            type="button"
             onClick={() => setIsCreateModalOpen(true)}
             title={isCollapsed ? "新建工作流" : undefined}
             className={cn(
-              "w-full flex items-center justify-center gap-2 bg-white/5 hover:bg-white/10 text-zinc-200 border border-white/10 rounded-md text-sm font-medium transition-colors",
-              isCollapsed ? "py-2.5 px-0" : "px-3 py-2",
+              "w-full gap-2 rounded-xl bg-white/5 py-2.5 text-zinc-100 hover:bg-white/10",
+              isCollapsed && "px-0",
             )}
           >
-            <Plus className="w-4 h-4 shrink-0" />
-            {!isCollapsed && <span className="whitespace-nowrap">新建工作流</span>}
-          </button>
+            <Plus className="h-4 w-4 shrink-0" />
+            {!isCollapsed ? <span>新建工作流</span> : null}
+          </Button>
         </div>
       </div>
 
-      {isCreateModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-zinc-900 border border-white/[0.08] rounded-xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.05]">
-              <h3 className="text-lg font-medium text-zinc-100">新建工作流</h3>
-              <button onClick={() => setIsCreateModalOpen(false)} className="text-zinc-400 hover:text-zinc-100 transition-colors">
-                <X className="w-5 h-5" />
-              </button>
+      <Dialog open={isCreateModalOpen} onOpenChange={setIsCreateModalOpen} className="max-w-xl">
+        <DialogHeader>
+          <DialogTitle>创建工作流</DialogTitle>
+          <DialogDescription>
+            从空白画布开始搭建，或者先用示例节点快速跑通一条执行链路。
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void createWorkflowWithMode("empty");
+          }}
+        >
+          <DialogContent className="space-y-5">
+            <div className="rounded-2xl border border-sky-400/10 bg-sky-500/5 px-4 py-4 text-sm leading-6 text-sky-100">
+              默认会创建空白画布，适合按你的业务流程从头搭建。如果只是想快速验证执行链路，也可以直接创建示例工作流。
             </div>
-
-            <form onSubmit={(event) => void handleCreateWorkflow(event, "empty")} className="p-5">
-              <div className="space-y-4">
-                <div>
-                  <label htmlFor="workflowName" className="block text-sm font-medium text-zinc-400 mb-1.5">
-                    工作流名称
-                  </label>
-                  <input
-                    id="workflowName"
-                    type="text"
-                    autoFocus
-                    value={newWorkflowName}
-                    onChange={(event) => setNewWorkflowName(event.target.value)}
-                    placeholder="例如：每日数据抓取"
-                    className="w-full bg-zinc-950 border border-white/[0.1] rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-sky-500/50 transition-all"
-                  />
-                </div>
-                <div className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-3 text-xs text-zinc-400 leading-5">
-                  默认会创建空白画布。如果想快速体验执行链路，可以使用“创建示例”生成一套可直接运行的演示节点。
-                </div>
-              </div>
-
-              <div className="mt-6 flex items-center justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => setIsCreateModalOpen(false)}
-                  className="px-4 py-2 text-sm font-medium text-zinc-300 hover:text-zinc-100 transition-colors"
-                >
-                  取消
-                </button>
-                <button
-                  type="button"
-                  onClick={(event) => void handleCreateWorkflow(event as unknown as FormEvent, "demo")}
-                  disabled={!newWorkflowName.trim() || isCreatingWorkflow}
-                  className="px-4 py-2 border border-white/10 bg-white/5 hover:bg-white/10 text-zinc-200 text-sm font-medium rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  创建示例
-                </button>
-                <button
-                  type="submit"
-                  disabled={!newWorkflowName.trim() || isCreatingWorkflow}
-                  className="px-4 py-2 bg-sky-500 hover:bg-sky-400 text-white text-sm font-medium rounded-lg shadow-[0_0_15px_rgba(14,165,233,0.3)] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isCreatingWorkflow ? "创建中..." : "创建空白"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+            <div className="space-y-2">
+              <label htmlFor="workflowName" className="block text-sm font-medium text-zinc-300">
+                工作流名称
+              </label>
+              <Input
+                id="workflowName"
+                type="text"
+                autoFocus
+                value={newWorkflowName}
+                onChange={(event) => setNewWorkflowName(event.target.value)}
+                placeholder="例如：每日数据回收"
+                className="h-11 rounded-xl"
+              />
+            </div>
+          </DialogContent>
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={() => setIsCreateModalOpen(false)}>
+              取消
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void createWorkflowWithMode("demo")}
+              disabled={!newWorkflowName.trim() || isCreatingWorkflow}
+            >
+              创建示例
+            </Button>
+            <Button type="submit" disabled={!newWorkflowName.trim() || isCreatingWorkflow}>
+              {isCreatingWorkflow ? "创建中..." : "创建空白"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </Dialog>
     </>
   );
 }

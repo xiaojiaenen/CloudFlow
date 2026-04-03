@@ -5,6 +5,7 @@ import { AlertModule } from './modules/alert/alert.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { ExecutionModule } from './modules/execution/execution.module';
 import { NotificationModule } from './modules/notification/notification.module';
+import { StorageModule } from './modules/storage/storage.module';
 import { StoreModule } from './modules/store/store.module';
 import { TaskModule } from './modules/task/task.module';
 import { WorkflowModule } from './modules/workflow/workflow.module';
@@ -23,6 +24,7 @@ import { WsModule } from './ws/ws.module';
     AdminModule,
     AlertModule,
     NotificationModule,
+    StorageModule,
     QueueModule,
     WsModule,
     ExecutionModule,

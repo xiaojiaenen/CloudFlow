@@ -18,13 +18,15 @@ import {
   XCircle,
 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
+import { AppTopbar } from "@/src/components/AppTopbar";
 import { Sidebar } from "@/src/components/Sidebar";
 import { Button } from "@/src/components/ui/Button";
 import { Chart } from "@/src/components/ui/Chart";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/src/components/ui/Dialog";
 import { Input } from "@/src/components/ui/Input";
+import { Select } from "@/src/components/ui/Select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/src/components/ui/Tabs";
-import { cancelTask, getTask, getTaskSummary, listTasks, retryTask, TaskExecutionRecord, TaskRecord, TaskSummaryRecord } from "@/src/lib/cloudflow";
+import { cancelTask, getTask, getTaskExecutionScreenshotSrc, getTaskSummary, listTasks, retryTask, TaskExecutionRecord, TaskRecord, TaskSummaryRecord } from "@/src/lib/cloudflow";
 import { cn } from "@/src/lib/utils";
 
 function formatDateTime(value?: string | null) {
@@ -320,7 +322,7 @@ export function MonitorCenter() {
 
   const executionEvents = useMemo(() => selectedTask?.executionEvents ?? [], [selectedTask]);
   const activityEvents = useMemo(() => executionEvents.filter((event) => event.type !== "screenshot"), [executionEvents]);
-  const screenshotEvents = useMemo(() => executionEvents.filter((event) => event.type === "screenshot" && Boolean(event.imageBase64)), [executionEvents]);
+  const screenshotEvents = useMemo(() => executionEvents.filter((event) => event.type === "screenshot"), [executionEvents]);
   const extractEvents = useMemo(() => executionEvents.filter((event) => event.type === "extract"), [executionEvents]);
   const activeScreenshot = useMemo(() => {
     if (screenshotEvents.length === 0) {
@@ -581,24 +583,20 @@ export function MonitorCenter() {
       <Sidebar />
       <div className="flex-1 flex flex-col min-w-0 bg-[#09090b] relative overflow-hidden">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-sky-900/10 via-transparent to-transparent pointer-events-none" />
+        <AppTopbar
+          title="任务历史与详情"
+          subtitle="支持筛选任务、批量取消和失败重试，并可查看图表、日志、截图与运行快照。"
+          badge="Monitor"
+          actions={
+            <Button variant="outline" onClick={() => { void loadTasks(); void loadSummary(); }} className="gap-2">
+              <RefreshCw className={cn("w-4 h-4", isLoadingTasks && "animate-spin")} />
+              刷新任务
+            </Button>
+          }
+        />
 
         <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-y-auto p-6 xl:overflow-hidden xl:p-8">
           <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 xl:min-h-0 xl:flex-1">
-            <div className="flex items-start justify-between gap-6">
-              <div>
-                <h1 className="text-2xl font-bold text-zinc-100 tracking-tight flex items-center gap-3">
-                  <Activity className="w-6 h-6 text-sky-400" />
-                  任务历史与详情
-                </h1>
-                <p className="text-zinc-400 mt-2 text-sm">支持筛选任务、批量取消和失败重试，并可查看日志、截图与提取结果。</p>
-              </div>
-
-              <Button variant="outline" onClick={() => { void loadTasks(); void loadSummary(); }} className="gap-2">
-                <RefreshCw className={cn("w-4 h-4", isLoadingTasks && "animate-spin")} />
-                刷新任务
-              </Button>
-            </div>
-
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.35fr_1fr_1fr]">
               <div className="rounded-xl border border-white/[0.05] bg-zinc-950/50 p-4 backdrop-blur-md">
                 <div className="mb-3 flex items-center gap-2 text-sm font-medium text-zinc-100">
@@ -642,19 +640,27 @@ export function MonitorCenter() {
               <div className="px-5 py-4 border-b border-white/[0.05] space-y-3">
                 <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_160px_160px] gap-3">
                   <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索任务 ID 或工作流名称" />
-                  <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)} className="flex h-10 rounded-md border border-white/[0.06] bg-zinc-900/50 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500">
-                    <option value="all">全部状态</option>
-                    <option value="pending">等待中</option>
-                    <option value="running">运行中</option>
-                    <option value="success">成功</option>
-                    <option value="failed">失败</option>
-                    <option value="cancelled">已取消</option>
-                  </select>
-                  <select value={triggerFilter} onChange={(event) => setTriggerFilter(event.target.value as typeof triggerFilter)} className="flex h-10 rounded-md border border-white/[0.06] bg-zinc-900/50 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500">
-                    <option value="all">全部触发方式</option>
-                    <option value="manual">手动触发</option>
-                    <option value="schedule">定时触发</option>
-                  </select>
+                  <Select
+                    value={statusFilter}
+                    onChange={(value) => setStatusFilter(value as typeof statusFilter)}
+                    options={[
+                      { value: "all", label: "全部状态", description: "查看全部任务状态", group: "任务状态" },
+                      { value: "pending", label: "等待中", description: "尚未开始执行", group: "任务状态" },
+                      { value: "running", label: "运行中", description: "正在执行中的任务", group: "任务状态" },
+                      { value: "success", label: "成功", description: "已成功完成", group: "任务状态" },
+                      { value: "failed", label: "失败", description: "执行失败的任务", tone: "danger", group: "任务状态" },
+                      { value: "cancelled", label: "已取消", description: "手动取消或系统终止", group: "任务状态" },
+                    ]}
+                  />
+                  <Select
+                    value={triggerFilter}
+                    onChange={(value) => setTriggerFilter(value as typeof triggerFilter)}
+                    options={[
+                      { value: "all", label: "全部触发方式", description: "包含手动和定时任务", group: "触发方式" },
+                      { value: "manual", label: "手动触发", description: "来自工作区或详情页手动启动", group: "触发方式" },
+                      { value: "schedule", label: "定时触发", description: "来自调度中心自动触发", group: "触发方式" },
+                    ]}
+                  />
                 </div>
                 <div className="text-xs text-zinc-500">点击任务卡片即可查看详情，支持分页与筛选。</div>
               </div>
@@ -903,7 +909,7 @@ export function MonitorCenter() {
                                   className="group block w-full rounded-xl overflow-hidden border border-white/[0.05] bg-black/40 text-left"
                                 >
                                   <img
-                                    src={`data:${activeScreenshot.mimeType || "image/jpeg"};base64,${activeScreenshot.imageBase64}`}
+                                    src={getTaskExecutionScreenshotSrc(selectedTask.id, activeScreenshot) ?? ""}
                                     alt="任务截图"
                                     className="w-full h-[420px] object-contain bg-black transition-transform duration-200 group-hover:scale-[1.01]"
                                   />
@@ -928,7 +934,7 @@ export function MonitorCenter() {
                                       }}
                                       className={cn("rounded-lg overflow-hidden border transition-colors bg-black/30", activeScreenshot.id === event.id ? "border-sky-500/60" : "border-white/[0.06] hover:border-white/[0.18]")}
                                     >
-                                      <img src={`data:${event.mimeType || "image/jpeg"};base64,${event.imageBase64}`} alt="任务缩略图" className="w-full h-28 object-cover bg-black" />
+                                      <img src={getTaskExecutionScreenshotSrc(selectedTask.id, event) ?? ""} alt="任务缩略图" className="w-full h-28 object-cover bg-black" />
                                       <div className="px-2 py-2 text-[11px] text-zinc-400">{formatDateTime(event.createdAt)}</div>
                                     </button>
                                   ))}
@@ -1028,7 +1034,7 @@ export function MonitorCenter() {
           <DialogContent className="space-y-4 overflow-y-auto">
             {activeScreenshot && (
               <img
-                src={`data:${activeScreenshot.mimeType || "image/jpeg"};base64,${activeScreenshot.imageBase64}`}
+                src={getTaskExecutionScreenshotSrc(selectedTask?.id ?? activeScreenshot.taskId, activeScreenshot) ?? ""}
                 alt="任务截图大图预览"
                 className="max-h-[75vh] w-full rounded-xl border border-white/[0.06] bg-black object-contain"
               />

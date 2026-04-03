@@ -76,6 +76,16 @@ export class AdminController {
     return this.adminService.updateSystemConfig(payload);
   }
 
+  @Post('system-config/test-smtp')
+  testSmtpConnection(@Body() payload: UpdateSystemConfigDto) {
+    return this.adminService.testSmtpConnection(payload);
+  }
+
+  @Post('system-config/test-minio')
+  testMinioConnection(@Body() payload: UpdateSystemConfigDto) {
+    return this.adminService.testMinioConnection(payload);
+  }
+
   @Get('templates')
   listTemplates(
     @Query('search') search?: string,

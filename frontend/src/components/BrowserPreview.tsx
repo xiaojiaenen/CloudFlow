@@ -8,6 +8,12 @@ interface BrowserPreviewProps {
 }
 
 export function BrowserPreview({ isRunning, screenshot, taskId, pageUrl }: BrowserPreviewProps) {
+  const screenshotSrc = screenshot
+    ? screenshot.startsWith("data:") || screenshot.startsWith("blob:") || screenshot.startsWith("http")
+      ? screenshot
+      : `data:image/jpeg;base64,${screenshot}`
+    : null;
+
   return (
     <div className="h-1/2 border-b border-white/[0.08] bg-[#0A0A0A] flex flex-col">
       <div className="h-10 border-b border-white/[0.08] flex items-center justify-between px-4 bg-[#0A0A0A]">
@@ -39,9 +45,9 @@ export function BrowserPreview({ isRunning, screenshot, taskId, pageUrl }: Brows
           </div>
 
           <div className="flex-1 relative bg-[#050505]">
-            {screenshot ? (
+            {screenshotSrc ? (
               <img
-                src={`data:image/jpeg;base64,${screenshot}`}
+                src={screenshotSrc}
                 alt="执行截图"
                 className="absolute inset-0 h-full w-full object-cover"
               />

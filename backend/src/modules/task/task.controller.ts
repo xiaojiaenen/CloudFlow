@@ -6,8 +6,10 @@ import {
   Post,
   Query,
   Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { AuthGuard } from '../auth/auth.guard';
 import { AuthenticatedRequest } from '../auth/auth.types';
 import { RunTaskDto } from './dto/run-task.dto';
@@ -69,6 +71,24 @@ export class TaskController {
   @Get(':id')
   findOne(@Param('id') id: string, @Req() request: AuthenticatedRequest) {
     return this.taskService.findOne(id, request.user);
+  }
+
+  @Get(':id/screenshots/:eventId')
+  async screenshot(
+    @Param('id') id: string,
+    @Param('eventId') eventId: string,
+    @Req() request: AuthenticatedRequest,
+    @Res() response: Response,
+  ) {
+    const asset = await this.taskService.getScreenshotAsset(
+      id,
+      eventId,
+      request.user,
+    );
+
+    response.setHeader('Content-Type', asset.mimeType);
+    response.setHeader('Cache-Control', 'private, max-age=60');
+    response.send(asset.buffer);
   }
 
   @Post(':id/cancel')

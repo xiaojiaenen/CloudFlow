@@ -11,6 +11,7 @@ import {
   TaskStatusPayload,
 } from 'src/common/types/execution-event.types';
 import { NotificationService } from 'src/modules/notification/notification.service';
+import { TaskArtifactStorageService } from 'src/modules/storage/task-artifact-storage.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { TaskEventsGateway } from 'src/ws/task-events.gateway';
 
@@ -21,12 +22,15 @@ export class ExecutionEventsService implements OnModuleInit, OnModuleDestroy {
   private readonly taskWriteChains = new Map<string, Promise<void>>();
   private readonly taskSequences = new Map<string, number>();
   private readonly lastPersistedScreenshotAt = new Map<string, number>();
+  private screenshotPersistIntervalMsCache = 3000;
+  private screenshotPersistIntervalCacheAt = 0;
 
   constructor(
     private readonly configService: ConfigService,
     private readonly notificationService: NotificationService,
     private readonly prismaService: PrismaService,
     private readonly taskEventsGateway: TaskEventsGateway,
+    private readonly storageService: TaskArtifactStorageService,
   ) {
     const redisUrl = this.configService.get<string>('REDIS_URL', 'redis://127.0.0.1:6379');
 
@@ -70,8 +74,9 @@ export class ExecutionEventsService implements OnModuleInit, OnModuleDestroy {
         }
 
         const sequence = await this.getNextSequence(event.taskId);
+        const persistencePayload = await this.buildPersistencePayload(event, sequence);
         await this.prismaService.taskExecutionEvent.create({
-          data: this.buildPersistencePayload(event, sequence),
+          data: persistencePayload,
         });
 
         if (
@@ -131,8 +136,9 @@ export class ExecutionEventsService implements OnModuleInit, OnModuleDestroy {
 
     const eventTime = new Date(payload.timestamp).getTime();
     const lastTime = this.lastPersistedScreenshotAt.get(event.taskId) ?? 0;
+    const persistIntervalMs = await this.getScreenshotPersistIntervalMs();
 
-    if (eventTime - lastTime < 2000) {
+    if (eventTime - lastTime < persistIntervalMs) {
       return false;
     }
 
@@ -140,7 +146,7 @@ export class ExecutionEventsService implements OnModuleInit, OnModuleDestroy {
     return true;
   }
 
-  private buildPersistencePayload(event: TaskExecutionEvent, sequence: number) {
+  private async buildPersistencePayload(event: TaskExecutionEvent, sequence: number) {
     if (event.type === 'log') {
       const payload = event.data as TaskLogPayload;
       return {
@@ -182,15 +188,56 @@ export class ExecutionEventsService implements OnModuleInit, OnModuleDestroy {
     }
 
     const payload = event.data as TaskScreenshotPayload;
+    const stored = await this.storageService.saveScreenshot(
+      event.taskId,
+      sequence,
+      payload,
+    );
+
     return {
       taskId: event.taskId,
       type: event.type,
       sequence,
       mimeType: payload.mimeType,
-      imageBase64: payload.imageBase64,
-      payload: payload as unknown as Prisma.InputJsonValue,
+      imageBase64: null,
+      storageProvider: stored.storageProvider,
+      storageBucket: stored.storageBucket,
+      storageKey: stored.storageKey,
+      sizeBytes: stored.sizeBytes,
+      payload: {
+        mimeType: payload.mimeType,
+        source: payload.source ?? 'stream',
+        timestamp: payload.timestamp,
+        storageProvider: stored.storageProvider,
+        storageBucket: stored.storageBucket,
+        storageKey: stored.storageKey,
+        sizeBytes: stored.sizeBytes,
+      } as Prisma.InputJsonValue,
       createdAt: new Date(payload.timestamp),
     };
+  }
+
+  private async getScreenshotPersistIntervalMs() {
+    const now = Date.now();
+    if (now - this.screenshotPersistIntervalCacheAt < 30_000) {
+      return this.screenshotPersistIntervalMsCache;
+    }
+
+    const config = await this.prismaService.systemConfig.findFirst({
+      orderBy: {
+        updatedAt: 'desc',
+      },
+      select: {
+        screenshotPersistIntervalMs: true,
+      },
+    });
+
+    this.screenshotPersistIntervalMsCache = Math.max(
+      500,
+      config?.screenshotPersistIntervalMs ?? 3000,
+    );
+    this.screenshotPersistIntervalCacheAt = now;
+    return this.screenshotPersistIntervalMsCache;
   }
 
   private async notifyTaskIfNeeded(taskId: string) {

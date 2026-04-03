@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Edge, Node } from "@xyflow/react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { io, Socket } from "socket.io-client";
@@ -18,11 +18,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/src/components/ui/Ta
 import { Switch } from "@/src/components/ui/Switch";
 import { Button } from "@/src/components/ui/Button";
 import { Input } from "@/src/components/ui/Input";
+import { Select } from "@/src/components/ui/Select";
 import { useAuth } from "@/src/context/AuthContext";
 import {
   buildWorkflowDefinition,
   cancelTask,
   CanvasNodeData,
+  getTaskExecutionScreenshotSrc,
   createEmptyCanvasGraph,
   createWorkflow,
   ExecutionNodeStatus,
@@ -91,9 +93,11 @@ function buildRestoredLogs(events: TaskExecutionRecord[]): LogEntry[] {
     }));
 }
 
-function getLatestPersistedScreenshot(events: TaskExecutionRecord[]) {
-  const screenshots = events.filter((event) => event.type === "screenshot" && Boolean(event.imageBase64));
-  return screenshots.length > 0 ? screenshots[screenshots.length - 1].imageBase64 ?? null : null;
+function getLatestPersistedScreenshot(taskId: string, events: TaskExecutionRecord[]) {
+  const screenshots = events.filter((event) => event.type === "screenshot");
+  return screenshots.length > 0
+    ? getTaskExecutionScreenshotSrc(taskId, screenshots[screenshots.length - 1])
+    : null;
 }
 
 function buildInitialRunValues(schema: WorkflowInputField[]) {
@@ -199,7 +203,7 @@ export default function Workspace() {
     slug: "",
     title: "",
     description: "",
-    category: "浏览器自动化",
+    category: "娴忚鍣ㄨ嚜鍔ㄥ寲",
     tags: "",
   });
 
@@ -207,6 +211,8 @@ export default function Workspace() {
   const activeNodeIdRef = useRef<string | null>(null);
   const lastFlowSnapshotRef = useRef<string>("");
   const persistedWorkflowSnapshotRef = useRef<string>("");
+  const autoSaveTimerRef = useRef<number | null>(null);
+  const autoSaveSnapshotRef = useRef<string | null>(null);
 
   const pageUrl = useMemo(() => getPrimaryPageUrl(flowNodes), [flowNodes]);
   const scheduleSummary = useMemo(() => {
@@ -217,7 +223,7 @@ export default function Workspace() {
     return `定时调度已启用 · ${scheduleCron || "--"} · ${scheduleTimezone || "Asia/Shanghai"}`;
   }, [scheduleCron, scheduleEnabled, scheduleTimezone]);
   const alertSummary = useMemo(() => {
-    const flags = [alertOnFailure ? "失败" : "", alertOnSuccess ? "成功" : ""].filter(Boolean);
+    const flags = [alertOnFailure ? "澶辫触" : "", alertOnSuccess ? "鎴愬姛" : ""].filter(Boolean);
 
     if (!alertEmail || flags.length === 0) {
       return "未启用邮件告警";
@@ -227,7 +233,7 @@ export default function Workspace() {
   }, [alertEmail, alertOnFailure, alertOnSuccess]);
   const workflowStatusLabel = useMemo(() => {
     if (workflowStatus === "draft") {
-      return "草稿";
+      return "鑽夌";
     }
 
     if (workflowStatus === "archived") {
@@ -274,7 +280,6 @@ export default function Workspace() {
     ],
   );
   const hasUnsavedWorkflowChanges = workflowDraftSnapshot !== persistedWorkflowSnapshotRef.current;
-
   const resetCanvasWithWorkflow = useCallback((workflow?: WorkflowRecord | null) => {
     const graph = workflow ? hydrateCanvasFromWorkflow(workflow.definition) : createEmptyCanvasGraph();
     const snapshot = JSON.stringify({
@@ -301,6 +306,11 @@ export default function Workspace() {
     setSelectedNodeId(null);
     activeNodeIdRef.current = null;
     lastFlowSnapshotRef.current = snapshot;
+    autoSaveSnapshotRef.current = null;
+    if (autoSaveTimerRef.current !== null) {
+      window.clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
     persistedWorkflowSnapshotRef.current = buildWorkflowDraftSnapshot({
       name: workflow?.name ?? "未命名工作流",
       description: workflow?.description ?? "由前端画布编辑的工作流",
@@ -357,7 +367,7 @@ export default function Workspace() {
   );
 
   const persistWorkflow = useCallback(
-    async (options?: { silent?: boolean }) => {
+    async (options?: { silent?: boolean; snapshot?: string }) => {
       const definition = buildWorkflowDefinition(flowNodes, flowEdges, {
         inputSchema,
         credentialRequirements,
@@ -379,6 +389,8 @@ export default function Workspace() {
         },
       };
 
+      const snapshotToPersist = options?.snapshot ?? workflowDraftSnapshot;
+
       setIsSavingWorkflow(true);
 
       try {
@@ -396,24 +408,16 @@ export default function Workspace() {
           addLog("success", `工作流“${workflow.name}”已保存。`);
         }
 
-        persistedWorkflowSnapshotRef.current = buildWorkflowDraftSnapshot({
-          name: payload.name,
-          description: payload.description,
-          status: payload.status,
-          scheduleEnabled: payload.schedule.enabled,
-          scheduleCron: payload.schedule.cron ?? "",
-          scheduleTimezone: payload.schedule.timezone ?? "Asia/Shanghai",
-          alertEmail: payload.alerts.email ?? "",
-          alertOnFailure: payload.alerts.onFailure,
-          alertOnSuccess: payload.alerts.onSuccess,
-          inputSchema,
-          credentialRequirements,
-          flowNodes,
-          flowEdges,
-        });
+        persistedWorkflowSnapshotRef.current = snapshotToPersist;
+        if (autoSaveSnapshotRef.current === snapshotToPersist) {
+          autoSaveSnapshotRef.current = null;
+        }
 
         return workflow;
       } catch (error) {
+        if (autoSaveSnapshotRef.current === snapshotToPersist) {
+          autoSaveSnapshotRef.current = null;
+        }
         addLog("error", error instanceof Error ? error.message : "保存工作流失败。");
         throw error;
       } finally {
@@ -437,6 +441,7 @@ export default function Workspace() {
       workflowName,
       inputSchema,
       credentialRequirements,
+      workflowDraftSnapshot,
     ],
   );
 
@@ -585,7 +590,7 @@ export default function Workspace() {
           setIsRunning(true);
           setIsCancelling(Boolean(taskDetail.cancelRequestedAt));
           setLogs(buildRestoredLogs(taskDetail.executionEvents ?? []));
-          setScreenshot(getLatestPersistedScreenshot(taskDetail.executionEvents ?? []));
+          setScreenshot(getLatestPersistedScreenshot(taskDetail.id, taskDetail.executionEvents ?? []));
           setTaskRuntimeContext(taskDetail.workflowSnapshot?.runtime ?? null);
         }
       } catch (error) {
@@ -663,14 +668,41 @@ export default function Workspace() {
       alertOnSuccess;
 
     if (!hasMeaningfulChanges || !hasUnsavedWorkflowChanges || isLoadingWorkflow || isSavingWorkflow) {
+      if (!isSavingWorkflow && autoSaveTimerRef.current !== null) {
+        window.clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
       return;
     }
 
-    const timer = window.setTimeout(() => {
-      void persistWorkflow({ silent: true }).catch(() => undefined);
+    if (autoSaveSnapshotRef.current === workflowDraftSnapshot) {
+      return;
+    }
+
+    if (autoSaveTimerRef.current !== null) {
+      window.clearTimeout(autoSaveTimerRef.current);
+    }
+
+    autoSaveTimerRef.current = window.setTimeout(() => {
+      autoSaveTimerRef.current = null;
+
+      if (workflowDraftSnapshot === persistedWorkflowSnapshotRef.current) {
+        return;
+      }
+
+      autoSaveSnapshotRef.current = workflowDraftSnapshot;
+      void persistWorkflow({
+        silent: true,
+        snapshot: workflowDraftSnapshot,
+      }).catch(() => undefined);
     }, 1200);
 
-    return () => window.clearTimeout(timer);
+    return () => {
+      if (autoSaveTimerRef.current !== null) {
+        window.clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+    };
   }, [
     alertEmail,
     alertOnFailure,
@@ -685,6 +717,7 @@ export default function Workspace() {
     persistWorkflow,
     scheduleEnabled,
     workflowDescription,
+    workflowDraftSnapshot,
     workflowId,
     workflowName,
     workflowStatus,
@@ -699,14 +732,14 @@ export default function Workspace() {
       setIsPublishingTemplate(true);
       const workflow = await persistWorkflow({ silent: true });
       const title = publishForm.title.trim() || workflow.name;
-      const description = publishForm.description.trim() || workflow.description || `${workflow.name} 模板`;
+      const description = publishForm.description.trim() || workflow.description || `${workflow.name} 妯℃澘`;
       await publishWorkflowTemplate({
         workflowId: workflow.id,
         slug: publishForm.slug.trim(),
         title,
         description,
         category: publishForm.category.trim() || "浏览器自动化",
-        tags: publishForm.tags.split(/[，,]/).map((item) => item.trim()).filter(Boolean),
+        tags: publishForm.tags.split(/[锛?]/).map((item) => item.trim()).filter(Boolean),
         published: true,
         featured: false,
       });
@@ -971,7 +1004,7 @@ export default function Workspace() {
         </DialogHeader>
         <DialogContent>
           <div className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <Input
                 value={publishForm.title}
                 onChange={(event) => setPublishForm((current) => ({ ...current, title: event.target.value }))}
@@ -1039,15 +1072,16 @@ export default function Workspace() {
                     <div className="text-sm font-medium text-zinc-200">工作流状态</div>
                     <div className="text-xs text-zinc-500">草稿便于持续编辑；归档后会自动停用调度，避免继续触发。</div>
                   </div>
-                  <select
+                  <Select
                     value={workflowStatus}
-                    onChange={(event) => setWorkflowStatus(event.target.value as WorkflowStatus)}
-                    className="flex h-10 w-40 rounded-md border border-white/[0.06] bg-zinc-900/50 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                  >
-                    <option value="draft">草稿</option>
-                    <option value="active">已发布</option>
-                    <option value="archived">已归档</option>
-                  </select>
+                    onChange={(value) => setWorkflowStatus(value as WorkflowStatus)}
+                    options={[
+                      { value: "draft", label: "草稿" },
+                      { value: "active", label: "已发布" },
+                      { value: "archived", label: "已归档" },
+                    ]}
+                    className="w-40"
+                  />
                 </div>
                 <div className="flex items-center justify-between">
                   <div>
@@ -1069,17 +1103,17 @@ export default function Workspace() {
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-zinc-300">时区</label>
-                  <select
+                  <Select
                     value={scheduleTimezone}
-                    onChange={(event) => setScheduleTimezone(event.target.value)}
+                    onChange={setScheduleTimezone}
                     disabled={!scheduleEnabled || workflowStatus === "archived"}
-                    className="flex h-10 w-full rounded-md border border-white/[0.06] bg-zinc-900/50 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50"
-                  >
-                    <option value="Asia/Shanghai" className="bg-zinc-800 text-zinc-200">Asia/Shanghai (UTC+8)</option>
-                    <option value="UTC" className="bg-zinc-800 text-zinc-200">UTC</option>
-                    <option value="Asia/Tokyo" className="bg-zinc-800 text-zinc-200">Asia/Tokyo (UTC+9)</option>
-                    <option value="America/New_York" className="bg-zinc-800 text-zinc-200">America/New_York (UTC-4/-5)</option>
-                  </select>
+                    options={[
+                      { value: "Asia/Shanghai", label: "Asia/Shanghai (UTC+8)" },
+                      { value: "UTC", label: "UTC" },
+                      { value: "Asia/Tokyo", label: "Asia/Tokyo (UTC+9)" },
+                      { value: "America/New_York", label: "America/New_York (UTC-4/-5)" },
+                    ]}
+                  />
                 </div>
               </TabsContent>
 
@@ -1127,7 +1161,7 @@ export default function Workspace() {
               取消
             </Button>
             <Button
-              className="bg-sky-600 hover:bg-sky-700 text-white border-transparent"
+              className="bg-sky-600 text-white border-transparent hover:bg-sky-700"
               onClick={async () => {
                 try {
                   await persistWorkflow();
@@ -1145,3 +1179,4 @@ export default function Workspace() {
     </div>
   );
 }
+

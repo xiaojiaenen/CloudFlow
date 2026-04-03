@@ -249,7 +249,14 @@ export interface SystemConfigRecord {
   smtpPass?: string | null;
   smtpSecure: boolean;
   smtpFrom?: string | null;
+  minioEndpoint?: string | null;
+  minioPort: number;
+  minioUseSSL: boolean;
+  minioAccessKey?: string | null;
+  minioSecretKey?: string | null;
+  minioBucket?: string | null;
   screenshotIntervalMs: number;
+  screenshotPersistIntervalMs: number;
   taskRetentionDays: number;
   monitorPageSize: number;
   globalTaskConcurrency: number;
@@ -260,10 +267,31 @@ export interface SystemConfigRecord {
   updatedAt: string;
 }
 
+export interface SmtpTestResult {
+  success: boolean;
+  message: string;
+  host: string;
+  port: number;
+  secure: boolean;
+  checkedAt: string;
+}
+
+export interface MinioTestResult {
+  success: boolean;
+  message: string;
+  endpoint: string;
+  port: number;
+  useSSL: boolean;
+  bucket: string;
+  bucketExists: boolean;
+  checkedAt: string;
+}
+
 export interface HealthRecord {
   api: "up" | "down";
   database: "up" | "down";
   redis: "up" | "degraded" | "down";
+  storageConfigured?: boolean;
   queues: {
     tasks: Record<string, number>;
     schedulers: Record<string, number>;
@@ -318,6 +346,10 @@ export interface TaskExecutionRecord {
   status?: "pending" | "running" | "success" | "failed" | "cancelled" | null;
   mimeType?: string | null;
   imageBase64?: string | null;
+  storageProvider?: string | null;
+  storageBucket?: string | null;
+  storageKey?: string | null;
+  sizeBytes?: number | null;
   payload?: Record<string, unknown> | null;
   createdAt: string;
 }
@@ -376,6 +408,27 @@ export function setAuthToken(token: string) {
 
 export function clearAuthToken() {
   window.localStorage.removeItem(AUTH_STORAGE_KEY);
+}
+
+export function buildTaskScreenshotUrl(taskId: string, eventId: string) {
+  const token = getAuthToken();
+  const query = token ? `?accessToken=${encodeURIComponent(token)}` : "";
+  return `${API_BASE_URL}/tasks/${taskId}/screenshots/${eventId}${query}`;
+}
+
+export function getTaskExecutionScreenshotSrc(
+  taskId: string,
+  event?: Pick<TaskExecutionRecord, "id" | "imageBase64"> | null,
+) {
+  if (!event) {
+    return null;
+  }
+
+  if (event.imageBase64) {
+    return `data:image/jpeg;base64,${event.imageBase64}`;
+  }
+
+  return buildTaskScreenshotUrl(taskId, event.id);
 }
 
 function buildAuthHeaders(headers?: HeadersInit) {
@@ -687,6 +740,64 @@ export async function updateSystemConfig(payload: Partial<SystemConfigRecord>) {
   }
 
   return (await response.json()) as SystemConfigRecord;
+}
+
+export async function testSystemSmtpConnection(payload: Partial<SystemConfigRecord>) {
+  const response = await fetch(`${API_BASE_URL}/admin/system-config/test-smtp`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildAuthHeaders(),
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    let message = `SMTP 测试连接失败 (${response.status})`;
+
+    try {
+      const data = (await response.json()) as { message?: string | string[] };
+      const nextMessage = Array.isArray(data.message) ? data.message.join("；") : data.message;
+      if (nextMessage) {
+        message = nextMessage;
+      }
+    } catch {
+      // ignore json parse errors and keep the fallback message
+    }
+
+    throw new Error(message);
+  }
+
+  return (await response.json()) as SmtpTestResult;
+}
+
+export async function testSystemMinioConnection(payload: Partial<SystemConfigRecord>) {
+  const response = await fetch(`${API_BASE_URL}/admin/system-config/test-minio`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildAuthHeaders(),
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    let message = `MinIO 测试连接失败 (${response.status})`;
+
+    try {
+      const data = (await response.json()) as { message?: string | string[] };
+      const nextMessage = Array.isArray(data.message) ? data.message.join("；") : data.message;
+      if (nextMessage) {
+        message = nextMessage;
+      }
+    } catch {
+      // ignore json parse errors and keep the fallback message
+    }
+
+    throw new Error(message);
+  }
+
+  return (await response.json()) as MinioTestResult;
 }
 
 export async function listAdminTemplates(params?: {

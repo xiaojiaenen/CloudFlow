@@ -11,6 +11,8 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { QueueService } from 'src/queue/queue.service';
 import { buildStoredPasswordHash } from '../auth/auth.utils';
 import { AuthenticatedUser, AuthUserRole, AuthUserStatus } from '../auth/auth.types';
+import { NotificationService } from '../notification/notification.service';
+import { TaskArtifactStorageService } from '../storage/task-artifact-storage.service';
 import { DEFAULT_WORKFLOW_TEMPLATES } from '../store/default-templates';
 import { CreateTemplateDto } from './dto/create-template.dto';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -26,6 +28,8 @@ export class AdminService {
     private readonly prismaService: PrismaService,
     private readonly queueService: QueueService,
     private readonly configService: ConfigService,
+    private readonly notificationService: NotificationService,
+    private readonly taskArtifactStorageService: TaskArtifactStorageService,
   ) {}
 
   async getOverview() {
@@ -138,6 +142,12 @@ export class AdminService {
       queues: queueHealth.queues,
       smtpConfigured: Boolean(
         systemConfig.smtpHost && systemConfig.smtpUser && systemConfig.smtpPass,
+      ),
+      storageConfigured: Boolean(
+        systemConfig.minioEndpoint &&
+          systemConfig.minioAccessKey &&
+          systemConfig.minioSecretKey &&
+          systemConfig.minioBucket,
       ),
       checkedAt: new Date().toISOString(),
       runtime: {
@@ -289,8 +299,25 @@ export class AdminService {
         ...(payload.smtpFrom !== undefined
           ? { smtpFrom: payload.smtpFrom?.trim() || null }
           : {}),
+        ...(payload.minioEndpoint !== undefined
+          ? { minioEndpoint: payload.minioEndpoint?.trim() || null }
+          : {}),
+        ...(payload.minioPort !== undefined ? { minioPort: payload.minioPort } : {}),
+        ...(payload.minioUseSSL !== undefined ? { minioUseSSL: payload.minioUseSSL } : {}),
+        ...(payload.minioAccessKey !== undefined
+          ? { minioAccessKey: payload.minioAccessKey?.trim() || null }
+          : {}),
+        ...(payload.minioSecretKey !== undefined
+          ? { minioSecretKey: payload.minioSecretKey?.trim() || null }
+          : {}),
+        ...(payload.minioBucket !== undefined
+          ? { minioBucket: payload.minioBucket?.trim() || 'cloudflow-task-artifacts' }
+          : {}),
         ...(payload.screenshotIntervalMs !== undefined
           ? { screenshotIntervalMs: payload.screenshotIntervalMs }
+          : {}),
+        ...(payload.screenshotPersistIntervalMs !== undefined
+          ? { screenshotPersistIntervalMs: payload.screenshotPersistIntervalMs }
           : {}),
         ...(payload.taskRetentionDays !== undefined
           ? { taskRetentionDays: payload.taskRetentionDays }
@@ -312,6 +339,67 @@ export class AdminService {
           : {}),
       },
     });
+  }
+
+  async testSmtpConnection(payload: UpdateSystemConfigDto) {
+    try {
+      const result = await this.notificationService.testSmtpConnection({
+        smtpHost: payload.smtpHost,
+        smtpPort: payload.smtpPort,
+        smtpUser: payload.smtpUser,
+        smtpPass: payload.smtpPass,
+        smtpSecure: payload.smtpSecure,
+      });
+
+      return {
+        success: true,
+        message: `SMTP 连接成功：${result.host}:${result.port}${result.secure ? '（SSL/TLS）' : ''}`,
+        ...result,
+        checkedAt: new Date().toISOString(),
+      };
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
+      throw new BadRequestException(
+        error instanceof Error
+          ? `SMTP 连接测试失败：${error.message}`
+          : 'SMTP 连接测试失败，请检查主机、端口、账号和密码。',
+      );
+    }
+  }
+
+  async testMinioConnection(payload: UpdateSystemConfigDto) {
+    try {
+      const result = await this.taskArtifactStorageService.testConnection({
+        minioEndpoint: payload.minioEndpoint,
+        minioPort: payload.minioPort,
+        minioUseSSL: payload.minioUseSSL,
+        minioAccessKey: payload.minioAccessKey,
+        minioSecretKey: payload.minioSecretKey,
+        minioBucket: payload.minioBucket,
+      });
+
+      return {
+        success: true,
+        message: result.bucketExists
+          ? `MinIO 连接成功，bucket "${result.bucket}" 可用。`
+          : `MinIO 连接成功，但 bucket "${result.bucket}" 当前不存在。`,
+        ...result,
+        checkedAt: new Date().toISOString(),
+      };
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
+      throw new BadRequestException(
+        error instanceof Error
+          ? `MinIO 测试失败：${error.message}`
+          : 'MinIO 测试失败，请检查 Endpoint、端口、Access Key、Secret Key 和 Bucket。',
+      );
+    }
   }
 
   async listTemplates(filters?: {

@@ -1,6 +1,7 @@
 import { KeyRound, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/src/components/ui/Button";
 import { Input } from "@/src/components/ui/Input";
+import { Select } from "@/src/components/ui/Select";
 import { Switch } from "@/src/components/ui/Switch";
 import {
   WorkflowCredentialRequirement,
@@ -130,31 +131,31 @@ export function WorkflowInputsDesigner({
                     }
                     placeholder="变量 key，例如 username"
                   />
-                  <select
+                  <Select
                     value={field.type}
-                    onChange={(event) =>
+                    onChange={(value) =>
                       onInputSchemaChange(
                         inputSchema.map((item, itemIndex) =>
                           itemIndex === index
                             ? {
                                 ...item,
-                                type: event.target.value as WorkflowInputField["type"],
-                                options: event.target.value === "select" ? item.options ?? [] : [],
+                                type: value as WorkflowInputField["type"],
+                                options: value === "select" ? item.options ?? [] : [],
                               }
                             : item,
                         ),
                       )
                     }
-                    className="flex h-10 rounded-md border border-white/[0.06] bg-zinc-900/50 px-3 py-2 text-sm text-zinc-200"
-                  >
-                    <option value="text">单行文本</option>
-                    <option value="textarea">多行文本</option>
-                    <option value="password">密码</option>
-                    <option value="number">数字</option>
-                    <option value="select">下拉选择</option>
-                    <option value="date">日期</option>
-                    <option value="email">邮箱</option>
-                  </select>
+                    options={[
+                      { value: "text", label: "单行文本" },
+                      { value: "textarea", label: "多行文本" },
+                      { value: "password", label: "密码" },
+                      { value: "number", label: "数字" },
+                      { value: "select", label: "下拉选择" },
+                      { value: "date", label: "日期" },
+                      { value: "email", label: "邮箱" },
+                    ]}
+                  />
                   <Input
                     value={field.defaultValue ?? ""}
                     onChange={(event) =>
@@ -190,7 +191,7 @@ export function WorkflowInputsDesigner({
                   />
                 </div>
 
-                {field.type === "select" && (
+                {field.type === "select" ? (
                   <Input
                     value={toOptionsString(field.options)}
                     onChange={(event) =>
@@ -202,7 +203,7 @@ export function WorkflowInputsDesigner({
                     }
                     placeholder="选项格式：显示名:值，例如 成功:success"
                   />
-                )}
+                ) : null}
 
                 <div className="flex flex-wrap items-center gap-6 text-sm">
                   <label className="flex items-center gap-3 text-zinc-300">
@@ -316,25 +317,25 @@ export function WorkflowInputsDesigner({
                     }
                     placeholder="凭据 key，例如 taobao_account"
                   />
-                  <select
+                  <Select
                     value={credential.type}
-                    onChange={(event) =>
+                    onChange={(value) =>
                       onCredentialRequirementsChange(
                         credentialRequirements.map((item, itemIndex) =>
                           itemIndex === index
-                            ? { ...item, type: event.target.value as WorkflowCredentialRequirement["type"] }
+                            ? { ...item, type: value as WorkflowCredentialRequirement["type"] }
                             : item,
                         ),
                       )
                     }
-                    className="flex h-10 rounded-md border border-white/[0.06] bg-zinc-900/50 px-3 py-2 text-sm text-zinc-200"
-                  >
-                    <option value="account">账号密码</option>
-                    <option value="api_key">API Key</option>
-                    <option value="cookie">Cookie</option>
-                    <option value="smtp">SMTP</option>
-                    <option value="custom">自定义</option>
-                  </select>
+                    options={[
+                      { value: "account", label: "账号密码" },
+                      { value: "api_key", label: "API Key" },
+                      { value: "cookie", label: "Cookie" },
+                      { value: "smtp", label: "SMTP" },
+                      { value: "custom", label: "自定义" },
+                    ]}
+                  />
                   <Input
                     value={credential.provider ?? ""}
                     onChange={(event) =>
