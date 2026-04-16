@@ -62,9 +62,19 @@ export interface WorkflowCredentialRequirement {
   description?: string;
 }
 
+export interface WorkflowRuntimeCredentialMeta {
+  credentialId: string;
+  credentialName: string;
+  type: WorkflowCredentialRequirementType;
+  provider?: string;
+}
+
 export interface WorkflowRuntimeContext {
   inputs?: Record<string, string>;
   maskedInputs?: Record<string, string>;
+  credentialBindings?: Record<string, string>;
+  maskedCredentials?: Record<string, Record<string, string>>;
+  credentialMetadata?: Record<string, WorkflowRuntimeCredentialMeta>;
 }
 
 export interface WorkflowCanvasNode {
@@ -170,7 +180,7 @@ export interface WaitForTextNode extends BaseWorkflowNode {
   type: 'wait_for_text';
   selector: string;
   text: string;
-  matchMode?: 'contains' | 'equals' | 'not_contains' | 'not_equals';
+  matchMode?: 'contains' | 'equals' | 'not_contains' | 'not_equals' | 'not_empty';
   timeout?: number;
 }
 

@@ -1,10 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import {
-  Prisma,
-  TaskStatus,
-  Workflow,
-} from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
+import { Prisma, TaskStatus, Workflow } from '@prisma/client';
 import nodemailer, { Transporter } from 'nodemailer';
 import { PrismaService } from 'src/prisma/prisma.service';
 
@@ -39,11 +35,7 @@ interface NotificationTaskDetail {
   workflowSnapshot: Prisma.JsonValue;
   workflow: Pick<
     Workflow,
-    | 'id'
-    | 'name'
-    | 'alertEmail'
-    | 'alertOnFailure'
-    | 'alertOnSuccess'
+    'id' | 'name' | 'alertEmail' | 'alertOnFailure' | 'alertOnSuccess'
   >;
   totalEvents: number;
   screenshotCount: number;
@@ -58,6 +50,7 @@ type SmtpOverrideConfig = {
   smtpUser?: string | null;
   smtpPass?: string | null;
   smtpSecure?: boolean | null;
+  smtpIgnoreTlsCertificate?: boolean | null;
 };
 
 type ResolvedSmtpConfig = {
@@ -66,6 +59,7 @@ type ResolvedSmtpConfig = {
   user: string;
   pass: string;
   secure: boolean;
+  ignoreTlsCertificate: boolean;
 };
 
 @Injectable()
@@ -101,7 +95,7 @@ export class NotificationService {
     const transporter = await this.getTransporter();
     if (!transporter) {
       this.logger.warn(
-        `SMTP not configured, skipped email alert for task ${task.id}.`,
+        `SMTP not configured, skipped task alert email for task ${task.id}.`,
       );
       return;
     }
@@ -131,95 +125,110 @@ export class NotificationService {
 
   async testSmtpConnection(overrides?: SmtpOverrideConfig) {
     const config = await this.resolveSmtpConfig(overrides);
-    const transporter = nodemailer.createTransport({
-      host: config.host,
-      port: config.port,
-      secure: config.secure,
-      auth: {
-        user: config.user,
-        pass: config.pass,
-      },
-    });
+    const transporter = nodemailer.createTransport(
+      this.buildTransportOptions(config),
+    );
 
-    await transporter.verify();
+    try {
+      await transporter.verify();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+
+      if (message.includes('unable to verify the first certificate')) {
+        throw new BadRequestException(
+          'SMTP certificate verification failed. Enable the TLS certificate bypass option only in trusted internal environments.',
+        );
+      }
+
+      throw error;
+    }
 
     return {
       host: config.host,
       port: config.port,
       secure: config.secure,
+      ignoreTlsCertificate: config.ignoreTlsCertificate,
     };
   }
 
-  private async loadTaskDetail(taskId: string): Promise<NotificationTaskDetail | null> {
-    const [task, totalEvents, screenshotCount, extractCount, recentActivities, extractSummaries] =
-      await Promise.all([
-        this.prismaService.task.findUnique({
-          where: { id: taskId },
-          select: {
-            id: true,
-            status: true,
-            errorMessage: true,
-            createdAt: true,
-            startedAt: true,
-            completedAt: true,
-            workflowSnapshot: true,
-            workflow: {
-              select: {
-                id: true,
-                name: true,
-                alertEmail: true,
-                alertOnFailure: true,
-                alertOnSuccess: true,
-              },
+  private async loadTaskDetail(
+    taskId: string,
+  ): Promise<NotificationTaskDetail | null> {
+    const [
+      task,
+      totalEvents,
+      screenshotCount,
+      extractCount,
+      recentActivities,
+      extractSummaries,
+    ] = await Promise.all([
+      this.prismaService.task.findUnique({
+        where: { id: taskId },
+        select: {
+          id: true,
+          status: true,
+          errorMessage: true,
+          createdAt: true,
+          startedAt: true,
+          completedAt: true,
+          workflowSnapshot: true,
+          workflow: {
+            select: {
+              id: true,
+              name: true,
+              alertEmail: true,
+              alertOnFailure: true,
+              alertOnSuccess: true,
             },
           },
-        }),
-        this.prismaService.taskExecutionEvent.count({
-          where: { taskId },
-        }),
-        this.prismaService.taskExecutionEvent.count({
-          where: { taskId, type: 'screenshot' },
-        }),
-        this.prismaService.taskExecutionEvent.count({
-          where: { taskId, type: 'extract' },
-        }),
-        this.prismaService.taskExecutionEvent.findMany({
-          where: {
-            taskId,
-            type: {
-              in: ['log', 'status'],
-            },
+        },
+      }),
+      this.prismaService.taskExecutionEvent.count({
+        where: { taskId },
+      }),
+      this.prismaService.taskExecutionEvent.count({
+        where: { taskId, type: 'screenshot' },
+      }),
+      this.prismaService.taskExecutionEvent.count({
+        where: { taskId, type: 'extract' },
+      }),
+      this.prismaService.taskExecutionEvent.findMany({
+        where: {
+          taskId,
+          type: {
+            in: ['log', 'status'],
           },
-          orderBy: [{ sequence: 'desc' }],
-          take: 8,
-          select: {
-            id: true,
-            sequence: true,
-            type: true,
-            level: true,
-            status: true,
-            message: true,
-            nodeId: true,
-            createdAt: true,
-          },
-        }),
-        this.prismaService.taskExecutionEvent.findMany({
-          where: {
-            taskId,
-            type: 'extract',
-          },
-          orderBy: [{ sequence: 'desc' }],
-          take: 3,
-          select: {
-            id: true,
-            sequence: true,
-            nodeId: true,
-            payload: true,
-            message: true,
-            createdAt: true,
-          },
-        }),
-      ]);
+        },
+        orderBy: [{ sequence: 'desc' }],
+        take: 8,
+        select: {
+          id: true,
+          sequence: true,
+          type: true,
+          level: true,
+          status: true,
+          message: true,
+          nodeId: true,
+          createdAt: true,
+        },
+      }),
+      this.prismaService.taskExecutionEvent.findMany({
+        where: {
+          taskId,
+          type: 'extract',
+        },
+        orderBy: [{ sequence: 'desc' }],
+        take: 3,
+        select: {
+          id: true,
+          sequence: true,
+          nodeId: true,
+          payload: true,
+          message: true,
+          createdAt: true,
+        },
+      }),
+    ]);
 
     if (!task) {
       return null;
@@ -251,7 +260,7 @@ export class NotificationService {
             preview:
               this.readPayloadString(payload, 'preview') ||
               item.message ||
-              '[空值]',
+              '[empty]',
             createdAt: item.createdAt,
           };
         }),
@@ -260,165 +269,75 @@ export class NotificationService {
 
   private buildHtml(task: NotificationTaskDetail) {
     const statusMeta = this.getStatusMeta(task.status);
-    const nodeCount = this.getWorkflowNodeCount(task.workflowSnapshot);
-    const durationText = this.formatDuration(task.startedAt, task.completedAt);
     const monitorUrl = this.getMonitorUrl(task.id);
     const activityRows = task.recentActivities.length
-      ? task.recentActivities
-          .map((item) => this.renderActivityRow(item))
-          .join('')
-      : `<tr>
-          <td colspan="3" style="padding: 16px 18px; color: #94a3b8; font-size: 13px;">
-            暂无可展示的执行活动。
-          </td>
-        </tr>`;
-
-    const extractCards = task.extractSummaries.length
-      ? task.extractSummaries.map((item) => this.renderExtractCard(item)).join('')
-      : `<tr>
-          <td style="padding: 0 0 16px 0;">
-            <div style="border: 1px dashed #334155; border-radius: 16px; padding: 18px; color: #94a3b8; font-size: 13px; background: #0f172a;">
-              本次任务没有提取节点结果。
-            </div>
-          </td>
-        </tr>`;
-
-    const ctaBlock = monitorUrl
-      ? `<tr>
-          <td style="padding: 0 32px 28px 32px;">
-            <a href="${this.escapeHtml(monitorUrl)}" style="display: inline-block; background: ${statusMeta.buttonBackground}; color: #ffffff; text-decoration: none; padding: 12px 18px; border-radius: 12px; font-size: 14px; font-weight: 700;">
-              打开监控中心查看详情
-            </a>
-          </td>
-        </tr>`
-      : '';
+      ? task.recentActivities.map((item) => this.renderActivityRow(item)).join('')
+      : `<tr><td style="padding:12px 16px;color:#64748b;">No recent activity captured.</td></tr>`;
+    const extractRows = task.extractSummaries.length
+      ? task.extractSummaries.map((item) => this.renderExtractRow(item)).join('')
+      : `<tr><td style="padding:12px 16px;color:#64748b;">No extract results captured.</td></tr>`;
 
     return `
       <!doctype html>
-      <html lang="zh-CN">
+      <html lang="en">
         <head>
           <meta charset="utf-8" />
           <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-          <title>CloudFlow 工作流通知</title>
+          <title>CloudFlow Task Notification</title>
         </head>
-        <body style="margin: 0; padding: 0; background: #060816; font-family: Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif; color: #e2e8f0;">
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background: #060816; padding: 24px 12px;">
+        <body style="margin:0;padding:24px;background:#0f172a;color:#e2e8f0;font-family:Arial,sans-serif;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:760px;margin:0 auto;background:#111827;border:1px solid #1f2937;border-radius:16px;overflow:hidden;">
             <tr>
-              <td align="center">
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 720px; background: #0b1120; border: 1px solid #1e293b; border-radius: 24px; overflow: hidden;">
-                  <tr>
-                    <td style="padding: 0;">
-                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background: ${statusMeta.heroBackground}; background-image: linear-gradient(135deg, ${statusMeta.heroGradientStart}, ${statusMeta.heroGradientEnd});">
-                        <tr>
-                          <td style="padding: 28px 32px 24px 32px;">
-                            <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                              <tr>
-                                <td align="left">
-                                  <div style="display: inline-block; padding: 6px 12px; border-radius: 999px; background: rgba(255,255,255,0.14); color: #ffffff; font-size: 12px; font-weight: 700; letter-spacing: 0.08em;">
-                                    CLOUDFLOW AUTOMATION
-                                  </div>
-                                  <div style="margin-top: 18px; font-size: 30px; line-height: 1.2; font-weight: 800; color: #ffffff;">
-                                    ${this.escapeHtml(task.workflow.name)}
-                                  </div>
-                                  <div style="margin-top: 10px; font-size: 15px; line-height: 1.7; color: rgba(255,255,255,0.86); max-width: 560px;">
-                                    ${statusMeta.summary}
-                                  </div>
-                                </td>
-                                <td align="right" valign="top" style="padding-left: 16px;">
-                                  <div style="display: inline-block; padding: 8px 14px; border-radius: 999px; background: rgba(255,255,255,0.18); color: #ffffff; font-size: 13px; font-weight: 700;">
-                                    ${statusMeta.label}
-                                  </div>
-                                </td>
-                              </tr>
-                            </table>
-                          </td>
-                        </tr>
-                      </table>
-                    </td>
-                  </tr>
-
-                  <tr>
-                    <td style="padding: 24px 32px 8px 32px;">
-                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                        <tr>
-                          ${this.renderStatCard('任务状态', statusMeta.label, statusMeta.statAccent)}
-                          ${this.renderStatCard('运行耗时', durationText, '#38bdf8')}
-                          ${this.renderStatCard('节点数量', String(nodeCount), '#a78bfa')}
-                          ${this.renderStatCard('执行事件', String(task.totalEvents), '#f59e0b')}
-                        </tr>
-                      </table>
-                    </td>
-                  </tr>
-
-                  <tr>
-                    <td style="padding: 8px 32px 0 32px;">
-                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background: #0f172a; border: 1px solid #1e293b; border-radius: 18px;">
-                        <tr>
-                          <td style="padding: 20px 22px;">
-                            <div style="font-size: 14px; font-weight: 700; color: #f8fafc; margin-bottom: 14px;">任务摘要</div>
-                            <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                              ${this.renderSummaryRow('任务 ID', task.id)}
-                              ${this.renderSummaryRow('工作流 ID', task.workflow.id)}
-                              ${this.renderSummaryRow('创建时间', this.formatDateTime(task.createdAt))}
-                              ${this.renderSummaryRow('开始时间', this.formatDateTime(task.startedAt))}
-                              ${this.renderSummaryRow('结束时间', this.formatDateTime(task.completedAt))}
-                              ${this.renderSummaryRow('截图数量', `${task.screenshotCount} 张`)}
-                              ${this.renderSummaryRow('提取结果', `${task.extractCount} 条`)}
-                            </table>
-                          </td>
-                        </tr>
-                      </table>
-                    </td>
-                  </tr>
-
-                  ${
-                    task.errorMessage
-                      ? `<tr>
-                          <td style="padding: 20px 32px 0 32px;">
-                            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background: #3f0d16; border: 1px solid #7f1d1d; border-radius: 18px;">
-                              <tr>
-                                <td style="padding: 18px 20px;">
-                                  <div style="font-size: 14px; font-weight: 700; color: #fecaca; margin-bottom: 10px;">错误信息</div>
-                                  <div style="font-size: 13px; line-height: 1.8; color: #fee2e2; white-space: pre-wrap;">${this.escapeHtml(task.errorMessage)}</div>
-                                </td>
-                              </tr>
-                            </table>
-                          </td>
-                        </tr>`
-                      : ''
-                  }
-
-                  <tr>
-                    <td style="padding: 20px 32px 0 32px;">
-                      <div style="font-size: 15px; font-weight: 700; color: #f8fafc; margin-bottom: 12px;">最近执行活动</div>
-                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background: #0f172a; border: 1px solid #1e293b; border-radius: 18px; overflow: hidden;">
-                        ${activityRows}
-                      </table>
-                    </td>
-                  </tr>
-
-                  <tr>
-                    <td style="padding: 20px 32px 0 32px;">
-                      <div style="font-size: 15px; font-weight: 700; color: #f8fafc; margin-bottom: 12px;">提取结果速览</div>
-                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                        ${extractCards}
-                      </table>
-                    </td>
-                  </tr>
-
-                  ${ctaBlock}
-
-                  <tr>
-                    <td style="padding: 0 32px 28px 32px;">
-                      <div style="border-top: 1px solid #1e293b; padding-top: 18px; color: #64748b; font-size: 12px; line-height: 1.8;">
-                        这是一封由 CloudFlow 自动发送的工作流通知邮件。<br />
-                        如果你希望收到更多任务明细，可以继续扩展监控中心和告警规则。
-                      </div>
-                    </td>
-                  </tr>
+              <td style="padding:24px 28px;background:${statusMeta.bannerBackground};color:#ffffff;">
+                <div style="font-size:12px;letter-spacing:.08em;opacity:.85;">CLOUDFLOW</div>
+                <div style="margin-top:10px;font-size:28px;font-weight:700;">${this.escapeHtml(task.workflow.name)}</div>
+                <div style="margin-top:8px;font-size:14px;line-height:1.6;">${this.escapeHtml(statusMeta.summary)}</div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:20px 28px;">
+                <div style="font-size:16px;font-weight:700;margin-bottom:12px;">Task Summary</div>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                  ${this.renderSummaryRow('Task ID', task.id)}
+                  ${this.renderSummaryRow('Workflow ID', task.workflow.id)}
+                  ${this.renderSummaryRow('Status', statusMeta.label)}
+                  ${this.renderSummaryRow('Created At', this.formatDateTime(task.createdAt))}
+                  ${this.renderSummaryRow('Started At', this.formatDateTime(task.startedAt))}
+                  ${this.renderSummaryRow('Completed At', this.formatDateTime(task.completedAt))}
+                  ${this.renderSummaryRow('Duration', this.formatDuration(task.startedAt, task.completedAt))}
+                  ${this.renderSummaryRow('Node Count', String(this.getWorkflowNodeCount(task.workflowSnapshot)))}
+                  ${this.renderSummaryRow('Events', String(task.totalEvents))}
+                  ${this.renderSummaryRow('Screenshots', String(task.screenshotCount))}
+                  ${this.renderSummaryRow('Extract Results', String(task.extractCount))}
                 </table>
               </td>
             </tr>
+            ${
+              task.errorMessage
+                ? `<tr><td style="padding:0 28px 20px 28px;"><div style="padding:14px 16px;border:1px solid #7f1d1d;border-radius:12px;background:#450a0a;color:#fecaca;white-space:pre-wrap;">${this.escapeHtml(task.errorMessage)}</div></td></tr>`
+                : ''
+            }
+            <tr>
+              <td style="padding:0 28px 20px 28px;">
+                <div style="font-size:16px;font-weight:700;margin-bottom:12px;">Recent Activity</div>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #1f2937;border-radius:12px;overflow:hidden;background:#0b1220;">
+                  ${activityRows}
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 28px 24px 28px;">
+                <div style="font-size:16px;font-weight:700;margin-bottom:12px;">Extract Preview</div>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #1f2937;border-radius:12px;overflow:hidden;background:#0b1220;">
+                  ${extractRows}
+                </table>
+              </td>
+            </tr>
+            ${
+              monitorUrl
+                ? `<tr><td style="padding:0 28px 28px 28px;"><a href="${this.escapeHtml(monitorUrl)}" style="display:inline-block;padding:12px 16px;border-radius:10px;background:#2563eb;color:#fff;text-decoration:none;font-weight:700;">Open Monitor Center</a></td></tr>`
+                : ''
+            }
           </table>
         </body>
       </html>
@@ -427,130 +346,92 @@ export class NotificationService {
 
   private buildText(task: NotificationTaskDetail) {
     const statusMeta = this.getStatusMeta(task.status);
-    const nodeCount = this.getWorkflowNodeCount(task.workflowSnapshot);
-    const durationText = this.formatDuration(task.startedAt, task.completedAt);
-    const activityLines = task.recentActivities.length
-      ? task.recentActivities.map((item) => {
-          const label =
-            item.type === 'status'
-              ? `状态更新为 ${this.getStatusMeta(item.status ?? 'pending').label}`
-              : item.message || '执行日志';
-          return `- [${this.formatDateTime(item.createdAt)}] ${label}`;
-        })
-      : ['- 暂无可展示的执行活动'];
-
-    const extractLines = task.extractSummaries.length
-      ? task.extractSummaries.map(
-          (item) =>
-            `- ${item.selector} (${item.property}) => ${item.preview}`,
-        )
-      : ['- 本次任务没有提取节点结果'];
-
     const lines = [
-      'CloudFlow 工作流通知',
+      'CloudFlow Task Notification',
       '',
-      `${task.workflow.name} ${statusMeta.label}`,
+      `${task.workflow.name} - ${statusMeta.label}`,
       statusMeta.summary,
       '',
-      `任务 ID：${task.id}`,
-      `工作流 ID：${task.workflow.id}`,
-      `创建时间：${this.formatDateTime(task.createdAt)}`,
-      `开始时间：${this.formatDateTime(task.startedAt)}`,
-      `结束时间：${this.formatDateTime(task.completedAt)}`,
-      `运行耗时：${durationText}`,
-      `节点数量：${nodeCount}`,
-      `执行事件：${task.totalEvents}`,
-      `截图数量：${task.screenshotCount}`,
-      `提取结果：${task.extractCount}`,
-      '',
-      '最近执行活动：',
-      ...activityLines,
-      '',
-      '提取结果速览：',
-      ...extractLines,
+      `Task ID: ${task.id}`,
+      `Workflow ID: ${task.workflow.id}`,
+      `Created At: ${this.formatDateTime(task.createdAt)}`,
+      `Started At: ${this.formatDateTime(task.startedAt)}`,
+      `Completed At: ${this.formatDateTime(task.completedAt)}`,
+      `Duration: ${this.formatDuration(task.startedAt, task.completedAt)}`,
+      `Node Count: ${this.getWorkflowNodeCount(task.workflowSnapshot)}`,
+      `Events: ${task.totalEvents}`,
+      `Screenshots: ${task.screenshotCount}`,
+      `Extract Results: ${task.extractCount}`,
     ];
 
     if (task.errorMessage) {
-      lines.push('', `错误信息：${task.errorMessage}`);
+      lines.push('', `Error: ${task.errorMessage}`);
+    }
+
+    if (task.recentActivities.length > 0) {
+      lines.push('', 'Recent Activity:');
+      for (const item of task.recentActivities) {
+        const description =
+          item.type === 'status'
+            ? `Status -> ${this.getStatusMeta(item.status ?? 'pending').label}`
+            : item.message || 'Execution log';
+        lines.push(`- [${this.formatDateTime(item.createdAt)}] ${description}`);
+      }
+    }
+
+    if (task.extractSummaries.length > 0) {
+      lines.push('', 'Extract Preview:');
+      for (const item of task.extractSummaries) {
+        lines.push(`- ${item.selector} (${item.property}): ${item.preview}`);
+      }
     }
 
     const monitorUrl = this.getMonitorUrl(task.id);
     if (monitorUrl) {
-      lines.push('', `监控中心：${monitorUrl}`);
+      lines.push('', `Monitor: ${monitorUrl}`);
     }
 
     return lines.join('\n');
   }
 
-  private renderStatCard(label: string, value: string, accent: string) {
-    return `<td width="25%" style="padding: 0 8px 16px 0;">
-      <div style="background: #0f172a; border: 1px solid #1e293b; border-radius: 18px; padding: 18px 16px;">
-        <div style="font-size: 12px; color: #94a3b8; margin-bottom: 10px;">${this.escapeHtml(label)}</div>
-        <div style="font-size: 24px; line-height: 1.2; font-weight: 800; color: #f8fafc;">${this.escapeHtml(value)}</div>
-        <div style="margin-top: 12px; width: 42px; height: 4px; border-radius: 999px; background: ${accent};"></div>
-      </div>
-    </td>`;
-  }
-
   private renderSummaryRow(label: string, value: string) {
     return `<tr>
-      <td style="padding: 8px 0; width: 108px; color: #94a3b8; font-size: 13px; vertical-align: top;">${this.escapeHtml(label)}</td>
-      <td style="padding: 8px 0; color: #e2e8f0; font-size: 13px; vertical-align: top;">${this.escapeHtml(value)}</td>
+      <td style="padding:8px 0;width:140px;color:#94a3b8;font-size:13px;vertical-align:top;">${this.escapeHtml(label)}</td>
+      <td style="padding:8px 0;color:#e2e8f0;font-size:13px;vertical-align:top;">${this.escapeHtml(value)}</td>
     </tr>`;
   }
 
   private renderActivityRow(item: RecentActivityItem) {
-    const accent =
-      item.type === 'status'
-        ? this.getStatusMeta(item.status ?? 'pending')
-        : this.getLogMeta(item.level);
     const description =
       item.type === 'status'
-        ? `状态更新为 ${this.getStatusMeta(item.status ?? 'pending').label}`
-        : item.message || '执行日志';
+        ? `Status changed to ${this.getStatusMeta(item.status ?? 'pending').label}`
+        : item.message || 'Execution log';
 
     return `<tr>
-      <td style="padding: 14px 16px 14px 18px; width: 120px; color: #94a3b8; font-size: 12px; vertical-align: top; border-bottom: 1px solid #172033;">
-        #${item.sequence}<br />
-        <span style="display: inline-block; margin-top: 4px;">${this.escapeHtml(this.formatDateTime(item.createdAt))}</span>
-      </td>
-      <td style="padding: 14px 12px; vertical-align: top; border-bottom: 1px solid #172033;">
-        <div style="font-size: 13px; color: #e2e8f0; line-height: 1.7;">${this.escapeHtml(description)}</div>
+      <td style="padding:12px 16px;border-top:1px solid #1f2937;color:#cbd5e1;font-size:13px;">
+        <div style="font-weight:700;">#${item.sequence}</div>
+        <div style="margin-top:4px;color:#64748b;">${this.escapeHtml(this.formatDateTime(item.createdAt))}</div>
+        <div style="margin-top:8px;line-height:1.6;">${this.escapeHtml(description)}</div>
         ${
           item.nodeId
-            ? `<div style="margin-top: 6px; font-size: 11px; color: #64748b;">节点 ID: <code>${this.escapeHtml(item.nodeId)}</code></div>`
+            ? `<div style="margin-top:6px;color:#64748b;">Node: ${this.escapeHtml(item.nodeId)}</div>`
             : ''
         }
-      </td>
-      <td style="padding: 14px 18px 14px 12px; width: 120px; vertical-align: top; border-bottom: 1px solid #172033;" align="right">
-        <span style="display: inline-block; padding: 6px 10px; border-radius: 999px; background: ${accent.background}; color: ${accent.color}; font-size: 12px; font-weight: 700;">
-          ${this.escapeHtml(accent.label)}
-        </span>
       </td>
     </tr>`;
   }
 
-  private renderExtractCard(item: ExtractSummaryItem) {
+  private renderExtractRow(item: ExtractSummaryItem) {
     return `<tr>
-      <td style="padding: 0 0 16px 0;">
-        <div style="background: #0f172a; border: 1px solid #1e293b; border-radius: 18px; padding: 18px 18px 16px 18px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-            <span style="font-size: 13px; font-weight: 700; color: #f8fafc;">提取节点 #${item.sequence}</span>
-            <span style="font-size: 11px; color: #94a3b8;">${this.escapeHtml(this.formatDateTime(item.createdAt))}</span>
-          </div>
-          <div style="font-size: 12px; color: #94a3b8; line-height: 1.8;">
-            选择器: <code style="color: #e2e8f0;">${this.escapeHtml(item.selector)}</code><br />
-            属性: <code style="color: #e2e8f0;">${this.escapeHtml(item.property)}</code>
-            ${
-              item.nodeId
-                ? `<br />节点 ID: <code style="color: #e2e8f0;">${this.escapeHtml(item.nodeId)}</code>`
-                : ''
-            }
-          </div>
-          <div style="margin-top: 12px; background: #020617; border: 1px solid #1e293b; border-radius: 12px; padding: 12px 14px; font-size: 12px; line-height: 1.8; color: #cbd5e1; white-space: pre-wrap;">
-            ${this.escapeHtml(item.preview)}
-          </div>
-        </div>
+      <td style="padding:12px 16px;border-top:1px solid #1f2937;color:#cbd5e1;font-size:13px;">
+        <div style="font-weight:700;">#${item.sequence} · ${this.escapeHtml(item.selector)}</div>
+        <div style="margin-top:4px;color:#64748b;">Property: ${this.escapeHtml(item.property)}</div>
+        ${
+          item.nodeId
+            ? `<div style="margin-top:4px;color:#64748b;">Node: ${this.escapeHtml(item.nodeId)}</div>`
+            : ''
+        }
+        <div style="margin-top:8px;line-height:1.6;white-space:pre-wrap;">${this.escapeHtml(item.preview)}</div>
       </td>
     </tr>`;
   }
@@ -576,24 +457,13 @@ export class NotificationService {
       config.user,
       config.pass,
       config.secure,
+      config.ignoreTlsCertificate,
     ].join('|');
 
-    if (!config.host || !config.user || !config.pass) {
-      this.transporter = null;
-      this.transporterSignature = null;
-      return null;
-    }
-
     if (!this.transporter || this.transporterSignature !== signature) {
-      this.transporter = nodemailer.createTransport({
-        host: config.host,
-        port: config.port,
-        secure: config.secure,
-        auth: {
-          user: config.user,
-          pass: config.pass,
-        },
-      });
+      this.transporter = nodemailer.createTransport(
+        this.buildTransportOptions(config),
+      );
       this.transporterSignature = signature;
     }
 
@@ -632,10 +502,14 @@ export class NotificationService {
       overrides?.smtpSecure ??
       systemConfig?.smtpSecure ??
       (this.configService.get<string>('SMTP_SECURE') === 'true');
+    const ignoreTlsCertificate =
+      overrides?.smtpIgnoreTlsCertificate ??
+      systemConfig?.smtpIgnoreTlsCertificate ??
+      (this.configService.get<string>('SMTP_IGNORE_TLS_CERTIFICATE') === 'true');
 
     if (!host || !user || !pass) {
       throw new BadRequestException(
-        '请先填写完整的 SMTP Host、SMTP User 和 SMTP Password 后再测试连接。',
+        'SMTP host, username and password are required before testing or sending email.',
       );
     }
 
@@ -645,6 +519,24 @@ export class NotificationService {
       user,
       pass,
       secure,
+      ignoreTlsCertificate,
+    };
+  }
+
+  private buildTransportOptions(config: ResolvedSmtpConfig) {
+    return {
+      host: config.host,
+      port: config.port,
+      secure: config.secure,
+      auth: {
+        user: config.user,
+        pass: config.pass,
+      },
+      tls: config.ignoreTlsCertificate
+        ? {
+            rejectUnauthorized: false,
+          }
+        : undefined,
     };
   }
 
@@ -664,65 +556,38 @@ export class NotificationService {
   }
 
   private getStatusMeta(status: TaskStatus) {
-    if (status === 'success') {
-      return {
-        label: '执行成功',
-        summary:
-          '自动化流程已经顺利跑完，关键步骤全部完成，可以直接进入监控中心继续复盘执行结果。',
-        heroBackground: '#0f3b2f',
-        heroGradientStart: '#0f766e',
-        heroGradientEnd: '#14532d',
-        statAccent: '#34d399',
-        buttonBackground: '#10b981',
-        background: '#073b2f',
-        color: '#bbf7d0',
-      };
+    switch (status) {
+      case 'success':
+        return {
+          label: 'Success',
+          summary: 'The workflow finished successfully.',
+          bannerBackground: '#166534',
+        };
+      case 'failed':
+        return {
+          label: 'Failed',
+          summary: 'The workflow failed during execution. Review the activity log and error details.',
+          bannerBackground: '#991b1b',
+        };
+      case 'cancelled':
+        return {
+          label: 'Cancelled',
+          summary: 'The workflow was cancelled before completion.',
+          bannerBackground: '#92400e',
+        };
+      case 'running':
+        return {
+          label: 'Running',
+          summary: 'The workflow is currently executing.',
+          bannerBackground: '#1d4ed8',
+        };
+      default:
+        return {
+          label: 'Pending',
+          summary: 'The workflow is queued and waiting for execution.',
+          bannerBackground: '#475569',
+        };
     }
-
-    return {
-      label: '执行失败',
-      summary:
-        '自动化流程在执行过程中遇到了异常，建议尽快查看错误信息和最近执行活动，确认失败节点与页面状态。',
-      heroBackground: '#4c0519',
-      heroGradientStart: '#7f1d1d',
-      heroGradientEnd: '#581c87',
-      statAccent: '#fb7185',
-      buttonBackground: '#e11d48',
-      background: '#450a0a',
-      color: '#fecdd3',
-    };
-  }
-
-  private getLogMeta(level?: string | null) {
-    if (level === 'success') {
-      return {
-        label: '成功日志',
-        background: '#083344',
-        color: '#67e8f9',
-      };
-    }
-
-    if (level === 'warn') {
-      return {
-        label: '警告日志',
-        background: '#3f2b0a',
-        color: '#fcd34d',
-      };
-    }
-
-    if (level === 'error') {
-      return {
-        label: '错误日志',
-        background: '#3f0d16',
-        color: '#fda4af',
-      };
-    }
-
-    return {
-      label: '执行日志',
-      background: '#0f172a',
-      color: '#93c5fd',
-    };
   }
 
   private getWorkflowNodeCount(workflowSnapshot: Prisma.JsonValue) {
@@ -771,6 +636,7 @@ export class NotificationService {
       '0',
     );
     const seconds = String(totalSeconds % 60).padStart(2, '0');
+
     return `${hours}:${minutes}:${seconds}`;
   }
 

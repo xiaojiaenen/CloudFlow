@@ -3,7 +3,6 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma, TaskTriggerSource, Workflow } from '@prisma/client';
 import { Job, Queue, Worker } from 'bullmq';
 import { parseExpression } from 'cron-parser';
-import IORedis from 'ioredis';
 import {
   DEFAULT_TASK_EXECUTION_POLICY,
   TaskExecutionPolicySnapshot,
@@ -27,6 +26,11 @@ import {
   buildWorkflowExecutionSnapshot,
   resolveWorkflowRuntimeInputs,
 } from 'src/common/utils/workflow-runtime';
+import {
+  createRedisConnection,
+  resolveRedisConfig,
+  type RedisConnection,
+} from 'src/common/utils/redis-connection';
 import { WorkflowDefinition } from 'src/common/types/workflow.types';
 import { PrismaService } from 'src/prisma/prisma.service';
 
@@ -49,27 +53,30 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
   private readonly queue: Queue<TaskQueuePayload>;
   private readonly schedulerQueue: Queue<WorkflowSchedulePayload>;
   private readonly schedulerWorker: Worker<WorkflowSchedulePayload>;
-  private readonly connection: IORedis;
-  private readonly publisher: IORedis;
+  private readonly connection: RedisConnection;
+  private readonly publisher: RedisConnection;
 
   constructor(
     private readonly configService: ConfigService,
     private readonly prismaService: PrismaService,
   ) {
-    const redisUrl = this.configService.get<string>('REDIS_URL', 'redis://127.0.0.1:6379');
+    const redisConfig = resolveRedisConfig(this.configService);
 
-    this.connection = new IORedis(redisUrl, {
+    this.connection = createRedisConnection(redisConfig, {
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
+      connectionName: 'cloudflow-queue',
     });
 
-    this.publisher = new IORedis(redisUrl, {
+    this.publisher = createRedisConnection(redisConfig, {
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
+      connectionName: 'cloudflow-queue-publisher',
     });
 
     this.queue = new Queue<TaskQueuePayload>(TASK_QUEUE_NAME, {
       connection: this.connection,
+      prefix: redisConfig.bullPrefix,
       defaultJobOptions: {
         removeOnComplete: 100,
         removeOnFail: 1000,
@@ -80,6 +87,7 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
       WORKFLOW_SCHEDULER_QUEUE_NAME,
       {
         connection: this.connection,
+        prefix: redisConfig.bullPrefix,
         defaultJobOptions: {
           removeOnComplete: 100,
           removeOnFail: 1000,
@@ -98,6 +106,7 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
       },
       {
         connection: this.connection,
+        prefix: redisConfig.bullPrefix,
         concurrency: 1,
       },
     );

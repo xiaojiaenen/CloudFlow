@@ -1,0 +1,28 @@
+FROM mcr.microsoft.com/playwright:v1.58.2-noble AS builder
+
+WORKDIR /app
+
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
+COPY package.json package-lock.json ./
+COPY prisma ./prisma
+
+RUN npm ci
+
+COPY . .
+
+RUN npm run build
+
+FROM mcr.microsoft.com/playwright:v1.58.2-noble
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+COPY --from=builder /app /app
+
+RUN mkdir -p /app/runtime/tasks
+
+CMD ["node", "dist/worker/worker.js"]

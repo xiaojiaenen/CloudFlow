@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -10,7 +11,11 @@ import { randomBytes } from 'crypto';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { QueueService } from 'src/queue/queue.service';
 import { buildStoredPasswordHash } from '../auth/auth.utils';
-import { AuthenticatedUser, AuthUserRole, AuthUserStatus } from '../auth/auth.types';
+import {
+  AuthenticatedUser,
+  AuthUserRole,
+  AuthUserStatus,
+} from '../auth/auth.types';
 import { NotificationService } from '../notification/notification.service';
 import { TaskArtifactStorageService } from '../storage/task-artifact-storage.service';
 import { DEFAULT_WORKFLOW_TEMPLATES } from '../store/default-templates';
@@ -99,25 +104,25 @@ export class AdminService {
         {
           key: 'user',
           name: '普通用户',
-          summary: '专注于创建、执行和维护自己的自动化工作流。',
+          summary: '负责创建、运行和维护自己的自动化工作流。',
           capabilities: [
-            '创建、重命名、复制、归档自己的工作流',
-            '编辑节点、运行任务、查看日志和截图',
-            '启用定时调度、配置邮件告警',
-            '从工作流商店导入已发布模板',
-            '查看自己的任务历史、告警与执行详情',
+            '创建、编辑、复制和归档自己的工作流',
+            '运行任务并查看日志、截图和监控详情',
+            '配置调度、运行参数、凭据和邮件告警',
+            '从工作流商店安装模板并继续编辑',
+            '查看自己的任务历史和告警记录',
           ],
         },
         {
           key: 'admin',
           name: '管理员',
-          summary: '负责平台稳定性、模板生态和系统级配置。',
+          summary: '负责平台治理、模板运营和系统级配置。',
           capabilities: [
-            '拥有普通用户全部能力',
-            '管理所有工作流模板的发布、下架、分类和推荐位',
-            '维护 SMTP、截图间隔、监控分页等系统参数',
-            '查看数据库、Redis、队列等平台健康状态',
-            '管理用户账号、停用账号并重置密码',
+            '拥有普通用户的全部能力',
+            '管理模板发布、下架、推荐位和评分',
+            '维护 SMTP、对象存储和平台参数',
+            '查看 API、数据库、Redis 和队列健康状态',
+            '管理用户角色、账号状态和密码重置',
           ],
         },
       ],
@@ -158,7 +163,7 @@ export class AdminService {
   }
 
   async listUsers() {
-    return this.userModel.findMany({
+    const users = await this.userModel.findMany({
       orderBy: {
         createdAt: 'asc',
       },
@@ -172,6 +177,11 @@ export class AdminService {
         updatedAt: true,
       },
     });
+
+    return users.map((user) => ({
+      ...user,
+      isSuperAdmin: this.isSuperAdminEmail(user.email),
+    }));
   }
 
   async createUser(payload: CreateUserDto) {
@@ -206,10 +216,17 @@ export class AdminService {
       },
     });
 
-    return user;
+    return {
+      ...user,
+      isSuperAdmin: this.isSuperAdminEmail(user.email),
+    };
   }
 
-  async updateUser(id: string, payload: UpdateUserDto, currentUser: AuthenticatedUser) {
+  async updateUser(
+    id: string,
+    payload: UpdateUserDto,
+    currentUser: AuthenticatedUser,
+  ) {
     const user = await this.userModel.findUnique({
       where: { id },
     });
@@ -219,10 +236,10 @@ export class AdminService {
     }
 
     if (user.id === currentUser.id && payload.status === 'suspended') {
-      throw new BadRequestException('不能停用当前登录的管理员账号。');
+      throw new BadRequestException('不能停用当前登录中的管理员账号。');
     }
 
-    return this.userModel.update({
+    const updatedUser = await this.userModel.update({
       where: { id },
       data: {
         ...(payload.name !== undefined ? { name: payload.name.trim() } : {}),
@@ -239,6 +256,11 @@ export class AdminService {
         updatedAt: true,
       },
     });
+
+    return {
+      ...updatedUser,
+      isSuperAdmin: this.isSuperAdminEmail(updatedUser.email),
+    };
   }
 
   async resetUserPassword(id: string, payload: ResetUserPasswordDto) {
@@ -250,7 +272,8 @@ export class AdminService {
       throw new NotFoundException(`User ${id} not found`);
     }
 
-    const nextPassword = payload.newPassword?.trim() || this.generateTemporaryPassword();
+    const nextPassword =
+      payload.newPassword?.trim() || this.generateTemporaryPassword();
     const salt = randomBytes(16).toString('hex');
 
     await this.userModel.update({
@@ -295,15 +318,26 @@ export class AdminService {
         ...(payload.smtpPass !== undefined
           ? { smtpPass: payload.smtpPass?.trim() || null }
           : {}),
-        ...(payload.smtpSecure !== undefined ? { smtpSecure: payload.smtpSecure } : {}),
+        ...(payload.smtpSecure !== undefined
+          ? { smtpSecure: payload.smtpSecure }
+          : {}),
+        ...(payload.smtpIgnoreTlsCertificate !== undefined
+          ? {
+              smtpIgnoreTlsCertificate: payload.smtpIgnoreTlsCertificate,
+            }
+          : {}),
         ...(payload.smtpFrom !== undefined
           ? { smtpFrom: payload.smtpFrom?.trim() || null }
           : {}),
         ...(payload.minioEndpoint !== undefined
           ? { minioEndpoint: payload.minioEndpoint?.trim() || null }
           : {}),
-        ...(payload.minioPort !== undefined ? { minioPort: payload.minioPort } : {}),
-        ...(payload.minioUseSSL !== undefined ? { minioUseSSL: payload.minioUseSSL } : {}),
+        ...(payload.minioPort !== undefined
+          ? { minioPort: payload.minioPort }
+          : {}),
+        ...(payload.minioUseSSL !== undefined
+          ? { minioUseSSL: payload.minioUseSSL }
+          : {}),
         ...(payload.minioAccessKey !== undefined
           ? { minioAccessKey: payload.minioAccessKey?.trim() || null }
           : {}),
@@ -311,7 +345,10 @@ export class AdminService {
           ? { minioSecretKey: payload.minioSecretKey?.trim() || null }
           : {}),
         ...(payload.minioBucket !== undefined
-          ? { minioBucket: payload.minioBucket?.trim() || 'cloudflow-task-artifacts' }
+          ? {
+              minioBucket:
+                payload.minioBucket?.trim() || 'cloudflow-task-artifacts',
+            }
           : {}),
         ...(payload.screenshotIntervalMs !== undefined
           ? { screenshotIntervalMs: payload.screenshotIntervalMs }
@@ -349,11 +386,14 @@ export class AdminService {
         smtpUser: payload.smtpUser,
         smtpPass: payload.smtpPass,
         smtpSecure: payload.smtpSecure,
+        smtpIgnoreTlsCertificate: payload.smtpIgnoreTlsCertificate,
       });
 
       return {
         success: true,
-        message: `SMTP 连接成功：${result.host}:${result.port}${result.secure ? '（SSL/TLS）' : ''}`,
+        message: `SMTP connection verified: ${result.host}:${result.port}${
+          result.secure ? ' (SSL/TLS)' : ''
+        }`,
         ...result,
         checkedAt: new Date().toISOString(),
       };
@@ -364,8 +404,8 @@ export class AdminService {
 
       throw new BadRequestException(
         error instanceof Error
-          ? `SMTP 连接测试失败：${error.message}`
-          : 'SMTP 连接测试失败，请检查主机、端口、账号和密码。',
+          ? `SMTP test failed: ${error.message}`
+          : 'SMTP test failed. Please verify host, port, username and password.',
       );
     }
   }
@@ -384,8 +424,8 @@ export class AdminService {
       return {
         success: true,
         message: result.bucketExists
-          ? `MinIO 连接成功，bucket "${result.bucket}" 可用。`
-          : `MinIO 连接成功，但 bucket "${result.bucket}" 当前不存在。`,
+          ? `MinIO connection verified, bucket "${result.bucket}" is available.`
+          : `MinIO connection verified, but bucket "${result.bucket}" does not exist yet.`,
         ...result,
         checkedAt: new Date().toISOString(),
       };
@@ -396,8 +436,8 @@ export class AdminService {
 
       throw new BadRequestException(
         error instanceof Error
-          ? `MinIO 测试失败：${error.message}`
-          : 'MinIO 测试失败，请检查 Endpoint、端口、Access Key、Secret Key 和 Bucket。',
+          ? `MinIO test failed: ${error.message}`
+          : 'MinIO test failed. Please verify endpoint, port, access key, secret key and bucket.',
       );
     }
   }
@@ -410,11 +450,7 @@ export class AdminService {
     await this.ensureDefaultTemplates();
 
     const where: Prisma.WorkflowTemplateWhereInput = {
-      ...(filters?.includeDeleted === 'true'
-        ? {}
-        : {
-            deletedAt: null,
-          }),
+      ...(filters?.includeDeleted === 'true' ? {} : { deletedAt: null }),
       ...(filters?.published === 'true'
         ? { published: true }
         : filters?.published === 'false'
@@ -449,21 +485,30 @@ export class AdminService {
     });
   }
 
-  async createTemplate(payload: CreateTemplateDto) {
-    return this.prismaService.workflowTemplate.create({
-      data: {
-        slug: payload.slug.trim(),
-        title: payload.title.trim(),
-        description: payload.description.trim(),
-        category: payload.category.trim(),
-        tags: payload.tags as unknown as Prisma.InputJsonValue,
-        definition: payload.definition as Prisma.InputJsonValue,
-        authorName: payload.authorName?.trim() || 'CloudFlow 官方',
-        published: payload.published ?? false,
-        featured: payload.featured ?? false,
-        rating: payload.rating ?? 4.8,
-      },
-    });
+  async createTemplate(
+    payload: CreateTemplateDto,
+    currentUser: AuthenticatedUser,
+  ) {
+    try {
+      return await this.prismaService.workflowTemplate.create({
+        data: {
+          slug: payload.slug.trim(),
+          publisherId: currentUser.id,
+          title: payload.title.trim(),
+          description: payload.description.trim(),
+          category: payload.category.trim(),
+          tags: payload.tags as unknown as Prisma.InputJsonValue,
+          definition: payload.definition as Prisma.InputJsonValue,
+          authorName: payload.authorName?.trim() || 'CloudFlow',
+          published: payload.published ?? false,
+          featured: payload.featured ?? false,
+          rating: payload.rating ?? 4.8,
+        },
+      });
+    } catch (error) {
+      this.handleTemplateConflict(error);
+      throw error;
+    }
   }
 
   async publishTemplateFromWorkflow(
@@ -481,47 +526,152 @@ export class AdminService {
       throw new NotFoundException(`Workflow ${payload.workflowId} not found`);
     }
 
-    return this.prismaService.workflowTemplate.create({
-      data: {
-        slug: payload.slug.trim(),
+    const existingTemplate = await this.prismaService.workflowTemplate.findFirst({
+      where: {
         sourceWorkflowId: workflow.id,
-        publisherId: currentUser.id,
-        title: payload.title.trim(),
-        description: payload.description.trim(),
-        category: payload.category.trim(),
-        tags: payload.tags as unknown as Prisma.InputJsonValue,
-        definition: workflow.definition as Prisma.InputJsonValue,
-        authorName: payload.authorName?.trim() || currentUser.name,
-        published: payload.published ?? true,
-        featured: payload.featured ?? false,
+        deletedAt: null,
+      },
+      orderBy: {
+        updatedAt: 'desc',
       },
     });
+
+    const data = {
+      slug: payload.slug.trim(),
+      sourceWorkflowId: workflow.id,
+      publisherId: currentUser.id,
+      title: payload.title.trim(),
+      description: payload.description.trim(),
+      category: payload.category.trim(),
+      tags: payload.tags as unknown as Prisma.InputJsonValue,
+      definition: workflow.definition as Prisma.InputJsonValue,
+      authorName: payload.authorName?.trim() || currentUser.name,
+      published: payload.published ?? true,
+      ...(existingTemplate
+        ? {
+            featured:
+              payload.featured !== undefined
+                ? payload.featured
+                : existingTemplate.featured,
+          }
+        : {
+            featured: payload.featured ?? false,
+          }),
+    };
+
+    try {
+      if (existingTemplate) {
+        this.assertCanEditTemplate(existingTemplate, currentUser);
+        return await this.prismaService.workflowTemplate.update({
+          where: {
+            id: existingTemplate.id,
+          },
+          data,
+        });
+      }
+
+      return await this.prismaService.workflowTemplate.create({
+        data,
+      });
+    } catch (error) {
+      this.handleTemplateConflict(error);
+      throw error;
+    }
   }
 
-  async updateTemplate(id: string, payload: UpdateTemplateDto) {
-    return this.prismaService.workflowTemplate.update({
+  async updateTemplate(
+    id: string,
+    payload: UpdateTemplateDto,
+    currentUser: AuthenticatedUser,
+  ) {
+    const existingTemplate = await this.prismaService.workflowTemplate.findUnique({
       where: { id },
-      data: {
-        ...(payload.slug !== undefined ? { slug: payload.slug.trim() } : {}),
-        ...(payload.title !== undefined ? { title: payload.title.trim() } : {}),
-        ...(payload.description !== undefined
-          ? { description: payload.description.trim() }
-          : {}),
-        ...(payload.category !== undefined ? { category: payload.category.trim() } : {}),
-        ...(payload.tags !== undefined
-          ? { tags: payload.tags as unknown as Prisma.InputJsonValue }
-          : {}),
-        ...(payload.definition !== undefined
-          ? { definition: payload.definition as unknown as Prisma.InputJsonValue }
-          : {}),
-        ...(payload.authorName !== undefined
-          ? { authorName: payload.authorName.trim() || 'CloudFlow 官方' }
-          : {}),
-        ...(payload.published !== undefined ? { published: payload.published } : {}),
-        ...(payload.featured !== undefined ? { featured: payload.featured } : {}),
-        ...(payload.rating !== undefined ? { rating: payload.rating } : {}),
-      },
     });
+
+    if (!existingTemplate || existingTemplate.deletedAt) {
+      throw new NotFoundException(`Template ${id} not found`);
+    }
+
+    this.assertCanEditTemplate(existingTemplate, currentUser);
+
+    try {
+      return await this.prismaService.workflowTemplate.update({
+        where: { id },
+        data: {
+          ...(payload.slug !== undefined ? { slug: payload.slug.trim() } : {}),
+          ...(payload.title !== undefined ? { title: payload.title.trim() } : {}),
+          ...(payload.description !== undefined
+            ? { description: payload.description.trim() }
+            : {}),
+          ...(payload.category !== undefined
+            ? { category: payload.category.trim() }
+            : {}),
+          ...(payload.tags !== undefined
+            ? { tags: payload.tags as unknown as Prisma.InputJsonValue }
+            : {}),
+          ...(payload.definition !== undefined
+            ? {
+                definition: payload.definition as unknown as Prisma.InputJsonValue,
+              }
+            : {}),
+          ...(payload.authorName !== undefined
+            ? { authorName: payload.authorName.trim() || 'CloudFlow' }
+            : {}),
+          ...(payload.published !== undefined
+            ? { published: payload.published }
+            : {}),
+          ...(payload.featured !== undefined
+            ? { featured: payload.featured }
+            : {}),
+          ...(payload.rating !== undefined ? { rating: payload.rating } : {}),
+        },
+      });
+    } catch (error) {
+      this.handleTemplateConflict(error);
+      throw error;
+    }
+  }
+
+  private assertCanEditTemplate(
+    template: {
+      publisherId: string | null;
+      title: string;
+    },
+    currentUser: AuthenticatedUser,
+  ) {
+    if (currentUser.isSuperAdmin) {
+      return;
+    }
+
+    if (template.publisherId && template.publisherId === currentUser.id) {
+      return;
+    }
+
+    throw new ForbiddenException(
+      `You are not allowed to update template "${template.title}".`,
+    );
+  }
+
+  private handleTemplateConflict(error: unknown) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === 'P2002'
+    ) {
+      throw new ConflictException('Template slug already exists.');
+    }
+  }
+
+  private isSuperAdminEmail(email: string) {
+    const raw = this.configService.get<string>(
+      'SUPER_ADMIN_EMAILS',
+      'admin@cloudflow.local',
+    );
+
+    return raw
+      .split(',')
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean)
+      .includes(email.trim().toLowerCase());
   }
 
   private async ensureDefaultTemplates() {
@@ -581,14 +731,6 @@ export class AdminService {
   }
 
   private get userModel() {
-    return (this.prismaService as unknown as {
-      user: {
-        count: (...args: any[]) => Promise<number>;
-        findMany: (...args: any[]) => Promise<any[]>;
-        findUnique: (...args: any[]) => Promise<any>;
-        create: (...args: any[]) => Promise<any>;
-        update: (...args: any[]) => Promise<any>;
-      };
-    }).user;
+    return this.prismaService.user;
   }
 }

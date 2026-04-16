@@ -242,13 +242,27 @@ export class WorkflowService {
         deletedAt: null,
         ...this.buildWorkflowAccessWhere(currentUser),
       },
+      include: {
+        publishedTemplates: {
+          where: {
+            deletedAt: null,
+          },
+          orderBy: {
+            updatedAt: 'desc',
+          },
+          take: 1,
+        },
+      },
     });
 
     if (!workflow) {
       throw new NotFoundException(`Workflow ${id} not found`);
     }
 
-    return workflow;
+    return {
+      ...workflow,
+      publishedTemplate: workflow.publishedTemplates[0] ?? null,
+    };
   }
 
   async duplicate(id: string, currentUser: AuthenticatedUser) {

@@ -1,0 +1,94 @@
+name: cloudflow
+
+x-backend-env: &backend-env
+  NODE_ENV: production
+  PORT: 3001
+  DATABASE_URL: ${DATABASE_URL}
+  REDIS_URL: ${REDIS_URL}
+  REDIS_MODE: ${REDIS_MODE:-standalone}
+  REDIS_CLUSTER_NODES: ${REDIS_CLUSTER_NODES:-}
+  REDIS_USERNAME: ${REDIS_USERNAME:-}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+  REDIS_TLS: ${REDIS_TLS:-false}
+  REDIS_BULL_PREFIX: ${REDIS_BULL_PREFIX:-}
+  FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:10003}
+  SUPER_ADMIN_EMAILS: ${SUPER_ADMIN_EMAILS:-admin@cloudflow.local}
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+  BROWSER_HEADLESS: ${BROWSER_HEADLESS:-true}
+  PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+  SEED_DEFAULT_USERS: ${SEED_DEFAULT_USERS:-false}
+  TASK_RUNTIME_BASE_DIR: /app/runtime/tasks
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASS: ${SMTP_PASS:-}
+  SMTP_SECURE: ${SMTP_SECURE:-false}
+  SMTP_FROM: ${SMTP_FROM:-}
+  MINIO_ENDPOINT: ${MINIO_ENDPOINT:-}
+  MINIO_PORT: ${MINIO_PORT:-9000}
+  MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-}
+  MINIO_BUCKET: ${MINIO_BUCKET:-cloudflow-task-artifacts}
+
+services:
+  migrate:
+    image: cloudflow-backend:latest
+    container_name: cloudflow-migrate
+    command: ["npx", "prisma", "migrate", "deploy"]
+    environment: *backend-env
+    restart: "no"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: cloudflow-backend:latest
+    container_name: cloudflow-backend
+    command: ["node", "dist/src/main.js"]
+    environment: *backend-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "10004:3001"
+    volumes:
+      - cloudflow-runtime:/app/runtime
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    image: cloudflow-worker:latest
+    container_name: cloudflow-worker
+    command: ["node", "dist/worker/worker.js"]
+    environment: *backend-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    security_opt:
+      - seccomp=unconfined
+    shm_size: "1gb"
+    init: true
+    volumes:
+      - cloudflow-runtime:/app/runtime
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:10004/api}
+        VITE_WS_BASE_URL: ${VITE_WS_BASE_URL:-http://localhost:10004}
+    image: cloudflow-frontend:latest
+    container_name: cloudflow-frontend
+    depends_on:
+      - backend
+    ports:
+      - "10003:80"
+    restart: unless-stopped
+
+volumes:
+  cloudflow-runtime:

@@ -136,7 +136,9 @@ export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(
           }}
           className="flex h-10 w-full items-center justify-between rounded-xl border border-white/[0.08] bg-[linear-gradient(180deg,rgba(24,24,27,0.96),rgba(12,12,15,0.98))] px-3 py-2 text-left text-sm text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-colors focus:outline-none focus:ring-2 focus:ring-sky-500/40 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          <span className={cn("truncate", !selected && "text-zinc-500")}>{selected?.label ?? placeholder}</span>
+          <span className={cn("truncate", !selected && "text-zinc-500")}>
+            {selected?.label ?? placeholder}
+          </span>
           <ChevronDown className={cn("h-4 w-4 shrink-0 text-zinc-500 transition-transform", open && "rotate-180")} />
         </button>
 

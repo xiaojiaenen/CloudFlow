@@ -2,12 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Download, Layers3, RefreshCw, Search, Sparkles, Star } from "lucide-react";
 import { AppTopbar } from "@/src/components/AppTopbar";
+import { InitialAvatar } from "@/src/components/InitialAvatar";
 import { Sidebar } from "@/src/components/Sidebar";
 import { Badge } from "@/src/components/ui/Badge";
 import { Button } from "@/src/components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/src/components/ui/Card";
 import { Input } from "@/src/components/ui/Input";
 import { Select } from "@/src/components/ui/Select";
+import { useAuth } from "@/src/context/AuthContext";
 import {
   createWorkflow,
   listStoreTemplates,
@@ -20,6 +22,7 @@ import { cn } from "@/src/lib/utils";
 
 export default function Store() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
   const [workflows, setWorkflows] = useState<WorkflowRecord[]>([]);
@@ -95,8 +98,8 @@ export default function Store() {
       <div className="relative flex min-w-0 flex-1 flex-col bg-[#0B0C10]">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-blue-900/10 via-transparent to-transparent" />
         <AppTopbar
-          title="发现工作流模板"
-          subtitle="模板来自后台发布流程，支持分类、推荐位和安装统计。安装后可直接继续编辑和运行。"
+          title="工作流商店"
+          subtitle="模板来自后台发布流程，支持分类筛选、推荐位展示与一键安装，安装后可直接回到工作区继续编辑和运行。"
           badge="Store"
           actions={
             <Button variant="outline" size="sm" onClick={() => void loadData()} className="gap-2">
@@ -129,14 +132,16 @@ export default function Store() {
             <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
               {templates.map((item) => {
                 const installedWorkflow = installedWorkflows.get(item.title);
+                const isMine = Boolean(item.publisherId && item.publisherId === user?.id);
+
                 return (
                   <Card
                     key={item.id}
                     className="flex flex-col border-white/[0.08] bg-[#121212]/80 backdrop-blur-sm transition-colors hover:border-white/[0.15]"
                   >
                     <CardHeader>
-                      <div className="mb-2 flex items-start justify-between gap-3">
-                        <div className="space-y-2">
+                      <div className="mb-3 flex items-start justify-between gap-3">
+                        <div className="min-w-0 space-y-3">
                           <div className="flex flex-wrap items-center gap-2">
                             <CardTitle className="text-lg">{item.title}</CardTitle>
                             {item.featured ? (
@@ -145,9 +150,14 @@ export default function Store() {
                                 推荐
                               </Badge>
                             ) : null}
+                            {isMine ? <Badge variant="secondary">我发布的</Badge> : null}
                           </div>
-                          <div className="text-xs text-zinc-500">
-                            {item.authorName} · {item.category}
+                          <div className="flex items-center gap-3 text-xs text-zinc-400">
+                            <InitialAvatar name={item.authorName} className="h-8 w-8 rounded-xl text-xs" />
+                            <div className="min-w-0">
+                              <div className="truncate font-medium text-zinc-200">{item.authorName}</div>
+                              <div className="mt-0.5 truncate text-zinc-500">分类：{item.category || "未分类"}</div>
+                            </div>
                           </div>
                         </div>
                         {installedWorkflow ? <Badge variant="success">已导入</Badge> : null}
@@ -163,7 +173,7 @@ export default function Store() {
                         ))}
                       </div>
                       <div className="text-xs text-zinc-500">
-                        包含 {item.definition.nodes.length} 个核心节点，安装后可直接在工作区继续编辑。
+                        包含 {item.definition.nodes.length} 个核心节点，安装后可直接在工作区继续编排。
                       </div>
                     </CardContent>
                     <div className="mt-auto flex items-center justify-between gap-3 px-6 pb-6 pt-0">
@@ -183,7 +193,7 @@ export default function Store() {
                         disabled={installingId === item.id}
                         onClick={() => void handleInstall(item)}
                       >
-                        {installingId === item.id ? "导入中..." : installedWorkflow ? "打开" : "获取"}
+                        {installingId === item.id ? "导入中..." : installedWorkflow ? "打开" : "安装"}
                       </Button>
                     </div>
                   </Card>

@@ -161,6 +161,7 @@ model SystemConfig {
   smtpUser             String?
   smtpPass             String?
   smtpSecure           Boolean  @default(false)
+  smtpIgnoreTlsCertificate Boolean @default(false)
   smtpFrom             String?
   minioEndpoint        String?
   minioPort            Int      @default(9000)
@@ -180,6 +181,24 @@ model SystemConfig {
   updatedAt            DateTime @updatedAt
 }
 
+model Credential {
+  id          String   @id @default(cuid())
+  ownerId     String
+  owner       User     @relation("UserCredentials", fields: [ownerId], references: [id], onDelete: Cascade)
+  name        String
+  key         String
+  type        String
+  provider    String?
+  description String?
+  payload     Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([ownerId])
+  @@unique([ownerId, key])
+  @@index([type])
+}
+
 model User {
   id                 String             @id @default(cuid())
   email              String             @unique
@@ -189,6 +208,7 @@ model User {
   status             UserStatus         @default(active)
   workflows          Workflow[]         @relation("UserWorkflows")
   tasks              Task[]             @relation("UserTasks")
+  credentials        Credential[]       @relation("UserCredentials")
   publishedTemplates WorkflowTemplate[] @relation("PublishedTemplates")
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt

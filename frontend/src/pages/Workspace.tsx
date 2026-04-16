@@ -13,6 +13,7 @@ import { NodeConfigPanel } from "@/src/components/NodeConfigPanel";
 import { NodePalette } from "@/src/components/NodePalette";
 import { RunWorkflowDialog } from "@/src/components/RunWorkflowDialog";
 import { WorkflowInputsDesigner } from "@/src/components/WorkflowInputsDesigner";
+import { CredentialLibraryManager } from "@/src/components/CredentialLibraryManager";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/src/components/ui/Dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/src/components/ui/Tabs";
 import { Switch } from "@/src/components/ui/Switch";
@@ -24,15 +25,19 @@ import {
   buildWorkflowDefinition,
   cancelTask,
   CanvasNodeData,
+  createCredential,
   getTaskExecutionScreenshotSrc,
   createEmptyCanvasGraph,
   createWorkflow,
+  CredentialRecord,
+  deleteCredential,
   ExecutionNodeStatus,
   getAuthToken,
   getTask,
   getWorkflow,
   getWsBaseUrl,
   hydrateCanvasFromWorkflow,
+  listCredentials,
   listTasks,
   publishWorkflowTemplate,
   runTask,
@@ -43,9 +48,11 @@ import {
   TaskEvent,
   TaskExecutionRecord,
   updateWorkflow,
+  updateCredential,
   WorkflowCredentialRequirement,
   WorkflowInputField,
   WorkflowRecord,
+  WorkflowTemplateRecord,
   WorkflowRuntimeContext,
   WorkflowStatus,
   WORKFLOW_OPEN_BLANK_EVENT,
@@ -107,26 +114,81 @@ function buildInitialRunValues(schema: WorkflowInputField[]) {
   }, {});
 }
 
+function maskValue(value: string) {
+  if (!value) {
+    return "";
+  }
+
+  if (value.length <= 4) {
+    return "*".repeat(value.length);
+  }
+
+  return `${"*".repeat(Math.max(4, value.length - 2))}${value.slice(-2)}`;
+}
+
 function buildRuntimePreview(
   schema: WorkflowInputField[],
   values: Record<string, string>,
+  credentialRequirements: WorkflowCredentialRequirement[] = [],
+  credentialBindings: Record<string, string> = {},
+  credentials: CredentialRecord[] = [],
 ): WorkflowRuntimeContext {
   const inputs: Record<string, string> = {};
   const maskedInputs: Record<string, string> = {};
+  const credentialMap = new Map(credentials.map((credential) => [credential.id, credential]));
+  const maskedCredentials: NonNullable<WorkflowRuntimeContext["maskedCredentials"]> = {};
+  const credentialMetadata: NonNullable<WorkflowRuntimeContext["credentialMetadata"]> = {};
 
   for (const field of schema) {
     const value = values[field.key] ?? field.defaultValue ?? "";
     inputs[field.key] = value;
     maskedInputs[field.key] = field.sensitive
       ? value
-        ? `${"*".repeat(Math.max(4, value.length - 2))}${value.slice(-2)}`
+        ? maskValue(value)
         : ""
       : value;
+  }
+
+  for (const requirement of credentialRequirements) {
+    const bindingId = credentialBindings[requirement.key];
+    if (!bindingId) {
+      continue;
+    }
+
+    const credential = credentialMap.get(bindingId);
+    if (!credential) {
+      continue;
+    }
+
+    const normalizedPayload = Object.entries(credential.payload ?? {}).reduce<Record<string, string>>(
+      (acc, [key, value]) => {
+        acc[key] = value === null || value === undefined ? "" : String(value);
+        return acc;
+      },
+      {},
+    );
+
+    maskedCredentials[requirement.key] = Object.entries(normalizedPayload).reduce<Record<string, string>>(
+      (acc, [key, value]) => {
+        acc[key] = maskValue(value);
+        return acc;
+      },
+      {},
+    );
+    credentialMetadata[requirement.key] = {
+      credentialId: credential.id,
+      credentialName: credential.name,
+      type: credential.type,
+      provider: credential.provider ?? undefined,
+    };
   }
 
   return {
     inputs,
     maskedInputs,
+    credentialBindings,
+    maskedCredentials,
+    credentialMetadata,
   };
 }
 
@@ -192,18 +254,22 @@ export default function Workspace() {
   const [alertOnSuccess, setAlertOnSuccess] = useState(false);
   const [inputSchema, setInputSchema] = useState<WorkflowInputField[]>([]);
   const [credentialRequirements, setCredentialRequirements] = useState<WorkflowCredentialRequirement[]>([]);
+  const [credentials, setCredentials] = useState<CredentialRecord[]>([]);
+  const [isLoadingCredentials, setIsLoadingCredentials] = useState(false);
   const [canvasVersion, setCanvasVersion] = useState(0);
   const [publishDialogOpen, setPublishDialogOpen] = useState(false);
   const [isPublishingTemplate, setIsPublishingTemplate] = useState(false);
+  const [publishedTemplate, setPublishedTemplate] = useState<WorkflowTemplateRecord | null>(null);
   const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [isStartingRun, setIsStartingRun] = useState(false);
   const [pendingRunWorkflowId, setPendingRunWorkflowId] = useState<string | null>(null);
   const [runFormValues, setRunFormValues] = useState<Record<string, string>>({});
+  const [runCredentialBindings, setRunCredentialBindings] = useState<Record<string, string>>({});
   const [publishForm, setPublishForm] = useState({
     slug: "",
     title: "",
     description: "",
-    category: "娴忚鍣ㄨ嚜鍔ㄥ寲",
+    category: "浏览器自动化",
     tags: "",
   });
 
@@ -223,7 +289,7 @@ export default function Workspace() {
     return `定时调度已启用 · ${scheduleCron || "--"} · ${scheduleTimezone || "Asia/Shanghai"}`;
   }, [scheduleCron, scheduleEnabled, scheduleTimezone]);
   const alertSummary = useMemo(() => {
-    const flags = [alertOnFailure ? "澶辫触" : "", alertOnSuccess ? "鎴愬姛" : ""].filter(Boolean);
+    const flags = [alertOnFailure ? "失败" : "", alertOnSuccess ? "成功" : ""].filter(Boolean);
 
     if (!alertEmail || flags.length === 0) {
       return "未启用邮件告警";
@@ -233,7 +299,7 @@ export default function Workspace() {
   }, [alertEmail, alertOnFailure, alertOnSuccess]);
   const workflowStatusLabel = useMemo(() => {
     if (workflowStatus === "draft") {
-      return "鑽夌";
+      return "草稿";
     }
 
     if (workflowStatus === "archived") {
@@ -245,6 +311,12 @@ export default function Workspace() {
   const parameterSummary = useMemo(
     () => `参数 ${inputSchema.length} 项 · 凭据要求 ${credentialRequirements.length} 项`,
     [credentialRequirements.length, inputSchema.length],
+  );
+  const canManagePublishedTemplate = useMemo(
+    () =>
+      !publishedTemplate ||
+      Boolean(user?.isSuperAdmin || (publishedTemplate.publisherId && publishedTemplate.publisherId === user?.id)),
+    [publishedTemplate, user?.id, user?.isSuperAdmin],
   );
   const workflowDraftSnapshot = useMemo(
     () =>
@@ -298,7 +370,9 @@ export default function Workspace() {
     setAlertOnSuccess(workflow?.alertOnSuccess ?? false);
     setInputSchema(workflow?.definition.inputSchema ?? []);
     setCredentialRequirements(workflow?.definition.credentialRequirements ?? []);
+    setPublishedTemplate(workflow?.publishedTemplate ?? null);
     setRunFormValues(buildInitialRunValues(workflow?.definition.inputSchema ?? []));
+    setRunCredentialBindings(workflow?.definition.runtime?.credentialBindings ?? {});
     setTaskRuntimeContext(workflow?.definition.runtime ?? null);
     setFlowNodes(graph.nodes);
     setFlowEdges(graph.edges);
@@ -328,6 +402,21 @@ export default function Workspace() {
     });
     setCanvasVersion((value) => value + 1);
   }, []);
+
+  const loadCredentials = useCallback(async () => {
+    try {
+      setIsLoadingCredentials(true);
+      setCredentials(await listCredentials());
+    } finally {
+      setIsLoadingCredentials(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadCredentials().catch((error) => {
+      console.error(error);
+    });
+  }, [loadCredentials]);
 
   const addLog = useCallback(
     (
@@ -364,6 +453,38 @@ export default function Workspace() {
       }
     },
     [],
+  );
+
+  const handleCreateCredential = useCallback(
+    async (payload: Parameters<typeof createCredential>[0]) => {
+      await createCredential(payload);
+      await loadCredentials();
+      addLog("success", `已创建凭据“${payload.name}”。`);
+    },
+    [addLog, loadCredentials],
+  );
+
+  const handleUpdateCredential = useCallback(
+    async (credentialId: string, payload: Parameters<typeof updateCredential>[1]) => {
+      await updateCredential(credentialId, payload);
+      await loadCredentials();
+      addLog("success", `已更新凭据“${payload.name}”。`);
+    },
+    [addLog, loadCredentials],
+  );
+
+  const handleDeleteCredential = useCallback(
+    async (credentialId: string) => {
+      await deleteCredential(credentialId);
+      await loadCredentials();
+      setRunCredentialBindings((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([, bindingId]) => bindingId !== credentialId),
+        ),
+      );
+      addLog("success", "已删除凭据。");
+    },
+    [addLog, loadCredentials],
   );
 
   const persistWorkflow = useCallback(
@@ -565,6 +686,7 @@ export default function Workspace() {
       setLogs([]);
       setScreenshot(null);
       setTaskRuntimeContext(null);
+      setRunCredentialBindings({});
 
       try {
         if (!workflowId) {
@@ -592,6 +714,7 @@ export default function Workspace() {
           setLogs(buildRestoredLogs(taskDetail.executionEvents ?? []));
           setScreenshot(getLatestPersistedScreenshot(taskDetail.id, taskDetail.executionEvents ?? []));
           setTaskRuntimeContext(taskDetail.workflowSnapshot?.runtime ?? null);
+          setRunCredentialBindings(taskDetail.workflowSnapshot?.runtime?.credentialBindings ?? {});
         }
       } catch (error) {
         addLog("error", error instanceof Error ? error.message : "读取工作流失败。");
@@ -599,6 +722,7 @@ export default function Workspace() {
         setIsRunning(false);
         setIsCancelling(false);
         setTaskRuntimeContext(null);
+        setRunCredentialBindings({});
         resetCanvasWithWorkflow(null);
       } finally {
         setIsLoadingWorkflow(false);
@@ -619,6 +743,7 @@ export default function Workspace() {
       setPendingRunWorkflowId(null);
       setIsLoadingWorkflow(false);
       setTaskRuntimeContext(null);
+      setRunCredentialBindings({});
       resetCanvasWithWorkflow(null);
     };
 
@@ -651,6 +776,38 @@ export default function Workspace() {
       setScheduleEnabled(false);
     }
   }, [scheduleEnabled, workflowStatus]);
+
+  useEffect(() => {
+    setRunFormValues((current) => {
+      const next = buildInitialRunValues(inputSchema);
+
+      for (const field of inputSchema) {
+        if (current[field.key] !== undefined) {
+          next[field.key] = current[field.key];
+        }
+      }
+
+      return next;
+    });
+  }, [inputSchema]);
+
+  useEffect(() => {
+    const requirementKeys = new Set(credentialRequirements.map((item) => item.key));
+    setRunCredentialBindings((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(([key]) => requirementKeys.has(key)),
+      ),
+    );
+  }, [credentialRequirements]);
+
+  useEffect(() => {
+    const credentialIds = new Set(credentials.map((credential) => credential.id));
+    setRunCredentialBindings((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(([, credentialId]) => credentialIds.has(credentialId)),
+      ),
+    );
+  }, [credentials]);
 
   useEffect(() => {
     const hasMeaningfulChanges =
@@ -733,17 +890,18 @@ export default function Workspace() {
       const workflow = await persistWorkflow({ silent: true });
       const title = publishForm.title.trim() || workflow.name;
       const description = publishForm.description.trim() || workflow.description || `${workflow.name} 妯℃澘`;
-      await publishWorkflowTemplate({
+      const template = await publishWorkflowTemplate({
         workflowId: workflow.id,
         slug: publishForm.slug.trim(),
         title,
         description,
         category: publishForm.category.trim() || "浏览器自动化",
-        tags: publishForm.tags.split(/[锛?]/).map((item) => item.trim()).filter(Boolean),
+        tags: publishForm.tags.split(/[，,]/).map((item) => item.trim()).filter(Boolean),
         published: true,
         featured: false,
       });
-      addLog("success", `工作流“${workflow.name}”已发布到商店模板。`);
+      setPublishedTemplate(template);
+      addLog("success", `工作流“${workflow.name}”已同步到商店模板。`);
       setPublishDialogOpen(false);
     } catch (error) {
       addLog("error", error instanceof Error ? error.message : "发布模板失败。");
@@ -753,14 +911,26 @@ export default function Workspace() {
   }, [addLog, persistWorkflow, publishForm, user?.role]);
 
   const startWorkflowRun = useCallback(
-    async (workflowExecutionId: string, inputs: Record<string, string>) => {
+    async (
+      workflowExecutionId: string,
+      inputs: Record<string, string>,
+      credentialBindings: Record<string, string>,
+    ) => {
       try {
         setIsStartingRun(true);
         addLog("info", "工作流已保存，正在创建执行任务...");
-        const task = await runTask(workflowExecutionId, inputs);
+        const task = await runTask(workflowExecutionId, inputs, credentialBindings);
         setTaskId(task.id);
         setIsRunning(true);
-        setTaskRuntimeContext(buildRuntimePreview(inputSchema, inputs));
+        setTaskRuntimeContext(
+          buildRuntimePreview(
+            inputSchema,
+            inputs,
+            credentialRequirements,
+            credentialBindings,
+            credentials,
+          ),
+        );
         addLog("info", `任务 ${task.id} 已入队，等待 Worker 执行...`);
       } catch (error) {
         setIsRunning(false);
@@ -770,7 +940,7 @@ export default function Workspace() {
         setIsStartingRun(false);
       }
     },
-    [addLog, inputSchema],
+    [addLog, credentialRequirements, credentials, inputSchema],
   );
 
   const handleConfirmRun = useCallback(async () => {
@@ -778,10 +948,10 @@ export default function Workspace() {
       return;
     }
 
-    await startWorkflowRun(pendingRunWorkflowId, runFormValues);
+    await startWorkflowRun(pendingRunWorkflowId, runFormValues, runCredentialBindings);
     setRunDialogOpen(false);
     setPendingRunWorkflowId(null);
-  }, [pendingRunWorkflowId, runFormValues, startWorkflowRun]);
+  }, [pendingRunWorkflowId, runCredentialBindings, runFormValues, startWorkflowRun]);
 
   const toggleRun = useCallback(async () => {
     if (isRunning) {
@@ -835,10 +1005,18 @@ export default function Workspace() {
         return;
       }
 
-      const task = await runTask(workflow.id, nextRunValues);
+      const task = await runTask(workflow.id, nextRunValues, runCredentialBindings);
       setTaskId(task.id);
       setIsRunning(true);
-      setTaskRuntimeContext(buildRuntimePreview(inputSchema, nextRunValues));
+      setTaskRuntimeContext(
+        buildRuntimePreview(
+          inputSchema,
+          nextRunValues,
+          credentialRequirements,
+          runCredentialBindings,
+          credentials,
+        ),
+      );
       addLog("info", `任务 ${task.id} 已入队，等待 Worker 执行...`);
     } catch (error) {
       setIsRunning(false);
@@ -848,11 +1026,13 @@ export default function Workspace() {
   }, [
     addLog,
     credentialRequirements.length,
+    credentials,
     flowNodes,
     inputSchema,
     isCancelling,
     isRunning,
     persistWorkflow,
+    runCredentialBindings,
     runFormValues,
     taskId,
   ]);
@@ -863,59 +1043,75 @@ export default function Workspace() {
       <div className="flex-1 flex flex-col min-w-0 bg-[#09090b] relative">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-sky-900/10 via-transparent to-transparent pointer-events-none" />
 
-        <div className="flex items-center justify-between border-b border-white/[0.05] bg-zinc-950/50 backdrop-blur-md px-6 z-10">
-          <Header isRunning={isRunning} isCancelling={isCancelling} onToggleRun={toggleRun} />
-          <div className="ml-4 flex items-center gap-3">
-            <Input
-              value={workflowName}
-              onChange={(event) => setWorkflowName(event.target.value)}
-              className="h-8 w-56"
-              placeholder="输入工作流名称"
-            />
-            <div className="min-w-[88px] text-right text-xs text-zinc-500">
-              {isSavingWorkflow ? "自动保存中..." : hasUnsavedWorkflowChanges ? "等待自动保存" : "已自动保存"}
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                void persistWorkflow().catch(() => undefined);
-              }}
-              disabled={isSavingWorkflow || isLoadingWorkflow}
-              className="h-8 gap-2"
-            >
-              <Save className="w-3.5 h-3.5" />
-              {isSavingWorkflow ? "保存中..." : "立即保存"}
-            </Button>
-            {user?.role === "admin" && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setPublishForm({
-                    slug: workflowName
-                      .trim()
-                      .toLowerCase()
-                      .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-")
-                      .replace(/^-+|-+$/g, "") || "workflow-template",
-                    title: workflowName.trim(),
-                    description: workflowDescription.trim(),
-                    category: "浏览器自动化",
-                    tags: "",
-                  });
-                  setPublishDialogOpen(true);
-                }}
-                className="h-8 gap-2"
-              >
-                <UploadCloud className="w-3.5 h-3.5" />
-                发布模板
-              </Button>
-            )}
-            <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)} className="h-8 gap-2">
-              <Settings className="w-3.5 h-3.5" />
-              全局配置
-            </Button>
-          </div>
+        <div className="border-b border-white/[0.05] bg-zinc-950/50 px-6 backdrop-blur-md z-10">
+          <Header
+            isRunning={isRunning}
+            isCancelling={isCancelling}
+            onToggleRun={toggleRun}
+            actions={
+              <>
+                <Input
+                  value={workflowName}
+                  onChange={(event) => setWorkflowName(event.target.value)}
+                  className="h-8 w-48 lg:w-56"
+                  placeholder="输入工作流名称"
+                />
+                <div className="min-w-[88px] text-right text-xs text-zinc-500">
+                  {isSavingWorkflow ? "自动保存中..." : hasUnsavedWorkflowChanges ? "等待自动保存" : "已自动保存"}
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    void persistWorkflow().catch(() => undefined);
+                  }}
+                  disabled={isSavingWorkflow || isLoadingWorkflow}
+                  className="h-8 gap-2"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  {isSavingWorkflow ? "保存中..." : "保存"}
+                </Button>
+                {user?.role === "admin" && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={Boolean(publishedTemplate) && !canManagePublishedTemplate}
+                    title={
+                      publishedTemplate && !canManagePublishedTemplate
+                        ? "仅模板发布者或超级管理员可更新该模板"
+                        : undefined
+                    }
+                    onClick={() => {
+                      if (publishedTemplate && !canManagePublishedTemplate) {
+                        return;
+                      }
+
+                      setPublishForm({
+                        slug: publishedTemplate?.slug || workflowName
+                          .trim()
+                          .toLowerCase()
+                          .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-")
+                          .replace(/^-+|-+$/g, "") || "workflow-template",
+                        title: publishedTemplate?.title || workflowName.trim(),
+                        description: publishedTemplate?.description || workflowDescription.trim(),
+                        category: publishedTemplate?.category || "浏览器自动化",
+                        tags: publishedTemplate?.tags?.join(", ") || "",
+                      });
+                      setPublishDialogOpen(true);
+                    }}
+                    className="h-8 gap-2"
+                  >
+                    <UploadCloud className="w-3.5 h-3.5" />
+                    {publishedTemplate ? (canManagePublishedTemplate ? "更新" : "无权") : "发布"}
+                  </Button>
+                )}
+                <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)} className="h-8 gap-2">
+                  <Settings className="w-3.5 h-3.5" />
+                  设置
+                </Button>
+              </>
+            }
+          />
         </div>
 
         <div className="flex items-center justify-between px-6 py-2 border-b border-white/[0.04] bg-zinc-950/30 z-10">
@@ -963,7 +1159,12 @@ export default function Workspace() {
 
             <div className="h-full z-10 flex border-l border-white/[0.05]">
               {selectedNodeId && !isRunning ? (
-                <NodeConfigPanel nodeId={selectedNodeId} onClose={() => setSelectedNodeId(null)} />
+                <NodeConfigPanel
+                  nodeId={selectedNodeId}
+                  inputSchema={inputSchema}
+                  credentialRequirements={credentialRequirements}
+                  onClose={() => setSelectedNodeId(null)}
+                />
               ) : (
                 <ExecutionPanel
                   isRunning={isRunning}
@@ -986,7 +1187,9 @@ export default function Workspace() {
         workflowName={workflowName}
         inputSchema={inputSchema}
         credentialRequirements={credentialRequirements}
+        credentials={credentials}
         values={runFormValues}
+        credentialBindings={runCredentialBindings}
         isSubmitting={isStartingRun}
         onOpenChange={(open) => {
           setRunDialogOpen(open);
@@ -995,12 +1198,13 @@ export default function Workspace() {
           }
         }}
         onValuesChange={setRunFormValues}
+        onCredentialBindingsChange={setRunCredentialBindings}
         onSubmit={() => void handleConfirmRun()}
       />
 
       <Dialog open={publishDialogOpen} onOpenChange={setPublishDialogOpen}>
         <DialogHeader>
-          <DialogTitle>发布到工作流商店</DialogTitle>
+          <DialogTitle>{publishedTemplate ? "更新商店模板" : "发布到工作流商店"}</DialogTitle>
         </DialogHeader>
         <DialogContent>
           <div className="space-y-4">
@@ -1032,7 +1236,9 @@ export default function Workspace() {
               placeholder="模板描述"
             />
             <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-3 text-xs text-zinc-400">
-              发布时会自动保存当前工作流，并把当前工作流 JSON 作为模板定义同步到商店。
+              {publishedTemplate
+                ? "更新时会自动保存当前工作流，并把最新工作流 JSON 同步覆盖到现有商店模板。"
+                : "发布时会自动保存当前工作流，并把当前工作流 JSON 作为模板定义同步到商店。"}
             </div>
             <div className="flex justify-end gap-3">
               <Button variant="ghost" onClick={() => setPublishDialogOpen(false)}>
@@ -1044,7 +1250,7 @@ export default function Workspace() {
                 }}
                 disabled={!publishForm.slug.trim() || !publishForm.title.trim() || isPublishingTemplate}
               >
-                {isPublishingTemplate ? "发布中..." : "确认发布"}
+                {isPublishingTemplate ? "同步中..." : publishedTemplate ? "确认更新" : "确认发布"}
               </Button>
             </div>
           </div>
@@ -1151,6 +1357,13 @@ export default function Workspace() {
                   credentialRequirements={credentialRequirements}
                   onInputSchemaChange={setInputSchema}
                   onCredentialRequirementsChange={setCredentialRequirements}
+                />
+                <CredentialLibraryManager
+                  credentials={credentials}
+                  isLoading={isLoadingCredentials}
+                  onCreate={handleCreateCredential}
+                  onUpdate={handleUpdateCredential}
+                  onDelete={handleDeleteCredential}
                 />
               </TabsContent>
             </div>

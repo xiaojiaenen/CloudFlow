@@ -1,10 +1,10 @@
 import 'dotenv/config';
+import { existsSync, readdirSync } from 'fs';
 import { mkdir, writeFile } from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { PrismaClient } from '@prisma/client';
 import { DelayedError, Job, Worker } from 'bullmq';
-import IORedis from 'ioredis';
 import { Browser, BrowserContext, Frame, Page, chromium } from 'playwright';
 import {
   DEFAULT_TASK_EXECUTION_POLICY,
@@ -30,20 +30,27 @@ import {
   WorkflowDefinition,
   WorkflowNode,
 } from '../src/common/types/workflow.types';
+import {
+  createRedisConnection,
+  resolveRedisConfig,
+} from '../src/common/utils/redis-connection';
 
 const prisma = new PrismaClient();
-const redisUrl = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379';
-const workerConnection = new IORedis(redisUrl, {
+const redisConfig = resolveRedisConfig(process.env);
+const workerConnection = createRedisConnection(redisConfig, {
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
+  connectionName: 'cloudflow-worker',
 });
-const publisher = new IORedis(redisUrl, {
+const publisher = createRedisConnection(redisConfig, {
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
+  connectionName: 'cloudflow-worker-publisher',
 });
-const cancellationSubscriber = new IORedis(redisUrl, {
+const cancellationSubscriber = createRedisConnection(redisConfig, {
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
+  connectionName: 'cloudflow-worker-cancel-subscriber',
 });
 const taskRuntimeBaseDir = process.env.TASK_RUNTIME_BASE_DIR
   ? path.resolve(process.env.TASK_RUNTIME_BASE_DIR)
@@ -62,10 +69,16 @@ let browserPromise: Promise<Browser> | null = null;
 let workerInstance: Worker<TaskQueuePayload> | null = null;
 const taskControllers = new Map<string, { cancelRequested: boolean; context?: BrowserContext }>();
 
+const DEFAULT_PLAYWRIGHT_BROWSER_ROOTS = [
+  '/ms-playwright',
+  path.join(os.homedir(), '.cache', 'ms-playwright'),
+];
+
 interface ExecutionContext {
   page: Page;
   activeFrame: Frame | null;
   variables: Record<string, string>;
+  credentials: Record<string, Record<string, string>>;
   tempDir: string;
 }
 
@@ -101,12 +114,95 @@ class TaskCancelledError extends Error {
 
 async function getBrowser() {
   if (!browserPromise) {
+    const headless = process.env.BROWSER_HEADLESS !== 'false';
+    const executablePath = resolveChromiumExecutablePath(headless);
+    console.log(
+      `[worker] Launching Chromium (headless=${headless}) using ${
+        executablePath ?? 'Playwright default resolution'
+      }`,
+    );
     browserPromise = chromium.launch({
-      headless: process.env.BROWSER_HEADLESS !== 'false',
+      headless,
+      ...(executablePath ? { executablePath } : {}),
     });
   }
 
   return browserPromise;
+}
+
+function resolveChromiumExecutablePath(headless: boolean) {
+  const explicitPath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH?.trim();
+  if (explicitPath) {
+    return explicitPath;
+  }
+
+  const browserRoots = Array.from(
+    new Set(
+      [process.env.PLAYWRIGHT_BROWSERS_PATH, ...DEFAULT_PLAYWRIGHT_BROWSER_ROOTS].filter(
+        (value): value is string => Boolean(value?.trim()),
+      ),
+    ),
+  );
+
+  const preferredCandidates = [
+    {
+      directoryPrefix: 'chromium-',
+      executableSegments: ['chrome-linux64', 'chrome'],
+    },
+    {
+      directoryPrefix: 'chromium_headless_shell-',
+      executableSegments: [
+        'chrome-headless-shell-linux64',
+        'chrome-headless-shell',
+      ],
+    },
+  ];
+
+  for (const browserRoot of browserRoots) {
+    for (const candidate of preferredCandidates) {
+      const executablePath = findBrowserExecutable(
+        browserRoot,
+        candidate.directoryPrefix,
+        candidate.executableSegments,
+      );
+
+      if (executablePath) {
+        return executablePath;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function findBrowserExecutable(
+  browserRoot: string,
+  directoryPrefix: string,
+  executableSegments: string[],
+) {
+  if (!existsSync(browserRoot)) {
+    return undefined;
+  }
+
+  const candidateDirectories = readdirSync(browserRoot, {
+    withFileTypes: true,
+  })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith(directoryPrefix))
+    .sort((left, right) => right.name.localeCompare(left.name));
+
+  for (const directory of candidateDirectories) {
+    const executablePath = path.join(
+      browserRoot,
+      directory.name,
+      ...executableSegments,
+    );
+
+    if (existsSync(executablePath)) {
+      return executablePath;
+    }
+  }
+
+  return undefined;
 }
 
 async function publishEvent(event: TaskExecutionEvent) {
@@ -443,11 +539,26 @@ function resolveTemplateValue(
   value: string,
   runtimeInputs: Record<string, string>,
   variables: Record<string, string>,
+  credentials: Record<string, Record<string, string>>,
 ) {
   return value.replace(
-    /\{\{\s*(inputs|variables)\.([a-zA-Z0-9_-]+)\s*\}\}/g,
-    (_, scope: 'inputs' | 'variables', key: string) => {
-      return scope === 'inputs' ? runtimeInputs[key] ?? '' : variables[key] ?? '';
+    /\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g,
+    (_, expression: string) => {
+      const [scope, key, ...rest] = expression.split('.');
+
+      if (scope === 'inputs' && key) {
+        return runtimeInputs[key] ?? '';
+      }
+
+      if (scope === 'variables' && key) {
+        return variables[key] ?? '';
+      }
+
+      if (scope === 'credentials' && key && rest.length > 0) {
+        return credentials[key]?.[rest.join('.')] ?? '';
+      }
+
+      return '';
     },
   );
 }
@@ -457,8 +568,14 @@ function resolveNumberValue(
   fallback: number,
   runtimeInputs: Record<string, string>,
   variables: Record<string, string>,
+  credentials: Record<string, Record<string, string>>,
 ) {
-  const resolved = resolveTemplateValue(String(value ?? fallback), runtimeInputs, variables);
+  const resolved = resolveTemplateValue(
+    String(value ?? fallback),
+    runtimeInputs,
+    variables,
+    credentials,
+  );
   const parsed = Number(resolved);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
@@ -499,58 +616,64 @@ function resolveNode(
   node: WorkflowNode,
   runtimeInputs: Record<string, string>,
   variables: Record<string, string>,
+  credentials: Record<string, Record<string, string>>,
 ) {
   switch (node.type) {
     case 'open_page':
       return {
         ...node,
-        url: resolveTemplateValue(node.url, runtimeInputs, variables),
+        url: resolveTemplateValue(node.url, runtimeInputs, variables, credentials),
       };
     case 'click':
       return {
         ...node,
-        selector: resolveTemplateValue(node.selector, runtimeInputs, variables),
+        selector: resolveTemplateValue(node.selector, runtimeInputs, variables, credentials),
       };
     case 'input':
       return {
         ...node,
-        selector: resolveTemplateValue(node.selector, runtimeInputs, variables),
-        value: resolveTemplateValue(node.value, runtimeInputs, variables),
+        selector: resolveTemplateValue(node.selector, runtimeInputs, variables, credentials),
+        value: resolveTemplateValue(node.value, runtimeInputs, variables, credentials),
       };
     case 'hover':
       return {
         ...node,
-        selector: resolveTemplateValue(node.selector, runtimeInputs, variables),
+        selector: resolveTemplateValue(node.selector, runtimeInputs, variables, credentials),
       };
     case 'press_key':
       return {
         ...node,
-        key: resolveTemplateValue(node.key, runtimeInputs, variables),
+        key: resolveTemplateValue(node.key, runtimeInputs, variables, credentials),
       };
     case 'select_option':
       return {
         ...node,
-        selector: resolveTemplateValue(node.selector, runtimeInputs, variables),
-        value: resolveTemplateValue(node.value, runtimeInputs, variables),
+        selector: resolveTemplateValue(node.selector, runtimeInputs, variables, credentials),
+        value: resolveTemplateValue(node.value, runtimeInputs, variables, credentials),
       };
     case 'check':
     case 'uncheck':
       return {
         ...node,
-        selector: resolveTemplateValue(node.selector, runtimeInputs, variables),
+        selector: resolveTemplateValue(node.selector, runtimeInputs, variables, credentials),
       };
     case 'set_variable':
       return {
         ...node,
-        key: resolveTemplateValue(node.key, runtimeInputs, variables),
-        value: resolveTemplateValue(node.value, runtimeInputs, variables),
+        key: resolveTemplateValue(node.key, runtimeInputs, variables, credentials),
+        value: resolveTemplateValue(node.value, runtimeInputs, variables, credentials),
       };
     case 'condition':
       return {
         ...node,
-        left: resolveTemplateValue(node.left, runtimeInputs, variables),
-        right: resolveTemplateValue(String(node.right ?? ''), runtimeInputs, variables),
-        operator: resolveTemplateValue(String(node.operator ?? 'equals'), runtimeInputs, variables) as
+        left: resolveTemplateValue(node.left, runtimeInputs, variables, credentials),
+        right: resolveTemplateValue(String(node.right ?? ''), runtimeInputs, variables, credentials),
+        operator: resolveTemplateValue(
+          String(node.operator ?? 'equals'),
+          runtimeInputs,
+          variables,
+          credentials,
+        ) as
           | 'equals'
           | 'not_equals'
           | 'contains'
@@ -563,61 +686,86 @@ function resolveNode(
     case 'wait':
       return {
         ...node,
-        time: resolveNumberValue(node.time ?? node.duration, 1000, runtimeInputs, variables),
+        time: resolveNumberValue(
+          node.time ?? node.duration,
+          1000,
+          runtimeInputs,
+          variables,
+          credentials,
+        ),
       };
     case 'wait_for_element':
       return {
         ...node,
-        selector: resolveTemplateValue(node.selector, runtimeInputs, variables),
+        selector: resolveTemplateValue(node.selector, runtimeInputs, variables, credentials),
         state: resolveTemplateValue(
           String(node.state ?? 'visible'),
           runtimeInputs,
           variables,
+          credentials,
         ) as 'attached' | 'detached' | 'visible' | 'hidden',
-        timeout: resolveNumberValue(node.timeout, 10000, runtimeInputs, variables),
+        timeout: resolveNumberValue(node.timeout, 10000, runtimeInputs, variables, credentials),
       };
     case 'wait_for_text':
       return {
         ...node,
-        selector: resolveTemplateValue(node.selector, runtimeInputs, variables),
-        text: resolveTemplateValue(node.text, runtimeInputs, variables),
+        selector: resolveTemplateValue(node.selector, runtimeInputs, variables, credentials),
+        text: resolveTemplateValue(node.text, runtimeInputs, variables, credentials),
         matchMode: resolveTemplateValue(
           String(node.matchMode ?? 'contains'),
           runtimeInputs,
           variables,
-        ) as 'contains' | 'equals' | 'not_contains' | 'not_equals',
-        timeout: resolveNumberValue(node.timeout, 10000, runtimeInputs, variables),
+          credentials,
+        ) as 'contains' | 'equals' | 'not_contains' | 'not_equals' | 'not_empty',
+        timeout: resolveNumberValue(node.timeout, 10000, runtimeInputs, variables, credentials),
       };
     case 'wait_for_class':
       return {
         ...node,
-        selector: resolveTemplateValue(node.selector, runtimeInputs, variables),
-        className: resolveTemplateValue(node.className, runtimeInputs, variables),
+        selector: resolveTemplateValue(node.selector, runtimeInputs, variables, credentials),
+        className: resolveTemplateValue(node.className, runtimeInputs, variables, credentials),
         condition: resolveTemplateValue(
           String(node.condition ?? 'contains'),
           runtimeInputs,
           variables,
+          credentials,
         ) as 'contains' | 'not_contains',
-        timeout: resolveNumberValue(node.timeout, 10000, runtimeInputs, variables),
+        timeout: resolveNumberValue(node.timeout, 10000, runtimeInputs, variables, credentials),
       };
     case 'wait_for_url':
       return {
         ...node,
-        urlIncludes: resolveTemplateValue(String(node.urlIncludes ?? ''), runtimeInputs, variables),
+        urlIncludes: resolveTemplateValue(
+          String(node.urlIncludes ?? ''),
+          runtimeInputs,
+          variables,
+          credentials,
+        ),
         waitUntil: resolveTemplateValue(
           String(node.waitUntil ?? 'load'),
           runtimeInputs,
           variables,
+          credentials,
         ) as 'load' | 'domcontentloaded' | 'networkidle' | 'commit',
-        timeout: resolveNumberValue(node.timeout, 10000, runtimeInputs, variables),
+        timeout: resolveNumberValue(node.timeout, 10000, runtimeInputs, variables, credentials),
       };
     case 'switch_iframe':
       return {
         ...node,
-        selector: resolveTemplateValue(String(node.selector ?? ''), runtimeInputs, variables),
-        name: resolveTemplateValue(String(node.name ?? ''), runtimeInputs, variables),
-        urlIncludes: resolveTemplateValue(String(node.urlIncludes ?? ''), runtimeInputs, variables),
-        timeout: resolveNumberValue(node.timeout, 10000, runtimeInputs, variables),
+        selector: resolveTemplateValue(
+          String(node.selector ?? ''),
+          runtimeInputs,
+          variables,
+          credentials,
+        ),
+        name: resolveTemplateValue(String(node.name ?? ''), runtimeInputs, variables, credentials),
+        urlIncludes: resolveTemplateValue(
+          String(node.urlIncludes ?? ''),
+          runtimeInputs,
+          variables,
+          credentials,
+        ),
+        timeout: resolveNumberValue(node.timeout, 10000, runtimeInputs, variables, credentials),
       };
     case 'switch_main_frame':
       return node;
@@ -628,24 +776,32 @@ function resolveNode(
           String(node.direction ?? 'down'),
           runtimeInputs,
           variables,
+          credentials,
         ) as 'down' | 'up' | 'bottom' | 'top',
-        distance: resolveNumberValue(node.distance, 500, runtimeInputs, variables),
+        distance: resolveNumberValue(node.distance, 500, runtimeInputs, variables, credentials),
       };
     case 'extract':
       return {
         ...node,
-        selector: resolveTemplateValue(node.selector, runtimeInputs, variables),
+        selector: resolveTemplateValue(node.selector, runtimeInputs, variables, credentials),
         property: resolveTemplateValue(
           String(node.property ?? 'text'),
           runtimeInputs,
           variables,
+          credentials,
         ) as 'text' | 'html' | 'href' | 'src' | 'value' | 'attribute',
         attributeName: resolveTemplateValue(
           String(node.attributeName ?? ''),
           runtimeInputs,
           variables,
+          credentials,
         ),
-        saveAs: resolveTemplateValue(String(node.saveAs ?? ''), runtimeInputs, variables),
+        saveAs: resolveTemplateValue(
+          String(node.saveAs ?? ''),
+          runtimeInputs,
+          variables,
+          credentials,
+        ),
       };
     case 'screenshot':
       return {
@@ -654,8 +810,14 @@ function resolveNode(
           String(node.scope ?? 'viewport'),
           runtimeInputs,
           variables,
+          credentials,
         ) as 'viewport' | 'full' | 'element',
-        selector: resolveTemplateValue(String(node.selector ?? ''), runtimeInputs, variables),
+        selector: resolveTemplateValue(
+          String(node.selector ?? ''),
+          runtimeInputs,
+          variables,
+          credentials,
+        ),
       };
     default:
       return node;
@@ -701,7 +863,7 @@ async function findFrame(
     await page.waitForTimeout(200);
   }
 
-  throw new Error('Unable to find matching iframe. Check selector, name, or URL.');
+  throw new Error('未找到匹配的 iframe，请检查选择器、name 或 URL 包含条件。');
 }
 
 async function executeNode(
@@ -714,43 +876,61 @@ async function executeNode(
 
   switch (node.type) {
     case 'open_page':
-      await publishLog(taskId, `Open page ${node.url}`, 'info', node.clientNodeId);
+      await publishLog(taskId, `正在打开页面：${node.url}`, 'info', node.clientNodeId);
       executionContext.activeFrame = null;
       await page.goto(node.url, { waitUntil: 'domcontentloaded' });
+      await publishLog(taskId, '页面已开始加载，并已切回主文档上下文。', 'success', node.clientNodeId);
       return;
     case 'click':
-      await publishLog(taskId, `Click ${node.selector}`, 'info', node.clientNodeId);
+      await publishLog(taskId, `正在点击元素：${node.selector}`, 'info', node.clientNodeId);
       await target.locator(node.selector).first().click();
+      await publishLog(taskId, `点击完成：${node.selector}`, 'success', node.clientNodeId);
       return;
     case 'input':
-      await publishLog(taskId, `Fill ${node.selector}`, 'info', node.clientNodeId);
+      await publishLog(taskId, `正在向 ${node.selector} 输入内容。`, 'info', node.clientNodeId);
       await target.locator(node.selector).first().fill(node.value);
+      await publishLog(
+        taskId,
+        `输入完成：${node.selector} <- ${node.value ? '已写入值' : '空字符串'}`,
+        'success',
+        node.clientNodeId,
+      );
       return;
     case 'hover':
-      await publishLog(taskId, `Hover ${node.selector}`, 'info', node.clientNodeId);
+      await publishLog(taskId, `正在悬停元素：${node.selector}`, 'info', node.clientNodeId);
       await target.locator(node.selector).first().hover();
+      await publishLog(taskId, `悬停完成：${node.selector}`, 'success', node.clientNodeId);
       return;
     case 'press_key':
-      await publishLog(taskId, `Press key ${node.key}`, 'info', node.clientNodeId);
+      await publishLog(taskId, `正在按下键盘按键：${node.key}`, 'info', node.clientNodeId);
       await page.keyboard.press(node.key);
+      await publishLog(taskId, `按键已发送：${node.key}`, 'success', node.clientNodeId);
       return;
     case 'select_option':
-      await publishLog(taskId, `Select option ${node.value} on ${node.selector}`, 'info', node.clientNodeId);
+      await publishLog(
+        taskId,
+        `正在选择下拉项：${node.selector} -> ${node.value}`,
+        'info',
+        node.clientNodeId,
+      );
       await target.locator(node.selector).first().selectOption({ value: node.value });
+      await publishLog(taskId, `下拉项已选择：${node.value}`, 'success', node.clientNodeId);
       return;
     case 'check':
-      await publishLog(taskId, `Check ${node.selector}`, 'info', node.clientNodeId);
+      await publishLog(taskId, `正在勾选：${node.selector}`, 'info', node.clientNodeId);
       await target.locator(node.selector).first().check();
+      await publishLog(taskId, `勾选完成：${node.selector}`, 'success', node.clientNodeId);
       return;
     case 'uncheck':
-      await publishLog(taskId, `Uncheck ${node.selector}`, 'info', node.clientNodeId);
+      await publishLog(taskId, `正在取消勾选：${node.selector}`, 'info', node.clientNodeId);
       await target.locator(node.selector).first().uncheck();
+      await publishLog(taskId, `取消勾选完成：${node.selector}`, 'success', node.clientNodeId);
       return;
     case 'set_variable':
       executionContext.variables[node.key] = node.value;
       await publishLog(
         taskId,
-        `Variable ${node.key} updated to ${node.value || '(empty)'}`,
+        `变量已写入：${node.key} = ${node.value || '空字符串'}`,
         'success',
         node.clientNodeId,
       );
@@ -759,7 +939,9 @@ async function executeNode(
       const matched = compareCondition(node.left, node.operator ?? 'equals', String(node.right ?? ''));
       await publishLog(
         taskId,
-        `Condition result: ${node.left} ${node.operator ?? 'equals'} ${String(node.right ?? '')} => ${matched ? 'true' : 'false'}`,
+        `条件判断结果：${node.left} ${node.operator ?? 'equals'} ${
+          String(node.right ?? '') || '(空)'
+        } => ${matched ? '满足' : '不满足'}`,
         matched ? 'success' : 'warn',
         node.clientNodeId,
       );
@@ -767,7 +949,7 @@ async function executeNode(
     }
     case 'wait': {
       const duration = Number(node.time ?? node.duration ?? 1000);
-      await publishLog(taskId, `Wait ${duration}ms`, 'info', node.clientNodeId);
+      await publishLog(taskId, `固定等待 ${duration}ms。`, 'info', node.clientNodeId);
 
       let remaining = duration;
       while (remaining > 0) {
@@ -777,18 +959,33 @@ async function executeNode(
         remaining -= slice;
       }
 
+      await publishLog(taskId, `固定等待结束，共等待 ${duration}ms。`, 'success', node.clientNodeId);
       return;
     }
     case 'wait_for_element': {
       const timeout = Number(node.timeout ?? 10000);
       const state = node.state ?? 'visible';
+      const stateLabel =
+        state === 'visible'
+          ? '可见'
+          : state === 'attached'
+            ? '已挂载到 DOM'
+            : state === 'hidden'
+              ? '已隐藏'
+              : '已从 DOM 移除';
       await publishLog(
         taskId,
-        `Wait for element ${node.selector} to become ${state} within ${timeout}ms`,
+        `等待元素状态：${node.selector} -> ${stateLabel}，超时 ${timeout}ms。`,
         'info',
         node.clientNodeId,
       );
       await target.locator(node.selector).first().waitFor({ state, timeout });
+      await publishLog(
+        taskId,
+        `元素状态已满足：${node.selector} -> ${stateLabel}`,
+        'success',
+        node.clientNodeId,
+      );
       return;
     }
     case 'wait_for_text': {
@@ -796,10 +993,20 @@ async function executeNode(
       const matchMode = node.matchMode ?? 'contains';
       const deadline = Date.now() + timeout;
       const locator = target.locator(node.selector).first();
+      const conditionText =
+        matchMode === 'equals'
+          ? `文本完全等于“${node.text}”`
+          : matchMode === 'not_contains'
+            ? `文本不包含“${node.text}”`
+            : matchMode === 'not_equals'
+              ? `文本不等于“${node.text}”`
+              : matchMode === 'not_empty'
+                ? '文本变为非空'
+                : `文本包含“${node.text}”`;
 
       await publishLog(
         taskId,
-        `Wait for text on ${node.selector} to satisfy ${matchMode} ${node.text}`,
+        `等待文本条件：${node.selector}，要求 ${conditionText}，超时 ${timeout}ms。`,
         'info',
         node.clientNodeId,
       );
@@ -815,14 +1022,16 @@ async function executeNode(
               ? 'not_contains'
               : matchMode === 'not_equals'
                 ? 'not_equals'
-                : 'contains',
-          node.text,
+                : matchMode === 'not_empty'
+                  ? 'not_empty'
+                  : 'contains',
+          matchMode === 'not_empty' ? '' : node.text,
         );
 
         if (matched) {
           await publishLog(
             taskId,
-            `Text condition satisfied: ${textContent || '(empty)'}`,
+            `文本条件已满足，当前文本：${textContent || '(空)'}`,
             'success',
             node.clientNodeId,
           );
@@ -832,7 +1041,7 @@ async function executeNode(
         await page.waitForTimeout(200);
       }
 
-      throw new Error(`Timed out waiting for text on ${node.selector} to satisfy ${matchMode} ${node.text}`);
+      throw new Error(`等待文本超时：${node.selector} 未在 ${timeout}ms 内满足“${conditionText}”。`);
     }
     case 'wait_for_class': {
       const timeout = Number(node.timeout ?? 10000);
@@ -842,7 +1051,9 @@ async function executeNode(
 
       await publishLog(
         taskId,
-        `Wait for class on ${node.selector} to ${condition === 'contains' ? 'contain' : 'exclude'} ${node.className}`,
+        `等待 class 条件：${node.selector} ${
+          condition === 'contains' ? `包含 ${node.className}` : `不包含 ${node.className}`
+        }，超时 ${timeout}ms。`,
         'info',
         node.clientNodeId,
       );
@@ -857,7 +1068,7 @@ async function executeNode(
         if (matched) {
           await publishLog(
             taskId,
-            `Class condition satisfied: ${classValue || '(none)'}`,
+            `class 条件已满足，当前 class：${classValue || '(无)'}`,
             'success',
             node.clientNodeId,
           );
@@ -867,7 +1078,9 @@ async function executeNode(
         await page.waitForTimeout(200);
       }
 
-      throw new Error(`Timed out waiting for class on ${node.selector} to satisfy ${condition} ${node.className}`);
+      throw new Error(
+        `等待 class 超时：${node.selector} 未在 ${timeout}ms 内满足 ${condition} ${node.className}。`,
+      );
     }
     case 'wait_for_url': {
       const timeout = Number(node.timeout ?? 10000);
@@ -876,8 +1089,8 @@ async function executeNode(
       await publishLog(
         taskId,
         urlIncludes
-          ? `Wait for URL to include ${urlIncludes} at ${waitUntil}`
-          : `Wait for page load state ${waitUntil}`,
+          ? `等待地址变化：URL 包含“${urlIncludes}”，等待阶段 ${waitUntil}，超时 ${timeout}ms。`
+          : `等待页面加载状态：${waitUntil}，超时 ${timeout}ms。`,
         'info',
         node.clientNodeId,
       );
@@ -891,6 +1104,7 @@ async function executeNode(
       }
 
       executionContext.activeFrame = null;
+      await publishLog(taskId, 'URL 条件已满足，已切回主文档上下文。', 'success', node.clientNodeId);
       return;
     }
     case 'switch_iframe': {
@@ -898,7 +1112,7 @@ async function executeNode(
       executionContext.activeFrame = frame;
       await publishLog(
         taskId,
-        `Switched to iframe${frame.name() ? ` (${frame.name()})` : ''}`,
+        `已切换到 iframe${frame.name() ? `：${frame.name()}` : ''}${frame.url() ? `，URL：${frame.url()}` : ''}`,
         'success',
         node.clientNodeId,
       );
@@ -906,12 +1120,20 @@ async function executeNode(
     }
     case 'switch_main_frame':
       executionContext.activeFrame = null;
-      await publishLog(taskId, 'Switched back to main frame.', 'success', node.clientNodeId);
+      await publishLog(taskId, '已切回主文档。', 'success', node.clientNodeId);
       return;
     case 'scroll': {
       const direction = node.direction ?? 'down';
       const distance = Number(node.distance ?? 500);
-      await publishLog(taskId, `Scroll ${direction} by ${distance}px`, 'info', node.clientNodeId);
+      const directionLabel =
+        direction === 'bottom'
+          ? '滚动到底部'
+          : direction === 'top'
+            ? '滚动到顶部'
+            : direction === 'up'
+              ? `向上滚动 ${distance}px`
+              : `向下滚动 ${distance}px`;
+      await publishLog(taskId, `正在执行滚动：${directionLabel}`, 'info', node.clientNodeId);
 
       if (direction === 'bottom') {
         await target.evaluate(() => {
@@ -932,12 +1154,18 @@ async function executeNode(
       }
 
       await page.waitForTimeout(400);
+      await publishLog(taskId, `滚动完成：${directionLabel}`, 'success', node.clientNodeId);
       return;
     }
     case 'extract': {
       const property = node.property ?? 'text';
       const locator = target.locator(node.selector).first();
-      await publishLog(taskId, `Extract ${property} from ${node.selector}`, 'info', node.clientNodeId);
+      await publishLog(
+        taskId,
+        `正在提取数据：${node.selector} -> ${property}`,
+        'info',
+        node.clientNodeId,
+      );
       await locator.waitFor({ state: 'visible', timeout: 5000 });
 
       let extractedValue = '';
@@ -952,7 +1180,7 @@ async function executeNode(
         extractedValue = await locator.inputValue().catch(async () => (await locator.getAttribute('value')) ?? '');
       } else if (property === 'attribute') {
         if (!node.attributeName) {
-          throw new Error('extract node requires attributeName when property is attribute.');
+          throw new Error('提取节点在 property=attribute 时必须填写属性名。');
         }
 
         extractedValue = (await locator.getAttribute(node.attributeName)) ?? '';
@@ -965,17 +1193,27 @@ async function executeNode(
         selector: node.selector,
         property,
         value: extractedValue,
-        preview: preview || '[empty result]',
+        preview: preview || '[空结果]',
         nodeId: node.clientNodeId,
         timestamp: new Date().toISOString(),
       });
 
       if (node.saveAs) {
         executionContext.variables[node.saveAs] = extractedValue;
-        await publishLog(taskId, `Saved extract result to variable ${node.saveAs}`, 'success', node.clientNodeId);
+        await publishLog(
+          taskId,
+          `提取结果已写入变量：${node.saveAs}`,
+          'success',
+          node.clientNodeId,
+        );
       }
 
-      await publishLog(taskId, `Extract result: ${preview || '[empty result]'}`, 'success', node.clientNodeId);
+      await publishLog(
+        taskId,
+        `提取完成，结果预览：${preview || '[空结果]'}`,
+        'success',
+        node.clientNodeId,
+      );
       return;
     }
     case 'screenshot': {
@@ -983,8 +1221,8 @@ async function executeNode(
       await publishLog(
         taskId,
         scope === 'element'
-          ? `Capture element screenshot ${node.selector || '(missing selector)'}`
-          : `Capture screenshot scope ${scope === 'full' ? 'full-page' : 'viewport'}`,
+          ? `正在截图指定元素：${node.selector || '(未填写选择器)'}`
+          : `正在截图：${scope === 'full' ? '整页' : '当前视口'}`,
         'info',
         node.clientNodeId,
       );
@@ -993,7 +1231,7 @@ async function executeNode(
 
       if (scope === 'element') {
         if (!node.selector) {
-          throw new Error('screenshot node requires selector when scope is element.');
+          throw new Error('截图节点在 scope=element 时必须填写元素选择器。');
         }
 
         buffer = await target.locator(node.selector).first().screenshot({ type: 'jpeg', quality: 75 });
@@ -1013,11 +1251,11 @@ async function executeNode(
         timestamp: new Date().toISOString(),
       });
 
-      await publishLog(taskId, 'Screenshot pushed to frontend.', 'success', node.clientNodeId);
+      await publishLog(taskId, '截图已推送到前端。', 'success', node.clientNodeId);
       return;
     }
     default:
-      throw new Error(`Unsupported workflow node: ${(node as WorkflowNode).type}`);
+      throw new Error(`暂不支持的工作流节点：${(node as WorkflowNode).type}`);
   }
 }
 
@@ -1170,7 +1408,12 @@ async function executeWorkflow(
 
       safetyCounter += 1;
       await ensureTaskNotCancelled(taskId);
-      const resolvedNode = resolveNode(node, runtimeInputs, executionContext.variables);
+      const resolvedNode = resolveNode(
+        node,
+        runtimeInputs,
+        executionContext.variables,
+        executionContext.credentials,
+      );
       const result = await executeNode(taskId, executionContext, resolvedNode);
       await ensureTaskNotCancelled(taskId);
 
@@ -1184,6 +1427,7 @@ async function executeWorkflow(
 async function runTask(job: Job<TaskQueuePayload>, runtimeOptions: TaskRuntimeOptions) {
   const { taskId, workflow } = job.data;
   const runtimeInputs = job.data.inputs ?? workflow.runtime?.inputs ?? {};
+  const runtimeCredentials = job.data.credentials ?? {};
   const browser = await getBrowser();
   const controller = getTaskController(taskId);
   const context = await browser.newContext({
@@ -1198,6 +1442,7 @@ async function runTask(job: Job<TaskQueuePayload>, runtimeOptions: TaskRuntimeOp
     page,
     activeFrame: null,
     variables: {},
+    credentials: runtimeCredentials,
     tempDir: runtimeOptions.tempDir,
   };
   const stopScreenshotStream = startScreenshotStream(
@@ -1226,7 +1471,7 @@ async function runTask(job: Job<TaskQueuePayload>, runtimeOptions: TaskRuntimeOp
     await publishStatus(taskId, 'running');
     await publishLog(
       taskId,
-      `Task started with ${workflow.nodes.length} nodes, ${Object.keys(runtimeInputs).length} runtime inputs, priority ${job.data.priority}.`,
+      `任务开始执行，共 ${workflow.nodes.length} 个节点，运行参数 ${Object.keys(runtimeInputs).length} 项，绑定凭据 ${Object.keys(runtimeCredentials).length} 项，优先级 ${job.data.priority}。`,
     );
 
     await executeWorkflow(taskId, workflow, executionContext, runtimeInputs);
@@ -1236,7 +1481,11 @@ async function runTask(job: Job<TaskQueuePayload>, runtimeOptions: TaskRuntimeOp
       data: { status: 'success', completedAt: new Date() },
     });
 
-    await publishLog(taskId, `Task completed and produced ${Object.keys(executionContext.variables).length} variables.`, 'success');
+    await publishLog(
+      taskId,
+      `任务执行完成，共生成 ${Object.keys(executionContext.variables).length} 个变量。`,
+      'success',
+    );
     await publishStatus(taskId, 'success');
   } catch (error) {
     const cancellationRequested = await isTaskCancellationRequested(taskId);
@@ -1247,24 +1496,24 @@ async function runTask(job: Job<TaskQueuePayload>, runtimeOptions: TaskRuntimeOp
         data: {
           status: 'cancelled',
           completedAt: new Date(),
-          errorMessage: 'Task cancelled by user.',
+          errorMessage: '任务已由用户取消。',
           cancelRequestedAt: new Date(),
         },
       });
 
-      await publishLog(taskId, 'Task cancelled.', 'warn');
+      await publishLog(taskId, '任务已取消。', 'warn');
       await publishStatus(taskId, 'cancelled');
       return;
     }
 
-    const message = error instanceof Error ? error.message : 'Unknown execution error';
+    const message = error instanceof Error ? error.message : '未知执行错误';
 
     await prisma.task.update({
       where: { id: taskId },
       data: { status: 'failed', completedAt: new Date(), errorMessage: message },
     });
 
-    await publishLog(taskId, `Task failed: ${message}`, 'error');
+    await publishLog(taskId, `任务执行失败：${message}`, 'error');
     await publishStatus(taskId, 'failed', message);
 
     throw error;
@@ -1330,6 +1579,7 @@ async function bootstrap() {
     },
     {
       connection: workerConnection,
+      prefix: redisConfig.bullPrefix,
       concurrency: workerConcurrency,
     },
   );

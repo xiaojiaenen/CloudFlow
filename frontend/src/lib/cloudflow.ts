@@ -32,9 +32,41 @@ export interface WorkflowCredentialRequirement {
   description?: string;
 }
 
+export interface WorkflowRuntimeCredentialMeta {
+  credentialId: string;
+  credentialName: string;
+  type: WorkflowCredentialRequirementType;
+  provider?: string;
+}
+
 export interface WorkflowRuntimeContext {
   inputs?: Record<string, string>;
   maskedInputs?: Record<string, string>;
+  credentialBindings?: Record<string, string>;
+  maskedCredentials?: Record<string, Record<string, string>>;
+  credentialMetadata?: Record<string, WorkflowRuntimeCredentialMeta>;
+}
+
+export interface CredentialRecord {
+  id: string;
+  name: string;
+  key: string;
+  type: WorkflowCredentialRequirementType;
+  provider?: string | null;
+  description?: string | null;
+  payload: Record<string, unknown>;
+  maskedPayload?: Record<string, string>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CredentialUpsertPayload {
+  name: string;
+  key: string;
+  type: WorkflowCredentialRequirementType;
+  provider?: string;
+  description?: string;
+  payload: Record<string, unknown>;
 }
 
 export interface CanvasNodeData {
@@ -90,6 +122,7 @@ export interface WorkflowRecord {
   alertOnFailure?: boolean;
   createdAt: string;
   updatedAt: string;
+  publishedTemplate?: WorkflowTemplateRecord | null;
 }
 
 export interface WorkflowSchedulePayload {
@@ -189,6 +222,8 @@ export interface WorkflowScheduleRecord {
 export interface WorkflowTemplateRecord {
   id: string;
   slug: string;
+  sourceWorkflowId?: string | null;
+  publisherId?: string | null;
   title: string;
   description: string;
   category: string;
@@ -228,6 +263,7 @@ export interface UserRecord {
   email: string;
   name: string;
   role: "admin" | "user";
+  isSuperAdmin?: boolean;
   status: "active" | "suspended";
   createdAt: string;
   updatedAt: string;
@@ -248,6 +284,7 @@ export interface SystemConfigRecord {
   smtpUser?: string | null;
   smtpPass?: string | null;
   smtpSecure: boolean;
+  smtpIgnoreTlsCertificate: boolean;
   smtpFrom?: string | null;
   minioEndpoint?: string | null;
   minioPort: number;
@@ -273,6 +310,7 @@ export interface SmtpTestResult {
   host: string;
   port: number;
   secure: boolean;
+  ignoreTlsCertificate?: boolean;
   checkedAt: string;
 }
 
@@ -363,7 +401,10 @@ const WS_BASE_URL =
   (import.meta.env.VITE_WS_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "http://localhost:3001";
 const AUTH_STORAGE_KEY = "cloudflow:auth-token";
 
-function buildNodeParams(data: Record<string, unknown>) {
+export function formatNodeParams(data: Record<string, unknown>) {
+  const definition = getNodeDefinition(String(data.type ?? ""));
+  const fieldMap = new Map((definition?.fields ?? []).map((field) => [field.name, field]));
+
   return Object.entries(data)
     .filter(
       ([key, value]) =>
@@ -371,8 +412,17 @@ function buildNodeParams(data: Record<string, unknown>) {
         value !== undefined &&
         value !== "",
     )
-    .map(([key, value]) => `${key}: ${String(value)}`)
-    .join(", ");
+    .map(([key, value]) => {
+      const field = fieldMap.get(key);
+      const displayValue =
+        field?.options?.find((option) => option.value === String(value))?.label ?? String(value);
+      return `${field?.label ?? key}: ${displayValue}`;
+    })
+    .join("，");
+}
+
+function buildNodeParams(data: Record<string, unknown>) {
+  return formatNodeParams(data);
 }
 
 function createNodeData(type: string, extra: Record<string, unknown> = {}): CanvasNodeData {
@@ -768,7 +818,14 @@ export async function testSystemSmtpConnection(payload: Partial<SystemConfigReco
     throw new Error(message);
   }
 
-  return (await response.json()) as SmtpTestResult;
+  const result = (await response.json()) as SmtpTestResult;
+
+  return {
+    ...result,
+    message: `SMTP 连接成功：${result.host}:${result.port}${result.secure ? "（SSL/TLS）" : ""}${
+      result.ignoreTlsCertificate ? "，已忽略证书校验" : ""
+    }`,
+  };
 }
 
 export async function testSystemMinioConnection(payload: Partial<SystemConfigRecord>) {
@@ -798,6 +855,65 @@ export async function testSystemMinioConnection(payload: Partial<SystemConfigRec
   }
 
   return (await response.json()) as MinioTestResult;
+}
+
+export async function listCredentials() {
+  const response = await fetch(`${API_BASE_URL}/credentials`, {
+    headers: buildAuthHeaders(),
+  });
+
+  if (!response.ok) {
+    throw new Error(`读取凭据列表失败 (${response.status})`);
+  }
+
+  return (await response.json()) as CredentialRecord[];
+}
+
+export async function createCredential(payload: CredentialUpsertPayload) {
+  const response = await fetch(`${API_BASE_URL}/credentials`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildAuthHeaders(),
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(`创建凭据失败 (${response.status})`);
+  }
+
+  return (await response.json()) as CredentialRecord;
+}
+
+export async function updateCredential(id: string, payload: CredentialUpsertPayload) {
+  const response = await fetch(`${API_BASE_URL}/credentials/${id}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildAuthHeaders(),
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(`更新凭据失败 (${response.status})`);
+  }
+
+  return (await response.json()) as CredentialRecord;
+}
+
+export async function deleteCredential(id: string) {
+  const response = await fetch(`${API_BASE_URL}/credentials/${id}`, {
+    method: "DELETE",
+    headers: buildAuthHeaders(),
+  });
+
+  if (!response.ok) {
+    throw new Error(`删除凭据失败 (${response.status})`);
+  }
+
+  return (await response.json()) as { id: string; deleted: boolean };
 }
 
 export async function listAdminTemplates(params?: {
@@ -1043,14 +1159,18 @@ export async function listAlerts(params?: {
   return (await response.json()) as PaginatedResponse<AlertRecord>;
 }
 
-export async function runTask(workflowId: string, inputs?: Record<string, string>) {
+export async function runTask(
+  workflowId: string,
+  inputs?: Record<string, string>,
+  credentialBindings?: Record<string, string>,
+) {
   const response = await fetch(`${API_BASE_URL}/tasks/run`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...buildAuthHeaders(),
     },
-    body: JSON.stringify({ workflowId, inputs }),
+    body: JSON.stringify({ workflowId, inputs, credentialBindings }),
   });
 
   if (!response.ok) {

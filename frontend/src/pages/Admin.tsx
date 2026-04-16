@@ -1,6 +1,7 @@
 ﻿import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppTopbar } from "@/src/components/AppTopbar";
+import { InitialAvatar } from "@/src/components/InitialAvatar";
 import { Sidebar } from "@/src/components/Sidebar";
 import { Badge } from "@/src/components/ui/Badge";
 import { Button } from "@/src/components/ui/Button";
@@ -8,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/src
 import { Input } from "@/src/components/ui/Input";
 import { Select } from "@/src/components/ui/Select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/src/components/ui/Tabs";
+import { useAuth } from "@/src/context/AuthContext";
 import { useOverlayDialog } from "@/src/context/OverlayDialogContext";
 import {
   AdminOverviewRecord,
@@ -44,6 +46,7 @@ const emptyConfig: SystemConfigRecord = {
   smtpUser: "",
   smtpPass: "",
   smtpSecure: false,
+  smtpIgnoreTlsCertificate: false,
   smtpFrom: "",
   minioEndpoint: "",
   minioPort: 9000,
@@ -75,6 +78,7 @@ function HealthBadge({ value }: { value: string | boolean }) {
 }
 
 export default function Admin() {
+  const { user } = useAuth();
   const { confirm } = useOverlayDialog();
   const [overview, setOverview] = useState<AdminOverviewRecord | null>(null);
   const [health, setHealth] = useState<HealthRecord | null>(null);
@@ -128,6 +132,12 @@ export default function Admin() {
     featured: templates.filter((item) => item.featured).length,
   }), [templates]);
 
+  const canManageTemplate = useCallback(
+    (template: WorkflowTemplateRecord) =>
+      Boolean(user?.isSuperAdmin || (template.publisherId && template.publisherId === user?.id)),
+    [user?.id, user?.isSuperAdmin],
+  );
+
   const systemConfigPayload = {
     platformName: config.platformName,
     supportEmail: config.supportEmail,
@@ -136,6 +146,7 @@ export default function Admin() {
     smtpUser: config.smtpUser,
     smtpPass: config.smtpPass,
     smtpSecure: config.smtpSecure,
+    smtpIgnoreTlsCertificate: config.smtpIgnoreTlsCertificate,
     smtpFrom: config.smtpFrom,
     minioEndpoint: config.minioEndpoint,
     minioPort: config.minioPort,
@@ -165,7 +176,7 @@ export default function Admin() {
           actions={
             <Button variant="outline" onClick={() => void loadAll()} className="gap-2">
               <RefreshCw className={cn("w-4 h-4", isLoading && "animate-spin")} />
-              刷新后台数据
+              刷新
             </Button>
           }
         />
@@ -261,6 +272,7 @@ export default function Admin() {
                             <div className="text-xs text-zinc-500 mt-1">{user.email}</div>
                           </div>
                           <div className="flex items-center gap-2 flex-wrap">
+                            {user.isSuperAdmin ? <Badge variant="default">超级管理员</Badge> : null}
                             <Badge variant={user.role === "admin" ? "default" : "secondary"}>{user.role === "admin" ? "管理员" : "普通用户"}</Badge>
                             <Badge variant={user.status === "active" ? "success" : "outline"}>{user.status === "active" ? "启用中" : "已停用"}</Badge>
                             <Button variant="outline" size="sm" disabled={activeUserId === user.id} onClick={async () => { const confirmed = await confirm({ title: "切换用户角色", description: `确认将 ${user.name} ${user.role === "admin" ? "改为普通用户" : "提升为管理员"}吗？`, confirmText: "确认切换", cancelText: "取消" }); if (!confirmed) { return; } try { setActiveUserId(user.id); await updateAdminUser(user.id, { role: user.role === "admin" ? "user" : "admin" }); await loadAll(); } finally { setActiveUserId(null); } }}>
@@ -365,27 +377,40 @@ export default function Admin() {
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
-                    {templates.map((template) => (
-                      <div key={template.id} className="rounded-xl border border-white/[0.05] bg-white/[0.02] p-4 flex items-center justify-between gap-4">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <div className="text-sm font-semibold text-zinc-100">{template.title}</div>
-                            <Badge variant={template.published ? "success" : "secondary"}>{template.published ? "已发布" : "草稿"}</Badge>
-                            {template.featured && <Badge variant="default">推荐</Badge>}
+                    {templates.map((template) => {
+                      const isMine = Boolean(template.publisherId && template.publisherId === user?.id);
+
+                      return (
+                        <div key={template.id} className="rounded-xl border border-white/[0.05] bg-white/[0.02] p-4 flex items-center justify-between gap-4">
+                          <div className="min-w-0 flex flex-1 items-start gap-3">
+                            <InitialAvatar name={template.authorName} className="h-9 w-9 rounded-xl text-xs" />
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <div className="text-sm font-semibold text-zinc-100">{template.title}</div>
+                                <Badge variant={template.published ? "success" : "secondary"}>{template.published ? "已发布" : "草稿"}</Badge>
+                                {template.featured && <Badge variant="default">推荐</Badge>}
+                                {isMine ? <Badge variant="secondary">我发布的</Badge> : null}
+                              </div>
+                              <div className="text-xs text-zinc-500 mt-2">
+                                发布者：{template.authorName} · 分类：{template.category || "未分类"} · 安装 {template.installCount.toLocaleString()} 次 · 评分 {template.rating.toFixed(1)}
+                              </div>
+                              <div className="text-sm text-zinc-400 mt-2">{template.description}</div>
+                              {!canManageTemplate(template) ? (
+                                <div className="mt-2 text-xs text-amber-300">仅模板发布者或超级管理员可编辑该模板。</div>
+                              ) : null}
+                            </div>
                           </div>
-                          <div className="text-xs text-zinc-500 mt-2">{template.category} · {template.authorName} · 安装 {template.installCount.toLocaleString()} 次 · 评分 {template.rating.toFixed(1)}</div>
-                          <div className="text-sm text-zinc-400 mt-2">{template.description}</div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <Button variant="outline" size="sm" disabled={!canManageTemplate(template)} title={!canManageTemplate(template) ? "仅模板发布者或超级管理员可更新该模板" : undefined} onClick={async () => { const confirmed = await confirm({ title: template.published ? "下架模板" : "发布模板", description: template.published ? `确认下架模板“${template.title}”吗？` : `确认发布模板“${template.title}”吗？`, confirmText: template.published ? "确认下架" : "确认发布", cancelText: "取消" }); if (!confirmed) { return; } await updateAdminTemplate(template.id, { published: !template.published }); await loadAll(); }}>
+                              {template.published ? "下架" : "发布"}
+                            </Button>
+                            <Button variant="outline" size="sm" disabled={!canManageTemplate(template)} title={!canManageTemplate(template) ? "仅模板发布者或超级管理员可更新该模板" : undefined} onClick={async () => { const confirmed = await confirm({ title: template.featured ? "取消推荐" : "设为推荐", description: template.featured ? `确认取消模板“${template.title}”的推荐位吗？` : `确认将模板“${template.title}”设为推荐吗？`, confirmText: template.featured ? "确认取消" : "确认推荐", cancelText: "取消" }); if (!confirmed) { return; } await updateAdminTemplate(template.id, { featured: !template.featured }); await loadAll(); }}>
+                              {template.featured ? "取消推荐" : "设为推荐"}
+                            </Button>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <Button variant="outline" size="sm" onClick={async () => { const confirmed = await confirm({ title: template.published ? "下架模板" : "发布模板", description: template.published ? `确认下架模板“${template.title}”吗？` : `确认发布模板“${template.title}”吗？`, confirmText: template.published ? "确认下架" : "确认发布", cancelText: "取消" }); if (!confirmed) { return; } await updateAdminTemplate(template.id, { published: !template.published }); await loadAll(); }}>
-                            {template.published ? "下架" : "发布"}
-                          </Button>
-                          <Button variant="outline" size="sm" onClick={async () => { const confirmed = await confirm({ title: template.featured ? "取消推荐" : "设为推荐", description: template.featured ? `确认取消模板“${template.title}”的推荐位吗？` : `确认将模板“${template.title}”设为推荐吗？`, confirmText: template.featured ? "确认取消" : "确认推荐", cancelText: "取消" }); if (!confirmed) { return; } await updateAdminTemplate(template.id, { featured: !template.featured }); await loadAll(); }}>
-                            {template.featured ? "取消推荐" : "设为推荐"}
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </CardContent>
                 </Card>
               </TabsContent>
@@ -401,6 +426,7 @@ export default function Admin() {
                     <Input value={String(config.taskRetentionDays)} onChange={(event) => setConfig((current) => ({ ...current, taskRetentionDays: Number(event.target.value) || 30 }))} placeholder="任务保留天数" />
                     <Input value={String(config.monitorPageSize)} onChange={(event) => setConfig((current) => ({ ...current, monitorPageSize: Number(event.target.value) || 10 }))} placeholder="监控中心分页大小" />
                     <div className="rounded-xl border border-white/[0.05] bg-white/[0.02] p-4 flex items-center justify-between"><div><div className="text-sm text-zinc-100">SMTP SSL/TLS</div><div className="text-xs text-zinc-500 mt-1">开启后使用安全连接发送邮件。</div></div><Button variant="outline" size="sm" onClick={() => setConfig((current) => ({ ...current, smtpSecure: !current.smtpSecure }))}>{config.smtpSecure ? "已开启" : "已关闭"}</Button></div>
+                    <div className="rounded-xl border border-white/[0.05] bg-white/[0.02] p-4 flex items-center justify-between"><div><div className="text-sm text-zinc-100">忽略 TLS 证书校验</div><div className="text-xs text-zinc-500 mt-1">适用于内网 SMTP 或自签名证书环境。生产公网邮箱请谨慎开启。</div></div><Button variant="outline" size="sm" onClick={() => setConfig((current) => ({ ...current, smtpIgnoreTlsCertificate: !current.smtpIgnoreTlsCertificate }))}>{config.smtpIgnoreTlsCertificate ? "已开启" : "已关闭"}</Button></div>
                   </CardContent>
                 </Card>
 
@@ -442,6 +468,7 @@ export default function Admin() {
                                 smtpUser: config.smtpUser,
                                 smtpPass: config.smtpPass,
                                 smtpSecure: config.smtpSecure,
+                                smtpIgnoreTlsCertificate: config.smtpIgnoreTlsCertificate,
                               });
                               setSmtpTestResult(result);
                             } catch (error) {

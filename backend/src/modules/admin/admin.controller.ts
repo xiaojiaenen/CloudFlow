@@ -100,8 +100,11 @@ export class AdminController {
   }
 
   @Post('templates')
-  createTemplate(@Body() payload: CreateTemplateDto) {
-    return this.adminService.createTemplate(payload);
+  createTemplate(
+    @Body() payload: CreateTemplateDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.adminService.createTemplate(payload, request.user);
   }
 
   @Post('templates/publish-from-workflow')
@@ -113,7 +116,11 @@ export class AdminController {
   }
 
   @Patch('templates/:id')
-  updateTemplate(@Param('id') id: string, @Body() payload: UpdateTemplateDto) {
-    return this.adminService.updateTemplate(id, payload);
+  updateTemplate(
+    @Param('id') id: string,
+    @Body() payload: UpdateTemplateDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.adminService.updateTemplate(id, payload, request.user);
   }
 }

@@ -590,7 +590,7 @@ export function MonitorCenter() {
           actions={
             <Button variant="outline" onClick={() => { void loadTasks(); void loadSummary(); }} className="gap-2">
               <RefreshCw className={cn("w-4 h-4", isLoadingTasks && "animate-spin")} />
-              刷新任务
+              刷新
             </Button>
           }
         />

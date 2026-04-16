@@ -6,6 +6,7 @@ export interface AuthenticatedUser {
   email: string;
   name: string;
   role: AuthUserRole;
+  isSuperAdmin: boolean;
   status: AuthUserStatus;
   createdAt: Date;
   updatedAt: Date;

@@ -1,6 +1,5 @@
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { ShieldCheck, UserRound } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { BrandMark } from "@/src/components/BrandMark";
 import { Button } from "@/src/components/ui/Button";
@@ -9,27 +8,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/src
 import { useAuth } from "@/src/context/AuthContext";
 import { BRAND, buildPageTitle } from "@/src/lib/brand";
 
-const quickAccounts = [
-  {
-    label: "管理员",
-    email: "admin@cloudflow.local",
-    password: "Admin123456",
-    icon: ShieldCheck,
-  },
-  {
-    label: "普通用户",
-    email: "user@cloudflow.local",
-    password: "User123456",
-    icon: UserRound,
-  },
-];
-
 export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   const { login } = useAuth();
-  const [email, setEmail] = useState("admin@cloudflow.local");
-  const [password, setPassword] = useState("Admin123456");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
@@ -68,37 +52,14 @@ export default function Login() {
           <BrandMark className="h-14 w-14" />
           <div>
             <div className="text-xs uppercase tracking-[0.28em] text-zinc-500">{BRAND.name}</div>
-            <CardTitle className="mt-2 text-2xl font-semibold tracking-tight">欢迎进入自动化控制台</CardTitle>
+            <CardTitle className="mt-2 text-2xl font-semibold tracking-tight">登录 CloudFlow</CardTitle>
             <CardDescription className="mt-2 text-zinc-400">
-              登录后即可按角色进入工作区、监控中心或管理后台。
+              使用你的正式账号进入工作区、监控中心和管理后台。
             </CardDescription>
           </div>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleLogin} className="space-y-4">
-            <div className="grid grid-cols-2 gap-3">
-              {quickAccounts.map((account) => {
-                const Icon = account.icon;
-                return (
-                  <button
-                    key={account.email}
-                    type="button"
-                    onClick={() => {
-                      setEmail(account.email);
-                      setPassword(account.password);
-                    }}
-                    className="rounded-xl border border-white/[0.08] bg-black/30 px-3 py-3 text-left transition-colors hover:border-sky-500/30 hover:bg-sky-500/5"
-                  >
-                    <div className="flex items-center gap-2 text-sm font-medium text-zinc-100">
-                      <Icon className="h-4 w-4 text-sky-400" />
-                      {account.label}
-                    </div>
-                    <div className="mt-2 text-xs text-zinc-500">{account.email}</div>
-                  </button>
-                );
-              })}
-            </div>
-
             <div className="space-y-2">
               <label htmlFor="email" className="text-sm font-medium text-zinc-300">
                 邮箱地址
@@ -111,16 +72,14 @@ export default function Login() {
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
                 className="border-white/[0.08] bg-black/50 focus-visible:ring-blue-500/50"
+                autoComplete="email"
               />
             </div>
 
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label htmlFor="password" className="text-sm font-medium text-zinc-300">
-                  密码
-                </label>
-                <span className="text-xs text-zinc-500">当前为本地演示账户体系</span>
-              </div>
+              <label htmlFor="password" className="text-sm font-medium text-zinc-300">
+                密码
+              </label>
               <Input
                 id="password"
                 type="password"
@@ -128,13 +87,18 @@ export default function Login() {
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 className="border-white/[0.08] bg-black/50 focus-visible:ring-blue-500/50"
+                autoComplete="current-password"
               />
             </div>
 
-            {errorMessage ? <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">{errorMessage}</div> : null}
+            {errorMessage ? (
+              <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+                {errorMessage}
+              </div>
+            ) : null}
 
             <Button type="submit" className="w-full" disabled={isSubmitting}>
-              {isSubmitting ? "登录中..." : "进入 CloudFlow"}
+              {isSubmitting ? "登录中..." : "登录"}
             </Button>
           </form>
         </CardContent>

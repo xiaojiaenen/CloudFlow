@@ -50,4 +50,6 @@ export interface TaskQueuePayload {
   priority: number;
   workflow: WorkflowDefinition;
   inputs?: Record<string, string>;
+  credentials?: Record<string, Record<string, string>>;
+  credentialBindings?: Record<string, string>;
 }

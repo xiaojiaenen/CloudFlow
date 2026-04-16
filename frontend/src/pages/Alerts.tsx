@@ -126,7 +126,7 @@ export default function Alerts() {
           actions={
             <Button variant="outline" onClick={() => void loadAlerts()} className="gap-2">
               <RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} />
-              刷新告警
+              刷新
             </Button>
           }
         />

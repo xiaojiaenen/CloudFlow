@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { AdminModule } from './modules/admin/admin.module';
 import { AlertModule } from './modules/alert/alert.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { CredentialModule } from './modules/credential/credential.module';
 import { ExecutionModule } from './modules/execution/execution.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { StorageModule } from './modules/storage/storage.module';
@@ -21,6 +22,7 @@ import { WsModule } from './ws/ws.module';
     }),
     PrismaModule,
     AuthModule,
+    CredentialModule,
     AdminModule,
     AlertModule,
     NotificationModule,

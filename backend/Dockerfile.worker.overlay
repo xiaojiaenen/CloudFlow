@@ -1,0 +1,3 @@
+FROM cloudflow-worker:latest
+
+COPY backend/dist/worker/worker.js /app/dist/worker/worker.js

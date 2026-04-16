@@ -164,6 +164,10 @@ export class AuthService implements OnModuleInit {
   }
 
   async ensureDefaultUsers() {
+    if (!this.shouldSeedDefaultUsers()) {
+      return;
+    }
+
     const total = await this.userModel.count();
     if (total > 0) {
       return;
@@ -216,6 +220,10 @@ export class AuthService implements OnModuleInit {
     return this.configService.get<string>('AUTH_TOKEN_SECRET', 'cloudflow-dev-secret');
   }
 
+  private shouldSeedDefaultUsers() {
+    return this.configService.get<string>('SEED_DEFAULT_USERS', 'false') === 'true';
+  }
+
   private toClientUser(user: {
     id: string;
     email: string;
@@ -230,10 +238,27 @@ export class AuthService implements OnModuleInit {
       email: user.email,
       name: user.name,
       role: user.role,
+      isSuperAdmin: this.isSuperAdminEmail(user.email),
       status: user.status,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };
+  }
+
+  private isSuperAdminEmail(email: string) {
+    return this.getSuperAdminEmails().includes(email.trim().toLowerCase());
+  }
+
+  private getSuperAdminEmails() {
+    const raw = this.configService.get<string>(
+      'SUPER_ADMIN_EMAILS',
+      'admin@cloudflow.local',
+    );
+
+    return raw
+      .split(',')
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean);
   }
 
   private get userModel() {

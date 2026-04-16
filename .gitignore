@@ -7,6 +7,7 @@ backend/node_modules/
 dist/
 frontend/dist/
 backend/dist/
+exports/
 
 # Env files
 .env

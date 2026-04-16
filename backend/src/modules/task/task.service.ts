@@ -2,7 +2,9 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, TaskStatus, TaskTriggerSource } from '@prisma/client';
 import {
   buildWorkflowExecutionSnapshot,
+  resolveWorkflowCredentialBindings,
   resolveWorkflowRuntimeInputs,
+  type ResolvableCredentialRecord,
 } from 'src/common/utils/workflow-runtime';
 import { WorkflowDefinition } from 'src/common/types/workflow.types';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -37,16 +39,29 @@ export class TaskService {
       workflowDefinition.inputSchema ?? [],
       runTaskDto.inputs,
     );
+    const taskOwnerId = workflow.ownerId ?? currentUser.id;
+    const credentialRuntime = await this.resolveCredentialRuntime(
+      taskOwnerId,
+      workflowDefinition,
+      runTaskDto.credentialBindings,
+    );
     const executionSnapshot = buildWorkflowExecutionSnapshot(
       workflowDefinition,
       runtimeContext.inputs,
+      workflowDefinition.inputSchema ?? [],
+      workflowDefinition.credentialRequirements ?? [],
+      {
+        bindings: credentialRuntime.bindings,
+        maskedCredentials: credentialRuntime.maskedCredentials,
+        credentialMetadata: credentialRuntime.credentialMetadata,
+      },
     );
     const priority = await this.queueService.resolveTaskPriority('manual');
 
     const task = await this.prismaService.task.create({
       data: {
         workflowId: workflow.id,
-        ownerId: workflow.ownerId ?? currentUser.id,
+        ownerId: taskOwnerId,
         status: 'pending',
         triggerSource: 'manual',
         queuePriority: priority,
@@ -64,6 +79,8 @@ export class TaskService {
       priority,
       workflow: executionSnapshot,
       inputs: runtimeContext.inputs,
+      credentials: credentialRuntime.credentials,
+      credentialBindings: credentialRuntime.bindings,
     });
 
     return task;
@@ -260,7 +277,7 @@ export class TaskService {
             status: 'cancelled',
             cancelRequestedAt: new Date(),
             completedAt: new Date(),
-            errorMessage: 'Task cancelled by user.',
+            errorMessage: '任务已由用户取消。',
           },
           include: {
             workflow: true,
@@ -288,7 +305,7 @@ export class TaskService {
     await this.queueService.requestTaskCancellation(task.id);
     await this.queueService.publishLog(
       task.id,
-      '已发送停止请求，正在等待 Worker 安全终止任务...',
+      '已发送停止请求，正在等待 Worker 安全结束当前任务。',
       'warn',
     );
 
@@ -297,6 +314,14 @@ export class TaskService {
 
   async retry(id: string, currentUser: AuthenticatedUser) {
     const task = await this.getTaskOrThrow(id, currentUser);
+    const workflowSnapshot = task.workflowSnapshot as unknown as WorkflowDefinition;
+    const runtimeInputs = workflowSnapshot.runtime?.inputs ?? {};
+    const credentialBindings = workflowSnapshot.runtime?.credentialBindings ?? {};
+    const credentialRuntime = await this.resolveCredentialRuntime(
+      task.ownerId,
+      workflowSnapshot,
+      credentialBindings,
+    );
     const priority = await this.queueService.resolveTaskPriority('manual');
 
     const retriedTask = await this.prismaService.task.create({
@@ -306,7 +331,17 @@ export class TaskService {
         status: 'pending',
         triggerSource: 'manual',
         queuePriority: priority,
-        workflowSnapshot: task.workflowSnapshot as Prisma.InputJsonValue,
+        workflowSnapshot: buildWorkflowExecutionSnapshot(
+          workflowSnapshot,
+          runtimeInputs,
+          workflowSnapshot.inputSchema ?? [],
+          workflowSnapshot.credentialRequirements ?? [],
+          {
+            bindings: credentialRuntime.bindings,
+            maskedCredentials: credentialRuntime.maskedCredentials,
+            credentialMetadata: credentialRuntime.credentialMetadata,
+          },
+        ) as unknown as Prisma.InputJsonValue,
       },
       include: {
         workflow: true,
@@ -318,17 +353,10 @@ export class TaskService {
       ownerId: retriedTask.ownerId,
       triggerSource: 'manual',
       priority,
-      workflow: task.workflowSnapshot as unknown as WorkflowDefinition,
-      inputs:
-        (
-          task.workflowSnapshot as Record<string, unknown> | null
-        )?.runtime &&
-        typeof (task.workflowSnapshot as Record<string, unknown>).runtime === 'object'
-          ? (((task.workflowSnapshot as Record<string, unknown>).runtime as Record<
-              string,
-              unknown
-            >).inputs as Record<string, string> | undefined) ?? {}
-          : {},
+      workflow: workflowSnapshot,
+      inputs: runtimeInputs,
+      credentials: credentialRuntime.credentials,
+      credentialBindings: credentialRuntime.bindings,
     });
 
     return retriedTask;
@@ -400,6 +428,44 @@ export class TaskService {
     }
 
     return task;
+  }
+
+  private async resolveCredentialRuntime(
+    ownerId: string,
+    workflowDefinition: WorkflowDefinition,
+    providedBindings?: Record<string, unknown>,
+  ) {
+    const bindingIds = Array.from(
+      new Set(
+        Object.values(providedBindings ?? {})
+          .map((value) => String(value ?? '').trim())
+          .filter(Boolean),
+      ),
+    );
+
+    const credentials: ResolvableCredentialRecord[] = bindingIds.length
+      ? await this.prismaService.credential.findMany({
+          where: {
+            ownerId,
+            id: {
+              in: bindingIds,
+            },
+          },
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            provider: true,
+            payload: true,
+          },
+        })
+      : [];
+
+    return resolveWorkflowCredentialBindings(
+      workflowDefinition.credentialRequirements ?? [],
+      providedBindings,
+      credentials,
+    );
   }
 
   private isTaskStatus(value?: string): value is TaskStatus {

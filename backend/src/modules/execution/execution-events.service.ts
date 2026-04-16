@@ -1,7 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
-import IORedis from 'ioredis';
 import { TASK_EVENTS_CHANNEL } from 'src/common/constants/redis.constants';
 import {
   TaskExecutionEvent,
@@ -14,11 +13,16 @@ import { NotificationService } from 'src/modules/notification/notification.servi
 import { TaskArtifactStorageService } from 'src/modules/storage/task-artifact-storage.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { TaskEventsGateway } from 'src/ws/task-events.gateway';
+import {
+  createRedisConnection,
+  resolveRedisConfig,
+  type RedisConnection,
+} from 'src/common/utils/redis-connection';
 
 @Injectable()
 export class ExecutionEventsService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ExecutionEventsService.name);
-  private readonly subscriber: IORedis;
+  private readonly subscriber: RedisConnection;
   private readonly taskWriteChains = new Map<string, Promise<void>>();
   private readonly taskSequences = new Map<string, number>();
   private readonly lastPersistedScreenshotAt = new Map<string, number>();
@@ -32,11 +36,11 @@ export class ExecutionEventsService implements OnModuleInit, OnModuleDestroy {
     private readonly taskEventsGateway: TaskEventsGateway,
     private readonly storageService: TaskArtifactStorageService,
   ) {
-    const redisUrl = this.configService.get<string>('REDIS_URL', 'redis://127.0.0.1:6379');
-
-    this.subscriber = new IORedis(redisUrl, {
+    const redisConfig = resolveRedisConfig(this.configService);
+    this.subscriber = createRedisConnection(redisConfig, {
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
+      connectionName: 'cloudflow-events-subscriber',
     });
   }
 

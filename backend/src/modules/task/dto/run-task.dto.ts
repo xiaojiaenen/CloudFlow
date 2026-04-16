@@ -7,4 +7,8 @@ export class RunTaskDto {
   @IsOptional()
   @IsObject()
   inputs?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsObject()
+  credentialBindings?: Record<string, unknown>;
 }

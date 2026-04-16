@@ -40,6 +40,10 @@ export class UpdateSystemConfigDto {
   smtpSecure?: boolean;
 
   @IsOptional()
+  @IsBoolean()
+  smtpIgnoreTlsCertificate?: boolean;
+
+  @IsOptional()
   @IsString()
   smtpFrom?: string;
 
