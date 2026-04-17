@@ -9,6 +9,7 @@ import {
   sanitizeNodeFieldValues,
   shouldShowNodeField,
 } from "@/src/lib/cloudflow/canvas";
+import { cn } from "@/src/lib/utils";
 import { getNodeDefinition } from "@/src/registry/nodes";
 
 interface NodeConfigPanelProps {
@@ -52,6 +53,17 @@ function mergeTemplateValue(
   }
 
   return appendTemplate(currentValue, template);
+}
+
+function getExtractSaveTargetDescription(value: string) {
+  switch (value) {
+    case "variable":
+      return "结果写入变量，适合给后续节点继续引用。";
+    case "task_output":
+      return "结果只保存在任务快照里，方便监控和复盘。";
+    default:
+      return "既写入变量，也保存在任务快照里，兼顾复用和复盘。";
+  }
 }
 
 export function NodeConfigPanel({
@@ -213,7 +225,42 @@ export function NodeConfigPanel({
                   ) : null}
                 </div>
 
-                {field.type === "select" ? (
+                {field.type === "select" && nodeType === "extract" && field.name === "saveTarget" ? (
+                  <div className="grid gap-3 md:grid-cols-3">
+                    {(field.options ?? []).map((option) => {
+                      const active = currentValue === option.value;
+
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => handleChange(field.name, option.value)}
+                          className={cn(
+                            "rounded-2xl border p-4 text-left transition-all",
+                            active
+                              ? "border-sky-400/50 bg-sky-500/12 shadow-[0_0_0_1px_rgba(56,189,248,0.18)]"
+                              : "border-white/[0.06] bg-black/20 hover:border-white/[0.16] hover:bg-white/[0.03]",
+                          )}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-sm font-medium text-zinc-100">{option.label}</div>
+                            <div
+                              className={cn(
+                                "h-3 w-3 rounded-full border",
+                                active
+                                  ? "border-sky-300 bg-sky-300 shadow-[0_0_14px_rgba(125,211,252,0.45)]"
+                                  : "border-white/20 bg-transparent",
+                              )}
+                            />
+                          </div>
+                          <div className="mt-2 text-xs leading-5 text-zinc-400">
+                            {getExtractSaveTargetDescription(option.value)}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : field.type === "select" ? (
                   <Select
                     value={currentValue}
                     onChange={(value) => handleChange(field.name, value)}

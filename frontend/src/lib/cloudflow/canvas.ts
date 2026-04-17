@@ -10,6 +10,38 @@ import type {
   WorkflowInputField,
 } from "./types";
 
+function migrateLegacyNodeFieldValues(
+  nodeType: string | undefined,
+  data: Record<string, unknown>,
+) {
+  if (nodeType !== "extract") {
+    return { ...data };
+  }
+
+  const nextData = { ...data };
+  const saveKey = String(nextData.saveKey ?? nextData.saveAs ?? "").trim();
+  const saveTarget = String(nextData.saveTarget ?? "").trim();
+
+  if (!nextData.targetMode) {
+    nextData.targetMode = "first";
+  }
+
+  if (!nextData.resultFormat) {
+    nextData.resultFormat = "json_array";
+  }
+
+  if (saveKey && !nextData.saveKey) {
+    nextData.saveKey = saveKey;
+  }
+
+  if (!saveTarget) {
+    nextData.saveTarget = saveKey ? "both" : "task_output";
+  }
+
+  delete nextData.saveAs;
+  return nextData;
+}
+
 export function shouldShowNodeField(
   nodeType: string | undefined,
   fieldName: string,
@@ -24,6 +56,10 @@ export function shouldShowNodeField(
       return ["up", "down"].includes(String(data.direction ?? "down"));
     case "extract:attributeName":
       return String(data.property ?? "text") === "attribute";
+    case "extract:resultFormat":
+      return String(data.targetMode ?? "first") === "all";
+    case "extract:joinWith":
+      return String(data.targetMode ?? "first") === "all" && String(data.resultFormat ?? "json_array") === "join";
     case "screenshot:selector":
       return String(data.scope ?? "viewport") === "element";
     default:
@@ -37,10 +73,10 @@ export function sanitizeNodeFieldValues(
 ) {
   const definition = getNodeDefinition(nodeType ?? "");
   if (!definition) {
-    return { ...data };
+    return migrateLegacyNodeFieldValues(nodeType, data);
   }
 
-  const nextData = { ...data };
+  const nextData = migrateLegacyNodeFieldValues(nodeType, data);
 
   definition.fields.forEach((field) => {
     if (field.type === "select") {
@@ -340,12 +376,21 @@ export function buildWorkflowDefinition(
           baseNode.distance = normalizeNumericNodeValue(nodeData.distance, 500);
         }
       } else if (type === "extract") {
+        const saveKey = String(nodeData.saveKey ?? nodeData.saveAs ?? "");
         baseNode.selector = String(nodeData.selector ?? "");
         baseNode.property = String(nodeData.property ?? "text");
+        baseNode.targetMode = String(nodeData.targetMode ?? "first");
         if (shouldShowNodeField(type, "attributeName", nodeData)) {
           baseNode.attributeName = String(nodeData.attributeName ?? "");
         }
-        baseNode.saveAs = String(nodeData.saveAs ?? "");
+        if (shouldShowNodeField(type, "resultFormat", nodeData)) {
+          baseNode.resultFormat = String(nodeData.resultFormat ?? "json_array");
+        }
+        if (shouldShowNodeField(type, "joinWith", nodeData)) {
+          baseNode.joinWith = String(nodeData.joinWith ?? ", ");
+        }
+        baseNode.saveTarget = String(nodeData.saveTarget ?? (saveKey ? "both" : "task_output"));
+        baseNode.saveKey = saveKey;
       } else if (type === "screenshot") {
         baseNode.scope = String(nodeData.scope ?? "viewport");
         if (shouldShowNodeField(type, "selector", nodeData)) {
@@ -367,14 +412,17 @@ export function buildWorkflowDefinition(
 export function hydrateCanvasFromWorkflow(definition?: WorkflowApiDefinition | null): WorkflowCanvasSnapshot {
   if (definition?.canvas?.nodes?.length) {
     return {
-      nodes: definition.canvas.nodes.map((node) => ({
-        ...node,
-        data: {
-          ...node.data,
-          params: buildNodeParams(node.data),
-          status: "idle",
-        } as CanvasNodeData,
-      })),
+      nodes: definition.canvas.nodes.map((node) => {
+        const nodeData = sanitizeNodeFieldValues(String(node.data.type ?? ""), node.data);
+        return {
+          ...node,
+          data: {
+            ...nodeData,
+            params: buildNodeParams(nodeData),
+            status: "idle",
+          } as CanvasNodeData,
+        };
+      }),
       edges: definition.canvas.edges.map((edge) => ({ ...edge })),
     };
   }
@@ -387,7 +435,7 @@ export function hydrateCanvasFromWorkflow(definition?: WorkflowApiDefinition | n
     const type = String(node.type ?? "unknown");
     const nodeId = String(node.clientNodeId ?? index + 1);
     const data = createNodeData(type, {
-      ...node,
+      ...migrateLegacyNodeFieldValues(type, node),
       type,
     });
 
@@ -413,10 +461,10 @@ export function hydrateCanvasFromWorkflow(definition?: WorkflowApiDefinition | n
 
 export function sanitizeCanvasNodes(nodes: Node<CanvasNodeData>[]): SanitizedCanvasNode[] {
   return nodes.map((node) => {
-    const data = {
+    const data = sanitizeNodeFieldValues(String(node.data.type ?? ""), {
       ...node.data,
       status: undefined,
-    };
+    }) as CanvasNodeData;
 
     return {
       id: node.id,

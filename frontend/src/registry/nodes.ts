@@ -432,6 +432,17 @@ export const nodeRegistry: NodeDefinition[] = [
         ],
       },
       {
+        name: "targetMode",
+        label: "提取模式",
+        type: "select",
+        defaultValue: "first",
+        options: [
+          { label: "首个匹配项", value: "first" },
+          { label: "全部匹配项", value: "all" },
+          { label: "匹配数量", value: "count" },
+        ],
+      },
+      {
         name: "attributeName",
         label: "属性名",
         type: "text",
@@ -439,7 +450,35 @@ export const nodeRegistry: NodeDefinition[] = [
         description: "仅当提取内容为“指定属性”时需要填写。",
       },
       {
-        name: "saveAs",
+        name: "resultFormat",
+        label: "结果格式",
+        type: "select",
+        defaultValue: "json_array",
+        options: [
+          { label: "JSON 数组", value: "json_array" },
+          { label: "按分隔符拼接", value: "join" },
+        ],
+      },
+      {
+        name: "joinWith",
+        label: "拼接分隔符",
+        type: "text",
+        placeholder: ", ",
+        description: "仅在“全部匹配项 + 按分隔符拼接”时生效。",
+      },
+      {
+        name: "saveTarget",
+        label: "保存位置",
+        type: "select",
+        defaultValue: "both",
+        options: [
+          { label: "变量 + 任务结果", value: "both" },
+          { label: "变量", value: "variable" },
+          { label: "任务结果", value: "task_output" },
+        ],
+      },
+      {
+        name: "saveKey",
         label: "保存为变量",
         type: "text",
         placeholder: "priceText",

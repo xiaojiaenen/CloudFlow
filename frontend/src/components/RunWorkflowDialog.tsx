@@ -243,7 +243,7 @@ export function RunWorkflowDialog({
                     {availableCredentials.length === 0 ? (
                       <div className="mt-3 flex items-start gap-2 rounded-2xl border border-amber-500/10 bg-amber-500/5 px-3 py-3 text-xs text-amber-100">
                         <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                        当前凭据库里没有匹配这项需求的凭据。请先到“参数与凭据”里创建对应凭据。
+                        当前凭据库里没有匹配这项需求的凭据。请先到“凭据库”页面创建对应凭据。
                       </div>
                     ) : null}
                   </div>

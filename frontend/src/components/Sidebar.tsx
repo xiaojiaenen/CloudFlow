@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  KeyRound,
   LayoutGrid,
   MoreHorizontal,
   PanelLeftClose,
@@ -15,7 +16,6 @@ import {
   RotateCcw,
   Search,
   Settings,
-  ShieldAlert,
   Store,
   Trash2,
 } from "lucide-react";
@@ -53,8 +53,8 @@ import { Input } from "@/src/components/ui/Input";
 const navItems = [
   { path: "/", icon: LayoutGrid, label: "我的工作区" },
   { path: "/monitor", icon: Activity, label: "监控中心" },
+  { path: "/credentials", icon: KeyRound, label: "凭据库" },
   { path: "/store", icon: Store, label: "工作流商店" },
-  { path: "/alerts", icon: ShieldAlert, label: "告警中心" },
   { path: "/admin", icon: Settings, label: "管理后台" },
   { path: "/settings", icon: CalendarClock, label: "调度管理中心" },
 ];
@@ -138,7 +138,12 @@ export function Sidebar() {
   }, [fetchWorkflows]);
 
   const visibleNavItems = useMemo(
-    () => navItems.filter((item) => item.path !== "/admin" || user?.role === "admin"),
+    () =>
+      navItems
+        .map((item) =>
+          item.path === "/settings" ? { ...item, label: "个人中心" } : item,
+        )
+        .filter((item) => item.path !== "/admin" || user?.role === "admin"),
     [user?.role],
   );
 

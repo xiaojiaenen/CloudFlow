@@ -15,7 +15,8 @@ export class CreateUserDto {
   @IsIn(['active', 'suspended'])
   status?: 'active' | 'suspended';
 
+  @IsOptional()
   @IsString()
   @MinLength(8)
-  password!: string;
+  password?: string;
 }

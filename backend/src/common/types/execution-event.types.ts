@@ -27,7 +27,12 @@ export interface TaskStatusPayload {
 export interface TaskExtractPayload {
   selector: string;
   property: string;
-  value: string;
+  targetMode: 'first' | 'all' | 'count';
+  resultFormat?: 'json_array' | 'join';
+  saveTarget: 'variable' | 'task_output' | 'both';
+  saveKey?: string;
+  itemCount: number;
+  value: string | string[] | number;
   preview: string;
   nodeId?: string;
   timestamp: string;

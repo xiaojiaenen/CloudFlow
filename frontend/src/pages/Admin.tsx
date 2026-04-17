@@ -15,6 +15,7 @@ import { useOverlayDialog } from "@/src/context/OverlayDialogContext";
 import { useDebouncedValue } from "@/src/hooks/useDebouncedValue";
 import {
   AdminOverviewRecord,
+  CreatedUserResult,
   createAdminTemplate,
   createAdminUser,
   getAdminOverview,
@@ -100,6 +101,7 @@ export default function Admin() {
   const [isCreatingTemplate, setIsCreatingTemplate] = useState(false);
   const [isCreatingUser, setIsCreatingUser] = useState(false);
   const [activeUserId, setActiveUserId] = useState<string | null>(null);
+  const [createdUserResult, setCreatedUserResult] = useState<CreatedUserResult | null>(null);
   const [resetPasswordResult, setResetPasswordResult] = useState<ResetUserPasswordResult | null>(null);
   const [smtpTestResult, setSmtpTestResult] = useState<SmtpTestResult | null>(null);
   const [smtpTestError, setSmtpTestError] = useState<string | null>(null);
@@ -282,13 +284,22 @@ export default function Admin() {
           <div className="max-w-7xl mx-auto space-y-8">
             {resetPasswordResult && (
               <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-                {resetPasswordResult.email} 的临时密码：<span className="font-mono">{resetPasswordResult.temporaryPassword}</span>
+                {resetPasswordResult.email} 的临时密码：
+                <span className="font-mono"> {resetPasswordResult.temporaryPassword}</span>
+                {resetPasswordResult.emailSent ? "，重置邮件已自动发送。" : "，当前未发送邮件，请手动通知用户。"}
               </div>
             )}
+            {createdUserResult?.temporaryPassword ? (
+              <div className="rounded-xl border border-sky-500/20 bg-sky-500/10 px-4 py-3 text-sm text-sky-100">
+                {createdUserResult.email} 已使用系统默认密码创建：
+                <span className="font-mono"> {createdUserResult.temporaryPassword}</span>
+                {createdUserResult.welcomeEmailSent ? "，欢迎邮件已自动发送。" : "，当前未发送欢迎邮件，请手动把密码通知给用户。"}
+              </div>
+            ) : null}
 
             <Tabs value={activeTab} onValueChange={setActiveTab}>
               <TabsList className="sticky top-0 z-10 w-fit backdrop-blur-md">
-                <TabsTrigger value="overview">角色与总览</TabsTrigger>
+                <TabsTrigger value="overview">总览与用户</TabsTrigger>
                 <TabsTrigger value="templates">模板后台</TabsTrigger>
                 <TabsTrigger value="system">系统配置</TabsTrigger>
               </TabsList>
@@ -303,22 +314,36 @@ export default function Admin() {
                 </div>
 
                 <Card>
-                  <CardHeader>
-                    <CardTitle>角色能力边界</CardTitle>
-                    <CardDescription>管理员负责平台治理，普通用户专注自己的工作流与任务。</CardDescription>
+                  <CardHeader className="pb-4">
+                    <CardTitle>角色摘要</CardTitle>
+                    <CardDescription>保留一眼能看懂的边界信息，把总览空间让给用户管理和平台动作。</CardDescription>
                   </CardHeader>
-                  <CardContent className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <CardContent className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                     {overview?.roleMatrix.map((role) => (
-                      <div key={role.key} className="rounded-xl border border-white/[0.05] bg-white/[0.02] p-5 space-y-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <div className="text-lg font-semibold text-zinc-100">{role.name}</div>
-                            <div className="text-sm text-zinc-400 mt-1">{role.summary}</div>
+                      <div key={role.key} className="rounded-xl border border-white/[0.05] bg-white/[0.02] p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-base font-semibold text-zinc-100">{role.name}</div>
+                            <div className="mt-1 text-sm text-zinc-400">{role.summary}</div>
                           </div>
-                          <Badge variant={role.key === "admin" ? "default" : "secondary"}>{role.key === "admin" ? "平台角色" : "业务角色"}</Badge>
+                          <Badge variant={role.key === "admin" ? "default" : "secondary"}>
+                            {role.key === "admin" ? "平台角色" : "业务角色"}
+                          </Badge>
                         </div>
-                        <div className="space-y-2 text-sm text-zinc-300">
-                          {role.capabilities.map((item) => <div key={item} className="rounded-lg border border-white/[0.05] bg-black/20 px-3 py-2">{item}</div>)}
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          {role.capabilities.slice(0, 3).map((item) => (
+                            <span
+                              key={item}
+                              className="rounded-full border border-white/[0.06] bg-black/20 px-2.5 py-1 text-[11px] text-zinc-300"
+                            >
+                              {item}
+                            </span>
+                          ))}
+                          {role.capabilities.length > 3 ? (
+                            <span className="rounded-full border border-sky-500/15 bg-sky-500/10 px-2.5 py-1 text-[11px] text-sky-200">
+                              其余 {role.capabilities.length - 3} 项能力
+                            </span>
+                          ) : null}
                         </div>
                       </div>
                     ))}
@@ -328,7 +353,7 @@ export default function Admin() {
                 <Card>
                   <CardHeader>
                     <CardTitle>用户管理</CardTitle>
-                    <CardDescription>支持创建用户、切换角色、停用账号和重置密码。</CardDescription>
+                    <CardDescription>支持创建用户、切换角色、停用账号和重置密码。已配置 SMTP 时会自动发送欢迎邮件和密码重置邮件。</CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-5">
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
@@ -342,18 +367,32 @@ export default function Admin() {
                           { value: "admin", label: "管理员", description: "可管理用户、模板与系统配置", group: "角色" },
                         ]}
                       />
-                      <Input value={newUser.password} onChange={(event) => setNewUser((current) => ({ ...current, password: event.target.value }))} placeholder="初始密码，至少 8 位" type="password" />
+                      <Input value={newUser.password} onChange={(event) => setNewUser((current) => ({ ...current, password: event.target.value }))} placeholder="初始密码，可留空自动生成" type="password" />
+                    </div>
+                    <div className="rounded-xl border border-white/[0.05] bg-white/[0.02] px-4 py-3 text-xs leading-6 text-zinc-400">
+                      创建用户时密码可以留空，系统会自动生成默认密码。
+                      如果管理员已经配置 SMTP，欢迎邮件会自动发送到该用户邮箱，并附带登录密码。
                     </div>
                     <div className="flex justify-end">
                       <Button
-                        disabled={isCreatingUser || !newUser.name.trim() || !newUser.email.trim() || newUser.password.trim().length < 8}
+                        disabled={isCreatingUser || !newUser.name.trim() || !newUser.email.trim() || (newUser.password.trim().length > 0 && newUser.password.trim().length < 8)}
                         onClick={async () => {
                           try {
                             setIsCreatingUser(true);
-                            await createAdminUser({ name: newUser.name.trim(), email: newUser.email.trim(), role: newUser.role, password: newUser.password });
+                            const result = await createAdminUser({ name: newUser.name.trim(), email: newUser.email.trim(), role: newUser.role, password: newUser.password.trim() || undefined });
+                            setCreatedUserResult(result);
+                            setResetPasswordResult(null);
                             setNewUser({ email: "", name: "", role: "user", password: "" });
                             await loadOverviewSection();
-                            notify({ tone: "success", title: "用户已创建", description: "新用户已经加入平台。" });
+                            notify({
+                              tone: result.welcomeEmailSent ? "success" : "warning",
+                              title: "用户已创建",
+                              description: result.welcomeEmailSent
+                                ? "欢迎邮件已自动发送。"
+                                : result.temporaryPassword
+                                  ? "当前未发送欢迎邮件，请手动通知默认密码。"
+                                  : "新用户已经加入平台。",
+                            });
                           } catch (error) {
                             notify({ tone: "error", title: "创建用户失败", description: error instanceof Error ? error.message : "请稍后重试。" });
                           } finally {
@@ -381,7 +420,7 @@ export default function Admin() {
                             <Button variant="outline" size="sm" disabled={activeUserId === user.id} onClick={async () => { const confirmed = await confirm({ title: user.status === "active" ? "停用用户" : "恢复用户", description: user.status === "active" ? `确认停用 ${user.name} 吗？停用后该用户将无法登录。` : `确认恢复 ${user.name} 吗？恢复后该用户可以重新登录。`, confirmText: user.status === "active" ? "确认停用" : "确认恢复", cancelText: "取消", tone: user.status === "active" ? "danger" : "default" }); if (!confirmed) { return; } try { setActiveUserId(user.id); await updateAdminUser(user.id, { status: user.status === "active" ? "suspended" : "active" }); await loadOverviewSection(); notify({ tone: "success", title: user.status === "active" ? "用户已停用" : "用户已恢复", description: `${user.name} 的账号状态已更新。` }); } catch (error) { notify({ tone: "error", title: "更新用户状态失败", description: error instanceof Error ? error.message : "请稍后重试。" }); } finally { setActiveUserId(null); } }}>
                               {user.status === "active" ? "停用用户" : "恢复启用"}
                             </Button>
-                            <Button variant="outline" size="sm" disabled={activeUserId === user.id} onClick={async () => { const confirmed = await confirm({ title: "重置用户密码", description: `确认重置 ${user.name} 的登录密码吗？系统将生成新的临时密码。`, confirmText: "确认重置", cancelText: "取消", tone: "danger" }); if (!confirmed) { return; } try { setActiveUserId(user.id); setResetPasswordResult(await resetAdminUserPassword(user.id)); notify({ tone: "success", title: "密码已重置", description: `${user.name} 的临时密码已经生成。` }); } catch (error) { notify({ tone: "error", title: "重置密码失败", description: error instanceof Error ? error.message : "请稍后重试。" }); } finally { setActiveUserId(null); } }}>
+                            <Button variant="outline" size="sm" disabled={activeUserId === user.id} onClick={async () => { const confirmed = await confirm({ title: "重置用户密码", description: `确认重置 ${user.name} 的登录密码吗？系统将生成新的临时密码。`, confirmText: "确认重置", cancelText: "取消", tone: "danger" }); if (!confirmed) { return; } try { setActiveUserId(user.id); setCreatedUserResult(null); const result = await resetAdminUserPassword(user.id); setResetPasswordResult(result); notify({ tone: result.emailSent ? "success" : "warning", title: "密码已重置", description: result.emailSent ? `${user.name} 的重置邮件已自动发送。` : `${user.name} 的临时密码已经生成，请手动通知用户。` }); } catch (error) { notify({ tone: "error", title: "重置密码失败", description: error instanceof Error ? error.message : "请稍后重试。" }); } finally { setActiveUserId(null); } }}>
                               重置密码
                             </Button>
                           </div>

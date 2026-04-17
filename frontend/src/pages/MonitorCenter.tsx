@@ -3,13 +3,17 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertCircle,
+  AlertTriangle,
   BarChart3,
+  Bell,
   Camera,
   CheckCircle2,
+  Copy,
   ChevronLeft,
   ChevronRight,
   Clock3,
   Cpu,
+  Download,
   FileSearch,
   LoaderCircle,
   RefreshCw,
@@ -25,10 +29,23 @@ import { Chart } from "@/src/components/ui/Chart";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/src/components/ui/Dialog";
 import { Input } from "@/src/components/ui/Input";
 import { Select } from "@/src/components/ui/Select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/src/components/ui/Table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/src/components/ui/Tabs";
 import { useNotice } from "@/src/context/NoticeContext";
 import { useDebouncedValue } from "@/src/hooks/useDebouncedValue";
-import { cancelTask, getTask, getTaskExecutionScreenshotSrc, getTaskSummary, listTasks, retryTask, TaskExecutionRecord, TaskRecord, TaskSummaryRecord } from "@/src/lib/cloudflow";
+import {
+  AlertRecord,
+  cancelTask,
+  getTask,
+  getTaskExecutionScreenshotSrc,
+  getTaskSummary,
+  listAlerts,
+  listTasks,
+  retryTask,
+  TaskExecutionRecord,
+  TaskRecord,
+  TaskSummaryRecord,
+} from "@/src/lib/cloudflow";
 import { cn } from "@/src/lib/utils";
 
 function formatDateTime(value?: string | null) {
@@ -113,6 +130,93 @@ function getPayloadString(payload: Record<string, unknown> | null | undefined, k
   return typeof value === "string" ? value : "";
 }
 
+function getPayloadNumber(payload: Record<string, unknown> | null | undefined, key: string) {
+  const value = payload?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function getExtractPayloadValue(payload: Record<string, unknown> | null | undefined) {
+  const value = payload?.value;
+
+  if (Array.isArray(value)) {
+    return JSON.stringify(value, null, 2);
+  }
+
+  if (typeof value === "number") {
+    return String(value);
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  return "";
+}
+
+function getExtractModeLabel(mode?: string) {
+  switch (mode) {
+    case "all":
+      return "全部匹配项";
+    case "count":
+      return "匹配数量";
+    default:
+      return "首个匹配项";
+  }
+}
+
+function getExtractSaveTargetLabel(target?: string) {
+  switch (target) {
+    case "variable":
+      return "变量";
+    case "task_output":
+      return "任务结果";
+    default:
+      return "变量 + 任务结果";
+  }
+}
+
+function getExtractResultFormatLabel(format?: string) {
+  switch (format) {
+    case "join":
+      return "按分隔符拼接";
+    case "json_array":
+      return "JSON 数组";
+    default:
+      return "--";
+  }
+}
+
+function createExtractExportRecord(event: TaskExecutionRecord) {
+  return {
+    id: event.id,
+    nodeId: event.nodeId ?? null,
+    createdAt: event.createdAt,
+    selector: getPayloadString(event.payload, "selector") || null,
+    property: getPayloadString(event.payload, "property") || "text",
+    targetMode: getPayloadString(event.payload, "targetMode") || "first",
+    saveTarget: getPayloadString(event.payload, "saveTarget") || "both",
+    saveKey: getPayloadString(event.payload, "saveKey") || null,
+    itemCount: getPayloadNumber(event.payload, "itemCount"),
+    resultFormat: getPayloadString(event.payload, "resultFormat") || null,
+    value: event.payload?.value ?? null,
+    preview: getPayloadString(event.payload, "preview") || null,
+  };
+}
+
+function downloadJsonFile(filename: string, payload: unknown) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {
+    type: "application/json;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
 function getExecutionEventMeta(event: TaskExecutionRecord) {
   if (event.type === "status") {
     const statusMeta = getStatusMeta((event.status ?? "pending") as TaskRecord["status"]);
@@ -151,6 +255,30 @@ function getExecutionEventMeta(event: TaskExecutionRecord) {
     label: "执行日志",
     className: "bg-sky-500/10 text-sky-300 border border-sky-500/20",
     icon: SquareTerminal,
+  };
+}
+
+function getAlertMeta(level: AlertRecord["level"]) {
+  if (level === "success") {
+    return {
+      icon: CheckCircle2,
+      label: "成功",
+      className: "border border-emerald-500/20 bg-emerald-500/10 text-emerald-300",
+    };
+  }
+
+  if (level === "warning") {
+    return {
+      icon: AlertTriangle,
+      label: "告警",
+      className: "border border-amber-500/20 bg-amber-500/10 text-amber-300",
+    };
+  }
+
+  return {
+    icon: XCircle,
+    label: "错误",
+    className: "border border-red-500/20 bg-red-500/10 text-red-300",
   };
 }
 
@@ -199,7 +327,11 @@ function CompactMetric({ label, value, colorClass }: { label: string; value: num
 export function MonitorCenter() {
   const [searchParams, setSearchParams] = useSearchParams();
   const taskIdFromQuery = searchParams.get("taskId");
+  const viewFromQuery = searchParams.get("view");
   const { notify } = useNotice();
+  const [activeView, setActiveView] = useState<"tasks" | "alerts">(() =>
+    viewFromQuery === "alerts" ? "alerts" : "tasks",
+  );
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<TaskRecord["status"] | "all">("all");
@@ -220,6 +352,14 @@ export function MonitorCenter() {
   const [mutatingTaskId, setMutatingTaskId] = useState<string | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [alerts, setAlerts] = useState<AlertRecord[]>([]);
+  const [alertPage, setAlertPage] = useState(1);
+  const [alertPageSize] = useState(10);
+  const [alertLevelFilter, setAlertLevelFilter] = useState<AlertRecord["level"] | "all">("all");
+  const [alertTotal, setAlertTotal] = useState(0);
+  const [alertTotalPages, setAlertTotalPages] = useState(1);
+  const [isLoadingAlerts, setIsLoadingAlerts] = useState(false);
+  const [alertError, setAlertError] = useState<string | null>(null);
   const debouncedSearch = useDebouncedValue(search, 350);
 
   const loadTasks = useCallback(async () => {
@@ -282,6 +422,25 @@ export function MonitorCenter() {
     }
   }, []);
 
+  const loadAlerts = useCallback(async () => {
+    try {
+      setIsLoadingAlerts(true);
+      const data = await listAlerts({
+        page: alertPage,
+        pageSize: alertPageSize,
+        level: alertLevelFilter === "all" ? undefined : alertLevelFilter,
+      });
+      setAlerts(data.items);
+      setAlertTotal(data.total);
+      setAlertTotalPages(data.totalPages);
+      setAlertError(null);
+    } catch (error) {
+      setAlertError(error instanceof Error ? error.message : "加载告警列表失败。");
+    } finally {
+      setIsLoadingAlerts(false);
+    }
+  }, [alertLevelFilter, alertPage, alertPageSize]);
+
   useEffect(() => {
     void loadTasks();
     void loadSummary();
@@ -295,8 +454,56 @@ export function MonitorCenter() {
   }, [loadSummary, loadTasks]);
 
   useEffect(() => {
+    if (activeView !== "alerts") {
+      return;
+    }
+
+    void loadAlerts();
+
+    const interval = window.setInterval(() => {
+      void loadAlerts();
+    }, 10000);
+
+    return () => window.clearInterval(interval);
+  }, [activeView, loadAlerts]);
+
+  useEffect(() => {
     setTaskPage(1);
   }, [search, statusFilter, triggerFilter]);
+
+  useEffect(() => {
+    setAlertPage(1);
+  }, [alertLevelFilter]);
+
+  useEffect(() => {
+    const nextView = viewFromQuery === "alerts" ? "alerts" : "tasks";
+    setActiveView((current) => (current === nextView ? current : nextView));
+  }, [viewFromQuery]);
+
+  useEffect(() => {
+    setSearchParams(
+      (current) => {
+        const currentView = current.get("view");
+        if (activeView === "alerts") {
+          if (currentView === "alerts") {
+            return current;
+          }
+          const next = new URLSearchParams(current);
+          next.set("view", "alerts");
+          return next;
+        }
+
+        if (!currentView) {
+          return current;
+        }
+
+        const next = new URLSearchParams(current);
+        next.delete("view");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [activeView, setSearchParams]);
 
   useEffect(() => {
     if (!selectedTaskId && taskIdFromQuery) {
@@ -385,6 +592,70 @@ export function MonitorCenter() {
 
     setSelectedScreenshotId(screenshotEvents[activeScreenshotIndex + 1].id);
   }, [activeScreenshotIndex, screenshotEvents]);
+
+  const copyExtractResult = useCallback(
+    async (event: TaskExecutionRecord) => {
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(createExtractExportRecord(event), null, 2));
+        notify({
+          title: "提取结果已复制",
+          description: "结果内容已经复制到剪贴板，可直接粘贴到排查记录或工单里。",
+          tone: "success",
+        });
+      } catch (error) {
+        notify({
+          title: "复制失败",
+          description: error instanceof Error ? error.message : "当前环境暂时无法访问剪贴板。",
+          tone: "error",
+        });
+      }
+    },
+    [notify],
+  );
+
+  const exportExtractResult = useCallback(
+    (event: TaskExecutionRecord) => {
+      const nodeSuffix = event.nodeId ? `-${event.nodeId}` : "";
+      downloadJsonFile(`extract-result-${event.id}${nodeSuffix}.json`, createExtractExportRecord(event));
+      notify({
+        title: "提取结果已导出",
+        description: "已生成当前提取结果的 JSON 文件。",
+        tone: "success",
+      });
+    },
+    [notify],
+  );
+
+  const copyAllExtractResults = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(
+        JSON.stringify(extractEvents.map((event) => createExtractExportRecord(event)), null, 2),
+      );
+      notify({
+        title: "全部提取结果已复制",
+        description: `已复制 ${extractEvents.length} 条提取结果。`,
+        tone: "success",
+      });
+    } catch (error) {
+      notify({
+        title: "复制失败",
+        description: error instanceof Error ? error.message : "当前环境暂时无法访问剪贴板。",
+        tone: "error",
+      });
+    }
+  }, [extractEvents, notify]);
+
+  const exportAllExtractResults = useCallback(() => {
+    downloadJsonFile(
+      `extract-results-${selectedTask?.id ?? "task"}.json`,
+      extractEvents.map((event) => createExtractExportRecord(event)),
+    );
+    notify({
+      title: "全部提取结果已导出",
+      description: `已导出 ${extractEvents.length} 条提取结果。`,
+      tone: "success",
+    });
+  }, [extractEvents, notify, selectedTask?.id]);
 
   useEffect(() => {
     if (!isScreenshotDialogOpen && detailTab !== "screenshots") {
@@ -483,6 +754,18 @@ export function MonitorCenter() {
       },
     ],
   }), [summary]);
+
+  const alertMetrics = useMemo(() => {
+    const error = alerts.filter((item) => item.level === "error").length;
+    const warning = alerts.filter((item) => item.level === "warning").length;
+    const success = alerts.filter((item) => item.level === "success").length;
+
+    return {
+      error,
+      warning,
+      success,
+    };
+  }, [alerts]);
 
   const eventTrendOption = useMemo(() => {
     const timeline = executionEvents.slice(-18);
@@ -602,12 +885,28 @@ export function MonitorCenter() {
       <div className="flex-1 flex flex-col min-w-0 bg-[#09090b] relative overflow-hidden">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-sky-900/10 via-transparent to-transparent pointer-events-none" />
         <AppTopbar
-          title="任务历史与详情"
-          subtitle="支持筛选任务、批量取消和失败重试，并可查看图表、日志、截图与运行快照。"
+          title={activeView === "alerts" ? "监控与告警" : "任务历史与详情"}
+          subtitle={
+            activeView === "alerts"
+              ? "在一个页面里集中查看任务异常、成功通知和运行告警，不再拆成独立告警页。"
+              : "支持筛选任务、批量取消和失败重试，并可查看图表、日志、截图与运行快照。"
+          }
           badge="Monitor"
           actions={
-            <Button variant="outline" onClick={() => { void loadTasks(); void loadSummary(); }} className="gap-2">
-              <RefreshCw className={cn("w-4 h-4", isLoadingTasks && "animate-spin")} />
+            <Button
+              variant="outline"
+              onClick={() => {
+                if (activeView === "alerts") {
+                  void loadAlerts();
+                  return;
+                }
+
+                void loadTasks();
+                void loadSummary();
+              }}
+              className="gap-2"
+            >
+              <RefreshCw className={cn("w-4 h-4", (activeView === "alerts" ? isLoadingAlerts : isLoadingTasks) && "animate-spin")} />
               刷新
             </Button>
           }
@@ -615,6 +914,26 @@ export function MonitorCenter() {
 
         <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-y-auto p-6 xl:overflow-hidden xl:p-8">
           <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 xl:min-h-0 xl:flex-1">
+            <div className="flex items-center justify-between gap-4">
+              <Tabs value={activeView} onValueChange={(value) => setActiveView(value as "tasks" | "alerts")}>
+                <TabsList className="h-auto bg-zinc-950/70">
+                  <TabsTrigger value="tasks" className="gap-2 py-2">
+                    <Activity className="h-4 w-4" />
+                    任务监控
+                  </TabsTrigger>
+                  <TabsTrigger value="alerts" className="gap-2 py-2">
+                    <Bell className="h-4 w-4" />
+                    告警事件
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
+              <div className="text-xs text-zinc-500">
+                {activeView === "alerts" ? "告警已并入监控中心" : "任务、告警统一在这里排查"}
+              </div>
+            </div>
+
+            {activeView === "tasks" ? (
+              <div className="contents">
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.35fr_1fr_1fr]">
               <div className="rounded-xl border border-white/[0.05] bg-zinc-950/50 p-4 backdrop-blur-md">
                 <div className="mb-3 flex items-center gap-2 text-sm font-medium text-zinc-100">
@@ -1012,7 +1331,21 @@ export function MonitorCenter() {
                         <TabsContent value="snapshot" className="mt-0 min-h-0 flex-1 overflow-y-auto pr-1 pt-4">
                           <div className="space-y-6">
                             <div>
-                              <SectionTitle icon={<FileSearch className="w-4 h-4 text-violet-400" />} title="提取结果" />
+                              <div className="flex items-center justify-between gap-3">
+                                <SectionTitle icon={<FileSearch className="w-4 h-4 text-violet-400" />} title="提取结果" />
+                                {extractEvents.length > 0 ? (
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <Button variant="outline" size="sm" className="gap-2" onClick={() => void copyAllExtractResults()}>
+                                      <Copy className="h-4 w-4" />
+                                      复制全部
+                                    </Button>
+                                    <Button variant="outline" size="sm" className="gap-2" onClick={exportAllExtractResults}>
+                                      <Download className="h-4 w-4" />
+                                      导出全部
+                                    </Button>
+                                  </div>
+                                ) : null}
+                              </div>
                               <div className="mt-4 space-y-3">
                                 {extractEvents.length > 0 ? (
                                   extractEvents.map((event) => (
@@ -1021,9 +1354,26 @@ export function MonitorCenter() {
                                         <span>{formatDateTime(event.createdAt)}</span>
                                         {event.nodeId && <span className="font-mono">{event.nodeId}</span>}
                                       </div>
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <Button variant="outline" size="sm" className="gap-2" onClick={() => void copyExtractResult(event)}>
+                                          <Copy className="h-4 w-4" />
+                                          复制结果
+                                        </Button>
+                                        <Button variant="outline" size="sm" className="gap-2" onClick={() => exportExtractResult(event)}>
+                                          <Download className="h-4 w-4" />
+                                          导出结果
+                                        </Button>
+                                      </div>
                                       <div className="text-xs text-zinc-400">选择器：<span className="font-mono text-zinc-200">{getPayloadString(event.payload, "selector") || "--"}</span></div>
                                       <div className="text-xs text-zinc-400">属性：<span className="font-mono text-zinc-200">{getPayloadString(event.payload, "property") || "text"}</span></div>
-                                      <pre className="rounded-md bg-black/30 p-3 text-xs text-zinc-200 whitespace-pre-wrap break-all font-mono max-h-56 overflow-auto">{getPayloadString(event.payload, "value") || "[空值]"}</pre>
+                                      <div className="grid gap-2 text-xs text-zinc-400 md:grid-cols-2">
+                                        <div>提取模式：<span className="font-mono text-zinc-200">{getExtractModeLabel(getPayloadString(event.payload, "targetMode"))}</span></div>
+                                        <div>保存位置：<span className="font-mono text-zinc-200">{getExtractSaveTargetLabel(getPayloadString(event.payload, "saveTarget"))}</span></div>
+                                        <div>保存键名：<span className="font-mono text-zinc-200">{getPayloadString(event.payload, "saveKey") || "--"}</span></div>
+                                        <div>结果条数：<span className="font-mono text-zinc-200">{getPayloadNumber(event.payload, "itemCount")}</span></div>
+                                        <div>结果格式：<span className="font-mono text-zinc-200">{getExtractResultFormatLabel(getPayloadString(event.payload, "resultFormat"))}</span></div>
+                                      </div>
+                                      <pre className="rounded-md bg-black/30 p-3 text-xs text-zinc-200 whitespace-pre-wrap break-all font-mono max-h-56 overflow-auto">{getExtractPayloadValue(event.payload) || "[空值]"}</pre>
                                     </div>
                                   ))
                                 ) : (
@@ -1057,6 +1407,27 @@ export function MonitorCenter() {
                 </div>
               )}
             </div>
+            </div>
+              </div>
+            ) : (
+              <AlertsPanel
+                alerts={alerts}
+                total={alertTotal}
+                totalPages={alertTotalPages}
+                page={alertPage}
+                pageSize={alertPageSize}
+                levelFilter={alertLevelFilter}
+                isLoading={isLoadingAlerts}
+                error={alertError}
+                metrics={alertMetrics}
+                onPageChange={setAlertPage}
+                onLevelFilterChange={setAlertLevelFilter}
+                onOpenTask={(taskId) => {
+                  setActiveView("tasks");
+                  setSelectedTaskId(taskId);
+                }}
+              />
+            )}
           </div>
         </div>
 
@@ -1105,7 +1476,6 @@ export function MonitorCenter() {
           </DialogContent>
         </Dialog>
       </div>
-      </div>
     </div>
   );
 }
@@ -1124,5 +1494,193 @@ function EmptyBlock({ text }: { text: string }) {
     <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4 text-sm text-zinc-500">
       {text}
     </div>
+  );
+}
+
+function AlertsPanel({
+  alerts,
+  total,
+  totalPages,
+  page,
+  pageSize,
+  levelFilter,
+  isLoading,
+  error,
+  metrics,
+  onPageChange,
+  onLevelFilterChange,
+  onOpenTask,
+}: {
+  alerts: AlertRecord[];
+  total: number;
+  totalPages: number;
+  page: number;
+  pageSize: number;
+  levelFilter: AlertRecord["level"] | "all";
+  isLoading: boolean;
+  error: string | null;
+  metrics: { error: number; warning: number; success: number };
+  onPageChange: (value: number | ((current: number) => number)) => void;
+  onLevelFilterChange: (
+    value:
+      | AlertRecord["level"]
+      | "all"
+      | ((current: AlertRecord["level"] | "all") => AlertRecord["level"] | "all"),
+  ) => void;
+  onOpenTask: (taskId: string) => void;
+}) {
+  const levelOptions = [
+    {
+      value: "all",
+      label: "全部级别",
+      description: "查看所有告警记录",
+      icon: <Bell className="h-3.5 w-3.5" />,
+      group: "告警筛选",
+    },
+    {
+      value: "error",
+      label: "错误",
+      description: "仅显示错误级别",
+      icon: <XCircle className="h-3.5 w-3.5" />,
+      tone: "danger" as const,
+      group: "告警筛选",
+    },
+    {
+      value: "warning",
+      label: "告警",
+      description: "仅显示告警级别",
+      icon: <AlertTriangle className="h-3.5 w-3.5" />,
+      group: "告警筛选",
+    },
+    {
+      value: "success",
+      label: "成功",
+      description: "仅显示成功通知",
+      icon: <CheckCircle2 className="h-3.5 w-3.5" />,
+      group: "告警筛选",
+    },
+  ];
+
+  return (
+    <>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+        <div className="rounded-xl border border-white/[0.05] bg-zinc-950/50 p-4 backdrop-blur-md">
+          <div className="mb-2 text-sm text-zinc-400">告警总数</div>
+          <div className="text-3xl font-bold text-zinc-100">{total}</div>
+        </div>
+        <div className="rounded-xl border border-white/[0.05] bg-zinc-950/50 p-4 backdrop-blur-md">
+          <div className="mb-2 text-sm text-zinc-400">当前页错误</div>
+          <div className="text-3xl font-bold text-red-400">{metrics.error}</div>
+        </div>
+        <div className="rounded-xl border border-white/[0.05] bg-zinc-950/50 p-4 backdrop-blur-md">
+          <div className="mb-2 text-sm text-zinc-400">当前页告警</div>
+          <div className="text-3xl font-bold text-amber-400">{metrics.warning}</div>
+        </div>
+        <div className="rounded-xl border border-white/[0.05] bg-zinc-950/50 p-4 backdrop-blur-md">
+          <div className="mb-2 text-sm text-zinc-400">当前页成功</div>
+          <div className="text-3xl font-bold text-emerald-400">{metrics.success}</div>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-white/[0.05] bg-zinc-950/50 backdrop-blur-md overflow-hidden">
+        <div className="flex flex-col gap-4 border-b border-white/[0.05] px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <div className="text-sm font-medium text-zinc-100">告警事件</div>
+            <div className="mt-1 text-xs text-zinc-500">
+              {isLoading ? "正在同步..." : `第 ${page} / ${totalPages} 页 · 每页 ${pageSize} 条`}
+            </div>
+          </div>
+          <div className="w-full max-w-[260px]">
+            <Select
+              value={levelFilter}
+              onChange={(value) => onLevelFilterChange(value as AlertRecord["level"] | "all")}
+              options={levelOptions}
+            />
+          </div>
+        </div>
+
+        {error ? <div className="border-b border-white/[0.05] px-5 py-4 text-sm text-red-300">{error}</div> : null}
+
+        <div className="px-5 py-5">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>级别</TableHead>
+                <TableHead>工作流</TableHead>
+                <TableHead>触发来源</TableHead>
+                <TableHead>告警内容</TableHead>
+                <TableHead>任务详情</TableHead>
+                <TableHead className="text-right">时间</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {alerts.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="py-10 text-center text-zinc-500">
+                    当前条件下还没有告警记录。
+                  </TableCell>
+                </TableRow>
+              ) : null}
+
+              {alerts.map((alert) => {
+                const meta = getAlertMeta(alert.level);
+                const Icon = meta.icon;
+
+                return (
+                  <TableRow key={alert.id}>
+                    <TableCell>
+                      <div className={cn("inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium", meta.className)}>
+                        <Icon className="h-3.5 w-3.5" />
+                        {meta.label}
+                      </div>
+                    </TableCell>
+                    <TableCell className="font-medium text-zinc-200">
+                      <div>{alert.workflowName}</div>
+                      <div className="mt-1 font-mono text-[11px] text-zinc-500">{alert.workflowId}</div>
+                    </TableCell>
+                    <TableCell className="text-zinc-400">
+                      {alert.triggerSource === "schedule" ? "定时触发" : "手动触发"}
+                    </TableCell>
+                    <TableCell className="text-zinc-300">
+                      <div className="font-medium text-zinc-100">{alert.title}</div>
+                      <div className="mt-1 text-zinc-400">{alert.message}</div>
+                    </TableCell>
+                    <TableCell>
+                      <Button variant="outline" size="sm" className="gap-2" onClick={() => onOpenTask(alert.taskId)}>
+                        <Bell className="h-4 w-4" />
+                        查看任务
+                      </Button>
+                    </TableCell>
+                    <TableCell className="text-right text-zinc-500">{formatDateTime(alert.createdAt)}</TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
+
+        <div className="flex items-center justify-between gap-4 border-t border-white/[0.05] px-5 py-4">
+          <div className="text-xs text-zinc-500">告警已经并入监控中心，任务详情和异常事件现在可以一处联动排查。</div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page <= 1 || isLoading}
+              onClick={() => onPageChange((value) => Math.max(1, value - 1))}
+            >
+              上一页
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page >= totalPages || isLoading}
+              onClick={() => onPageChange((value) => Math.min(totalPages, value + 1))}
+            >
+              下一页
+            </Button>
+          </div>
+        </div>
+      </div>
+    </>
   );
 }

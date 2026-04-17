@@ -221,7 +221,12 @@ export interface ExtractNode extends BaseWorkflowNode {
   type: 'extract';
   selector: string;
   property?: 'text' | 'html' | 'href' | 'src' | 'value' | 'attribute';
+  targetMode?: 'first' | 'all' | 'count';
   attributeName?: string;
+  resultFormat?: 'json_array' | 'join';
+  joinWith?: string;
+  saveTarget?: 'variable' | 'task_output' | 'both';
+  saveKey?: string;
   saveAs?: string;
 }
 

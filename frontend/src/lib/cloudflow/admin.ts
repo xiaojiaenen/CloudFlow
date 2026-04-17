@@ -1,6 +1,7 @@
 import { buildAuthHeaders, getApiBaseUrl, parseErrorMessage, requestJson } from "./core";
 import type {
   AdminOverviewRecord,
+  CreatedUserResult,
   HealthRecord,
   MinioTestResult,
   ResetUserPasswordResult,
@@ -209,9 +210,9 @@ export async function createAdminUser(payload: {
   name: string;
   role?: "admin" | "user";
   status?: "active" | "suspended";
-  password: string;
+  password?: string;
 }) {
-  return requestJson<UserRecord>(
+  return requestJson<CreatedUserResult>(
     "/admin/users",
     {
       method: "POST",

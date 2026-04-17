@@ -2,7 +2,7 @@
 import type { Edge, Node } from "@xyflow/react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { io, Socket } from "socket.io-client";
-import { Save, Settings, UploadCloud } from "lucide-react";
+import { ArrowRight, Save, Settings, UploadCloud } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Sidebar } from "@/src/components/Sidebar";
 import { Header } from "@/src/components/Header";
@@ -13,7 +13,6 @@ import { NodeConfigPanel } from "@/src/components/NodeConfigPanel";
 import { NodePalette } from "@/src/components/NodePalette";
 import { RunWorkflowDialog } from "@/src/components/RunWorkflowDialog";
 import { WorkflowInputsDesigner } from "@/src/components/WorkflowInputsDesigner";
-import { CredentialLibraryManager } from "@/src/components/CredentialLibraryManager";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/src/components/ui/Dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/src/components/ui/Tabs";
 import { Switch } from "@/src/components/ui/Switch";
@@ -25,13 +24,11 @@ import {
   buildWorkflowDefinition,
   cancelTask,
   CanvasNodeData,
-  createCredential,
   formatWorkflowBuildErrorMessage,
   getTaskExecutionScreenshotSrc,
   createEmptyCanvasGraph,
   createWorkflow,
   CredentialRecord,
-  deleteCredential,
   ExecutionNodeStatus,
   getAuthToken,
   getTask,
@@ -49,7 +46,6 @@ import {
   TaskEvent,
   TaskExecutionRecord,
   updateWorkflow,
-  updateCredential,
   validateWorkflowSchema,
   WorkflowCredentialRequirement,
   WorkflowInputField,
@@ -481,38 +477,6 @@ export default function Workspace() {
     [],
   );
 
-  const handleCreateCredential = useCallback(
-    async (payload: Parameters<typeof createCredential>[0]) => {
-      await createCredential(payload);
-      await loadCredentials();
-      addLog("success", `已创建凭据“${payload.name}”。`);
-    },
-    [addLog, loadCredentials],
-  );
-
-  const handleUpdateCredential = useCallback(
-    async (credentialId: string, payload: Parameters<typeof updateCredential>[1]) => {
-      await updateCredential(credentialId, payload);
-      await loadCredentials();
-      addLog("success", `已更新凭据“${payload.name}”。`);
-    },
-    [addLog, loadCredentials],
-  );
-
-  const handleDeleteCredential = useCallback(
-    async (credentialId: string) => {
-      await deleteCredential(credentialId);
-      await loadCredentials();
-      setRunCredentialBindings((current) =>
-        Object.fromEntries(
-          Object.entries(current).filter(([, bindingId]) => bindingId !== credentialId),
-        ),
-      );
-      addLog("success", "已删除凭据。");
-    },
-    [addLog, loadCredentials],
-  );
-
   const ensureWorkflowSchemaReady = useCallback(
     (purpose: "run" | "publish") => {
       if (!workflowSchemaValidation.hasErrors) {
@@ -935,7 +899,11 @@ export default function Workspace() {
 
     try {
       setIsPublishingTemplate(true);
-      const workflow = await persistWorkflow({ silent: true });
+      const savedWorkflow = await persistWorkflow({ silent: true });
+      const workflow =
+        savedWorkflow.status === "active"
+          ? savedWorkflow
+          : await updateWorkflow(savedWorkflow.id, { status: "active" });
       const title = publishForm.title.trim() || workflow.name;
       const description = publishForm.description.trim() || workflow.description || `${workflow.name} 妯℃澘`;
       const template = await publishWorkflowTemplate({
@@ -948,6 +916,7 @@ export default function Workspace() {
         published: true,
         featured: false,
       });
+      setWorkflowStatus("active");
       setPublishedTemplate(template);
       addLog("success", `工作流“${workflow.name}”已同步到商店模板。`);
       setPublishDialogOpen(false);
@@ -1320,7 +1289,7 @@ export default function Workspace() {
               <TabsList className="grid w-full grid-cols-3">
                 <TabsTrigger value="schedule">调度</TabsTrigger>
                 <TabsTrigger value="alerts">告警</TabsTrigger>
-                <TabsTrigger value="inputs">参数与凭据</TabsTrigger>
+                <TabsTrigger value="inputs">参数与凭据需求</TabsTrigger>
               </TabsList>
             </div>
 
@@ -1405,18 +1374,23 @@ export default function Workspace() {
               </TabsContent>
 
               <TabsContent value="inputs" className="mt-0 space-y-6 pb-2">
+                <div className="flex flex-col gap-4 rounded-2xl border border-sky-500/10 bg-sky-500/5 p-4 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-sky-100">全局凭据已独立到凭据库</div>
+                    <div className="mt-1 text-xs leading-6 text-sky-200/80">
+                      这里仅设计当前工作流的运行参数和凭据需求；真正的账号、Cookie、API Key 等全局凭据请到“凭据库”统一维护。
+                    </div>
+                  </div>
+                  <Button variant="outline" className="gap-2" onClick={() => navigate("/credentials")}>
+                    <ArrowRight className="h-4 w-4" />
+                    打开凭据库
+                  </Button>
+                </div>
                 <WorkflowInputsDesigner
                   inputSchema={inputSchema}
                   credentialRequirements={credentialRequirements}
                   onInputSchemaChange={setInputSchema}
                   onCredentialRequirementsChange={setCredentialRequirements}
-                />
-                <CredentialLibraryManager
-                  credentials={credentials}
-                  isLoading={isLoadingCredentials}
-                  onCreate={handleCreateCredential}
-                  onUpdate={handleUpdateCredential}
-                  onDelete={handleDeleteCredential}
                 />
               </TabsContent>
             </div>

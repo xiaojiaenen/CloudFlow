@@ -271,6 +271,12 @@ export interface ResetUserPasswordResult {
   id: string;
   email: string;
   temporaryPassword: string;
+  emailSent?: boolean;
+}
+
+export interface CreatedUserResult extends UserRecord {
+  temporaryPassword?: string;
+  welcomeEmailSent?: boolean;
 }
 
 export interface SystemConfigRecord {

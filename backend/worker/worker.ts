@@ -3,7 +3,7 @@ import { mkdir, writeFile } from 'fs/promises';
 import path from 'path';
 import { PrismaClient } from '@prisma/client';
 import { DelayedError, Job, Worker } from 'bullmq';
-import { Frame, Page } from 'playwright';
+import { Frame, Locator, Page } from 'playwright';
 import {
   DEFAULT_TASK_EXECUTION_POLICY,
   TaskExecutionPolicySnapshot,
@@ -258,6 +258,114 @@ function normalizeComparableValue(value: string) {
   return value.trim();
 }
 
+async function readExtractedValue(
+  locator: Locator,
+  property: 'text' | 'html' | 'href' | 'src' | 'value' | 'attribute',
+  attributeName?: string,
+) {
+  if (property === 'html') {
+    return locator.evaluate((element) => element.innerHTML);
+  }
+
+  if (property === 'href') {
+    return (await locator.getAttribute('href')) ?? '';
+  }
+
+  if (property === 'src') {
+    return (await locator.getAttribute('src')) ?? '';
+  }
+
+  if (property === 'value') {
+    return locator
+      .inputValue()
+      .catch(async () => (await locator.getAttribute('value')) ?? '');
+  }
+
+  if (property === 'attribute') {
+    if (!attributeName) {
+      throw new Error('提取节点在 property=attribute 时必须填写属性名。');
+    }
+
+    return (await locator.getAttribute(attributeName)) ?? '';
+  }
+
+  return locator.innerText();
+}
+
+async function readExtractedValues(
+  locator: Locator,
+  property: 'text' | 'html' | 'href' | 'src' | 'value' | 'attribute',
+  attributeName?: string,
+) {
+  if (property === 'attribute' && !attributeName) {
+    throw new Error('提取节点在 property=attribute 时必须填写属性名。');
+  }
+
+  return locator.evaluateAll(
+    (elements, options) =>
+      elements.map((element) => {
+        if (options.property === 'html') {
+          return element.innerHTML ?? '';
+        }
+
+        if (options.property === 'href') {
+          return element.getAttribute('href') ?? '';
+        }
+
+        if (options.property === 'src') {
+          return element.getAttribute('src') ?? '';
+        }
+
+        if (options.property === 'value') {
+          if (
+            element instanceof HTMLInputElement ||
+            element instanceof HTMLTextAreaElement ||
+            element instanceof HTMLSelectElement
+          ) {
+            return element.value ?? '';
+          }
+
+          return element.getAttribute('value') ?? '';
+        }
+
+        if (options.property === 'attribute') {
+          return element.getAttribute(options.attributeName ?? '') ?? '';
+        }
+
+        if (element instanceof HTMLElement) {
+          return element.innerText ?? element.textContent ?? '';
+        }
+
+        return element.textContent ?? '';
+      }),
+    { property, attributeName },
+  );
+}
+
+function createExtractPreview(value: string | string[] | number) {
+  if (typeof value === 'number') {
+    return `共 ${value} 项`;
+  }
+
+  const raw =
+    typeof value === 'string'
+      ? value
+      : value
+          .slice(0, 3)
+          .map((item) => item.trim())
+          .join(' | ');
+
+  const suffix =
+    Array.isArray(value) && value.length > 3 ? ` ... (+${value.length - 3})` : '';
+  const preview = `${raw}${suffix}`.trim();
+
+  if (!preview) {
+    return '[空结果]';
+  }
+
+  return preview.length > 160 ? `${preview.slice(0, 160)}...` : preview;
+}
+
 function compareCondition(left: string, operator: string, right: string) {
   const normalizedLeft = normalizeComparableValue(left);
   const normalizedRight = normalizeComparableValue(right);
@@ -455,6 +563,12 @@ function resolveNode(
         distance: resolveNumberValue(node.distance, 500, runtimeInputs, variables, credentials),
       };
     case 'extract':
+      const saveKey = resolveTemplateValue(
+        String(node.saveKey ?? node.saveAs ?? ''),
+        runtimeInputs,
+        variables,
+        credentials,
+      );
       return {
         ...node,
         selector: resolveTemplateValue(node.selector, runtimeInputs, variables, credentials),
@@ -470,8 +584,33 @@ function resolveNode(
           variables,
           credentials,
         ),
+        targetMode: resolveTemplateValue(
+          String(node.targetMode ?? 'first'),
+          runtimeInputs,
+          variables,
+          credentials,
+        ) as 'first' | 'all' | 'count',
+        resultFormat: resolveTemplateValue(
+          String(node.resultFormat ?? 'json_array'),
+          runtimeInputs,
+          variables,
+          credentials,
+        ) as 'json_array' | 'join',
+        joinWith: resolveTemplateValue(
+          String(node.joinWith ?? ', '),
+          runtimeInputs,
+          variables,
+          credentials,
+        ),
+        saveTarget: resolveTemplateValue(
+          String(node.saveTarget ?? (saveKey ? 'both' : 'task_output')),
+          runtimeInputs,
+          variables,
+          credentials,
+        ) as 'variable' | 'task_output' | 'both',
+        saveKey,
         saveAs: resolveTemplateValue(
-          String(node.saveAs ?? ''),
+          String(node.saveAs ?? saveKey),
           runtimeInputs,
           variables,
           credentials,
@@ -503,6 +642,7 @@ function getActiveTarget(executionContext: ExecutionContext) {
 }
 
 async function findFrame(
+  taskId: string,
   executionContext: ExecutionContext,
   node: Extract<WorkflowNode, { type: 'switch_iframe' }>,
 ) {
@@ -512,7 +652,9 @@ async function findFrame(
 
   if (node.selector) {
     const iframeLocator = target.locator(node.selector).first();
-    await iframeLocator.waitFor({ state: 'attached', timeout });
+    await runCancellable(taskId, () =>
+      iframeLocator.waitFor({ state: 'attached', timeout }),
+    );
     const handle = await iframeLocator.elementHandle();
     const frame = await handle?.contentFrame();
 
@@ -524,6 +666,7 @@ async function findFrame(
   const deadline = Date.now() + timeout;
 
   while (Date.now() <= deadline) {
+    await ensureTaskNotCancelled(taskId);
     const frame = page.frames().find((candidate) => {
       const nameMatched = node.name ? candidate.name() === node.name : false;
       const urlMatched = node.urlIncludes ? candidate.url().includes(node.urlIncludes) : false;
@@ -534,10 +677,42 @@ async function findFrame(
       return frame;
     }
 
-    await page.waitForTimeout(200);
+    await new Promise((resolve) => setTimeout(resolve, 200));
   }
 
   throw new Error('未找到匹配的 iframe，请检查选择器、name 或 URL 包含条件。');
+}
+
+async function runCancellable<T>(
+  taskId: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  let settled = false;
+
+  const actionPromise = action()
+    .then((result) => {
+      settled = true;
+      return result;
+    })
+    .catch((error) => {
+      settled = true;
+      throw error;
+    });
+
+  const cancellationPromise = (async () => {
+    while (true) {
+      await ensureTaskNotCancelled(taskId);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  })();
+
+  try {
+    return await Promise.race([actionPromise, cancellationPromise]);
+  } finally {
+    if (!settled) {
+      void actionPromise.catch(() => undefined);
+    }
+  }
 }
 
 async function executeNode(
@@ -552,17 +727,23 @@ async function executeNode(
     case 'open_page':
       await publishLog(taskId, `正在打开页面：${node.url}`, 'info', node.clientNodeId);
       executionContext.activeFrame = null;
-      await page.goto(node.url, { waitUntil: 'domcontentloaded' });
+      await runCancellable(taskId, () =>
+        page.goto(node.url, { waitUntil: 'domcontentloaded' }),
+      );
       await publishLog(taskId, '页面已开始加载，并已切回主文档上下文。', 'success', node.clientNodeId);
       return;
     case 'click':
       await publishLog(taskId, `正在点击元素：${node.selector}`, 'info', node.clientNodeId);
-      await target.locator(node.selector).first().click();
+      await runCancellable(taskId, () =>
+        target.locator(node.selector).first().click(),
+      );
       await publishLog(taskId, `点击完成：${node.selector}`, 'success', node.clientNodeId);
       return;
     case 'input':
       await publishLog(taskId, `正在向 ${node.selector} 输入内容。`, 'info', node.clientNodeId);
-      await target.locator(node.selector).first().fill(node.value);
+      await runCancellable(taskId, () =>
+        target.locator(node.selector).first().fill(node.value),
+      );
       await publishLog(
         taskId,
         `输入完成：${node.selector} <- ${node.value ? '已写入值' : '空字符串'}`,
@@ -572,7 +753,9 @@ async function executeNode(
       return;
     case 'hover':
       await publishLog(taskId, `正在悬停元素：${node.selector}`, 'info', node.clientNodeId);
-      await target.locator(node.selector).first().hover();
+      await runCancellable(taskId, () =>
+        target.locator(node.selector).first().hover(),
+      );
       await publishLog(taskId, `悬停完成：${node.selector}`, 'success', node.clientNodeId);
       return;
     case 'press_key':
@@ -587,17 +770,23 @@ async function executeNode(
         'info',
         node.clientNodeId,
       );
-      await target.locator(node.selector).first().selectOption({ value: node.value });
+      await runCancellable(taskId, () =>
+        target.locator(node.selector).first().selectOption({ value: node.value }),
+      );
       await publishLog(taskId, `下拉项已选择：${node.value}`, 'success', node.clientNodeId);
       return;
     case 'check':
       await publishLog(taskId, `正在勾选：${node.selector}`, 'info', node.clientNodeId);
-      await target.locator(node.selector).first().check();
+      await runCancellable(taskId, () =>
+        target.locator(node.selector).first().check(),
+      );
       await publishLog(taskId, `勾选完成：${node.selector}`, 'success', node.clientNodeId);
       return;
     case 'uncheck':
       await publishLog(taskId, `正在取消勾选：${node.selector}`, 'info', node.clientNodeId);
-      await target.locator(node.selector).first().uncheck();
+      await runCancellable(taskId, () =>
+        target.locator(node.selector).first().uncheck(),
+      );
       await publishLog(taskId, `取消勾选完成：${node.selector}`, 'success', node.clientNodeId);
       return;
     case 'set_variable':
@@ -653,7 +842,9 @@ async function executeNode(
         'info',
         node.clientNodeId,
       );
-      await target.locator(node.selector).first().waitFor({ state, timeout });
+      await runCancellable(taskId, () =>
+        target.locator(node.selector).first().waitFor({ state, timeout }),
+      );
       await publishLog(
         taskId,
         `元素状态已满足：${node.selector} -> ${stateLabel}`,
@@ -666,7 +857,7 @@ async function executeNode(
       const timeout = Number(node.timeout ?? 10000);
       const matchMode = node.matchMode ?? 'contains';
       const deadline = Date.now() + timeout;
-      const locator = target.locator(node.selector).first();
+      const locator = target.locator(node.selector);
       const conditionText =
         matchMode === 'equals'
           ? `文本完全等于“${node.text}”`
@@ -770,11 +961,17 @@ async function executeNode(
       );
 
       if (urlIncludes) {
-        await page.waitForURL((url) => url.toString().includes(urlIncludes), { timeout, waitUntil });
+        await runCancellable(taskId, () =>
+          page.waitForURL((url) => url.toString().includes(urlIncludes), { timeout, waitUntil }),
+        );
       } else if (waitUntil === 'commit') {
-        await page.waitForURL(() => true, { timeout, waitUntil: 'commit' });
+        await runCancellable(taskId, () =>
+          page.waitForURL(() => true, { timeout, waitUntil: 'commit' }),
+        );
       } else {
-        await page.waitForLoadState(waitUntil, { timeout });
+        await runCancellable(taskId, () =>
+          page.waitForLoadState(waitUntil, { timeout }),
+        );
       }
 
       executionContext.activeFrame = null;
@@ -782,7 +979,7 @@ async function executeNode(
       return;
     }
     case 'switch_iframe': {
-      const frame = await findFrame(executionContext, node);
+      const frame = await findFrame(taskId, executionContext, node);
       executionContext.activeFrame = frame;
       await publishLog(
         taskId,
@@ -833,50 +1030,152 @@ async function executeNode(
     }
     case 'extract': {
       const property = node.property ?? 'text';
-      const locator = target.locator(node.selector).first();
+      const targetMode = node.targetMode ?? 'first';
+      const resultFormat = node.resultFormat ?? 'json_array';
+      const joinWith = node.joinWith ?? ', ';
+      const saveKey = (node.saveKey ?? node.saveAs ?? '').trim();
+      const saveTarget = node.saveTarget ?? (saveKey ? 'both' : 'task_output');
+      const locator = target.locator(node.selector);
+      const firstLocator = locator.first();
+      if ((saveTarget === 'variable' || saveTarget === 'both') && !saveKey) {
+        throw new Error('提取节点保存到变量时必须填写保存键名。');
+      }
       await publishLog(
         taskId,
-        `正在提取数据：${node.selector} -> ${property}`,
+        `正在提取数据：${node.selector} -> ${property} (${targetMode})`,
         'info',
         node.clientNodeId,
       );
-      await locator.waitFor({ state: 'visible', timeout: 5000 });
+      if (targetMode === 'count') {
+        const itemCount = await runCancellable(taskId, () => locator.count());
+        const preview = createExtractPreview(itemCount);
+        await publishExtract(taskId, {
+          selector: node.selector,
+          property,
+          targetMode,
+          saveTarget,
+          saveKey: saveKey || undefined,
+          itemCount,
+          value: itemCount,
+          preview,
+          nodeId: node.clientNodeId,
+          timestamp: new Date().toISOString(),
+        });
+
+        if (saveTarget === 'variable' || saveTarget === 'both') {
+          executionContext.variables[saveKey] = String(itemCount);
+          await publishLog(
+            taskId,
+            `提取结果已写入变量：${saveKey}`,
+            'success',
+            node.clientNodeId,
+          );
+        }
+
+        await publishLog(
+          taskId,
+          `提取完成，预览：${preview}`,
+          'success',
+          node.clientNodeId,
+        );
+        return;
+      }
+
+      if (targetMode === 'all') {
+        await runCancellable(taskId, () =>
+          firstLocator.waitFor({ state: 'visible', timeout: 5000 }),
+        );
+
+        const extractedValues = await runCancellable(taskId, () =>
+          readExtractedValues(locator, property, node.attributeName),
+        );
+        const itemCount = extractedValues.length;
+        const eventValue =
+          resultFormat === 'join' ? extractedValues.join(joinWith) : extractedValues;
+        const variableValue =
+          resultFormat === 'join'
+            ? extractedValues.join(joinWith)
+            : JSON.stringify(extractedValues);
+        const preview = createExtractPreview(eventValue);
+
+        await publishExtract(taskId, {
+          selector: node.selector,
+          property,
+          targetMode,
+          resultFormat,
+          saveTarget,
+          saveKey: saveKey || undefined,
+          itemCount,
+          value: eventValue,
+          preview,
+          nodeId: node.clientNodeId,
+          timestamp: new Date().toISOString(),
+        });
+
+        if (saveTarget === 'variable' || saveTarget === 'both') {
+          executionContext.variables[saveKey] = variableValue;
+          await publishLog(
+            taskId,
+            `提取结果已写入变量：${saveKey}`,
+            'success',
+            node.clientNodeId,
+          );
+        }
+
+        await publishLog(
+          taskId,
+          `提取完成，预览：${preview}`,
+          'success',
+          node.clientNodeId,
+        );
+        return;
+      }
+
+      await runCancellable(taskId, () =>
+        firstLocator.waitFor({ state: 'visible', timeout: 5000 }),
+      );
 
       let extractedValue = '';
 
       if (property === 'html') {
-        extractedValue = await locator.evaluate((element) => element.innerHTML);
+        extractedValue = await firstLocator.evaluate((element) => element.innerHTML);
       } else if (property === 'href') {
-        extractedValue = (await locator.getAttribute('href')) ?? '';
+        extractedValue = (await firstLocator.getAttribute('href')) ?? '';
       } else if (property === 'src') {
-        extractedValue = (await locator.getAttribute('src')) ?? '';
+        extractedValue = (await firstLocator.getAttribute('src')) ?? '';
       } else if (property === 'value') {
-        extractedValue = await locator.inputValue().catch(async () => (await locator.getAttribute('value')) ?? '');
+        extractedValue = await firstLocator
+          .inputValue()
+          .catch(async () => (await firstLocator.getAttribute('value')) ?? '');
       } else if (property === 'attribute') {
         if (!node.attributeName) {
           throw new Error('提取节点在 property=attribute 时必须填写属性名。');
         }
 
-        extractedValue = (await locator.getAttribute(node.attributeName)) ?? '';
+        extractedValue = (await firstLocator.getAttribute(node.attributeName)) ?? '';
       } else {
-        extractedValue = await locator.innerText();
+        extractedValue = await firstLocator.innerText();
       }
 
-      const preview = extractedValue.length > 120 ? `${extractedValue.slice(0, 120)}...` : extractedValue;
+      const preview = createExtractPreview(extractedValue);
       await publishExtract(taskId, {
         selector: node.selector,
         property,
+        targetMode,
+        saveTarget,
+        saveKey: saveKey || undefined,
+        itemCount: extractedValue ? 1 : 0,
         value: extractedValue,
-        preview: preview || '[空结果]',
+        preview,
         nodeId: node.clientNodeId,
         timestamp: new Date().toISOString(),
       });
 
-      if (node.saveAs) {
-        executionContext.variables[node.saveAs] = extractedValue;
+      if (saveTarget === 'variable' || saveTarget === 'both') {
+        executionContext.variables[saveKey] = extractedValue;
         await publishLog(
           taskId,
-          `提取结果已写入变量：${node.saveAs}`,
+          `提取结果已写入变量：${saveKey}`,
           'success',
           node.clientNodeId,
         );
@@ -884,7 +1183,7 @@ async function executeNode(
 
       await publishLog(
         taskId,
-        `提取完成，结果预览：${preview || '[空结果]'}`,
+        `提取完成，预览：${preview}`,
         'success',
         node.clientNodeId,
       );
@@ -908,9 +1207,13 @@ async function executeNode(
           throw new Error('截图节点在 scope=element 时必须填写元素选择器。');
         }
 
-        buffer = await target.locator(node.selector).first().screenshot({ type: 'jpeg', quality: 75 });
+        buffer = await runCancellable(taskId, () =>
+          target.locator(node.selector ?? '').first().screenshot({ type: 'jpeg', quality: 75 }),
+        );
       } else {
-        buffer = await page.screenshot({ type: 'jpeg', quality: 75, fullPage: scope === 'full' });
+        buffer = await runCancellable(taskId, () =>
+          page.screenshot({ type: 'jpeg', quality: 75, fullPage: scope === 'full' }),
+        );
       }
 
       await writeFile(

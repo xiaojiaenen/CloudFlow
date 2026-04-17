@@ -9,9 +9,9 @@ import { OverlayDialogProvider } from "./context/OverlayDialogContext";
 
 const Login = lazy(() => import("./pages/Login"));
 const Workspace = lazy(() => import("./pages/Workspace"));
+const Credentials = lazy(() => import("./pages/Credentials"));
 const Store = lazy(() => import("./pages/Store"));
 const Admin = lazy(() => import("./pages/Admin"));
-const Alerts = lazy(() => import("./pages/Alerts"));
 const Settings = lazy(() => import("./pages/Settings"));
 const MonitorCenter = lazy(async () => {
   const module = await import("./pages/MonitorCenter");
@@ -46,6 +46,14 @@ export default function App() {
                   }
                 />
                 <Route
+                  path="/credentials"
+                  element={
+                    <ProtectedRoute>
+                      <Credentials />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
                   path="/monitor"
                   element={
                     <ProtectedRoute>
@@ -73,7 +81,7 @@ export default function App() {
                   path="/alerts"
                   element={
                     <ProtectedRoute>
-                      <Alerts />
+                      <Navigate to="/monitor?view=alerts" replace />
                     </ProtectedRoute>
                   }
                 />

@@ -12,7 +12,15 @@ import { Select } from "@/src/components/ui/Select";
 import { useAuth } from "@/src/context/AuthContext";
 import { useNotice } from "@/src/context/NoticeContext";
 import { useDebouncedValue } from "@/src/hooks/useDebouncedValue";
-import { createWorkflow, listStoreTemplates, listWorkflows, type WorkflowRecord, type WorkflowTemplateRecord } from "@/src/lib/cloudflow";
+import {
+  buildWorkflowDefinition,
+  createWorkflow,
+  hydrateCanvasFromWorkflow,
+  listStoreTemplates,
+  listWorkflows,
+  type WorkflowRecord,
+  type WorkflowTemplateRecord,
+} from "@/src/lib/cloudflow";
 import { cn } from "@/src/lib/utils";
 
 export default function Store() {
@@ -92,12 +100,17 @@ export default function Store() {
 
     try {
       setInstallingId(template.id);
+      const graph = hydrateCanvasFromWorkflow(template.definition);
+      const normalizedDefinition = buildWorkflowDefinition(graph.nodes, graph.edges, {
+        inputSchema: template.definition.inputSchema ?? [],
+        credentialRequirements: template.definition.credentialRequirements ?? [],
+      });
       const createdWorkflow = await createWorkflow({
         name: template.title,
         description: template.description,
         status: "active",
         installedFromTemplateId: template.id,
-        definition: template.definition,
+        definition: normalizedDefinition,
       });
 
       navigate(`/?workflowId=${createdWorkflow.id}`);
