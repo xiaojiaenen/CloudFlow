@@ -11,7 +11,7 @@ export async function login(payload: { email: string; password: string }) {
       },
       body: JSON.stringify(payload),
     },
-    "Login failed.",
+    "登录失败，请检查账号和密码后重试。",
   );
 }
 
@@ -21,7 +21,7 @@ export async function getCurrentUser() {
     {
       headers: buildAuthHeaders(),
     },
-    "Failed to load the current user.",
+    "加载当前用户信息失败。",
   );
 }
 
@@ -36,7 +36,7 @@ export async function updateCurrentUserProfile(payload: { name: string }) {
       },
       body: JSON.stringify(payload),
     },
-    "Failed to update the profile.",
+    "更新个人资料失败。",
   );
 }
 
@@ -54,6 +54,6 @@ export async function changeCurrentUserPassword(payload: {
       },
       body: JSON.stringify(payload),
     },
-    "Failed to change the password.",
+    "修改密码失败。",
   );
 }

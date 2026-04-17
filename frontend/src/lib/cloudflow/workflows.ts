@@ -44,7 +44,7 @@ export async function listWorkflows(params?: {
     {
       headers: buildAuthHeaders(),
     },
-    "Failed to load workflows.",
+    "加载工作流列表失败。",
   );
 }
 
@@ -54,7 +54,7 @@ export async function getWorkflow(id: string) {
     {
       headers: buildAuthHeaders(),
     },
-    "Failed to load the workflow.",
+    "加载工作流详情失败。",
   );
 }
 
@@ -69,7 +69,7 @@ export async function createWorkflow(payload: CreateWorkflowPayload) {
       },
       body: JSON.stringify(payload),
     },
-    "Failed to create the workflow.",
+    "创建工作流失败。",
   );
 }
 
@@ -84,7 +84,7 @@ export async function updateWorkflow(id: string, payload: UpdateWorkflowPayload)
       },
       body: JSON.stringify(payload),
     },
-    "Failed to update the workflow.",
+    "更新工作流失败。",
   );
 }
 
@@ -95,7 +95,7 @@ export async function deleteWorkflow(id: string) {
       method: "DELETE",
       headers: buildAuthHeaders(),
     },
-    "Failed to delete the workflow.",
+    "删除工作流失败。",
   );
 }
 
@@ -106,7 +106,7 @@ export async function duplicateWorkflow(id: string) {
       method: "POST",
       headers: buildAuthHeaders(),
     },
-    "Failed to duplicate the workflow.",
+    "复制工作流失败。",
   );
 }
 
@@ -135,7 +135,7 @@ export async function listWorkflowSchedules(params?: {
     {
       headers: buildAuthHeaders(),
     },
-    "Failed to load workflow schedules.",
+    "加载调度列表失败。",
   );
 }
 
@@ -154,7 +154,7 @@ export async function listStoreTemplates(params?: {
   return requestJson<WorkflowTemplateRecord[]>(
     `/store/templates${query.toString() ? `?${query.toString()}` : ""}`,
     undefined,
-    "Failed to load store templates.",
+    "加载模板商店失败。",
   );
 }
 
@@ -164,6 +164,6 @@ export async function markStoreTemplateInstalled(id: string) {
     {
       method: "POST",
     },
-    "Failed to update the template install count.",
+    "更新模板安装记录失败。",
   );
 }

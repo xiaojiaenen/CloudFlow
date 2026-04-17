@@ -165,15 +165,15 @@ export interface ConditionNode extends BaseWorkflowNode {
 
 export interface WaitNode extends BaseWorkflowNode {
   type: 'wait';
-  time?: number;
-  duration?: number;
+  time?: number | string;
+  duration?: number | string;
 }
 
 export interface WaitForElementNode extends BaseWorkflowNode {
   type: 'wait_for_element';
   selector: string;
   state?: 'attached' | 'detached' | 'visible' | 'hidden';
-  timeout?: number;
+  timeout?: number | string;
 }
 
 export interface WaitForTextNode extends BaseWorkflowNode {
@@ -181,7 +181,7 @@ export interface WaitForTextNode extends BaseWorkflowNode {
   selector: string;
   text: string;
   matchMode?: 'contains' | 'equals' | 'not_contains' | 'not_equals' | 'not_empty';
-  timeout?: number;
+  timeout?: number | string;
 }
 
 export interface WaitForClassNode extends BaseWorkflowNode {
@@ -189,14 +189,14 @@ export interface WaitForClassNode extends BaseWorkflowNode {
   selector: string;
   className: string;
   condition?: 'contains' | 'not_contains';
-  timeout?: number;
+  timeout?: number | string;
 }
 
 export interface WaitForUrlNode extends BaseWorkflowNode {
   type: 'wait_for_url';
   urlIncludes?: string;
   waitUntil?: 'load' | 'domcontentloaded' | 'networkidle' | 'commit';
-  timeout?: number;
+  timeout?: number | string;
 }
 
 export interface SwitchIframeNode extends BaseWorkflowNode {
@@ -204,7 +204,7 @@ export interface SwitchIframeNode extends BaseWorkflowNode {
   selector?: string;
   name?: string;
   urlIncludes?: string;
-  timeout?: number;
+  timeout?: number | string;
 }
 
 export interface SwitchMainFrameNode extends BaseWorkflowNode {
@@ -214,7 +214,7 @@ export interface SwitchMainFrameNode extends BaseWorkflowNode {
 export interface ScrollNode extends BaseWorkflowNode {
   type: 'scroll';
   direction?: 'down' | 'up' | 'bottom' | 'top';
-  distance?: number;
+  distance?: number | string;
 }
 
 export interface ExtractNode extends BaseWorkflowNode {

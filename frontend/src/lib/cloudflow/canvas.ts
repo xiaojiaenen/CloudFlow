@@ -10,16 +10,73 @@ import type {
   WorkflowInputField,
 } from "./types";
 
+export function shouldShowNodeField(
+  nodeType: string | undefined,
+  fieldName: string,
+  data: Record<string, unknown>,
+) {
+  switch (`${nodeType}:${fieldName}`) {
+    case "condition:right":
+      return !["is_empty", "not_empty"].includes(String(data.operator ?? "equals"));
+    case "wait_for_text:text":
+      return String(data.matchMode ?? "contains") !== "not_empty";
+    case "scroll:distance":
+      return ["up", "down"].includes(String(data.direction ?? "down"));
+    case "extract:attributeName":
+      return String(data.property ?? "text") === "attribute";
+    case "screenshot:selector":
+      return String(data.scope ?? "viewport") === "element";
+    default:
+      return true;
+  }
+}
+
+export function sanitizeNodeFieldValues(
+  nodeType: string | undefined,
+  data: Record<string, unknown>,
+) {
+  const definition = getNodeDefinition(nodeType ?? "");
+  if (!definition) {
+    return { ...data };
+  }
+
+  const nextData = { ...data };
+
+  definition.fields.forEach((field) => {
+    if (field.type === "select") {
+      const currentValue = String(nextData[field.name] ?? "").trim();
+      const allowedValues = new Set((field.options ?? []).map((option) => option.value));
+      const fallbackValue = field.defaultValue ?? field.options?.[0]?.value;
+
+      if (currentValue && !allowedValues.has(currentValue)) {
+        if (fallbackValue) {
+          nextData[field.name] = fallbackValue;
+        } else {
+          delete nextData[field.name];
+        }
+      }
+    }
+
+    if (!shouldShowNodeField(nodeType, field.name, nextData)) {
+      delete nextData[field.name];
+    }
+  });
+
+  return nextData;
+}
+
 export function formatNodeParams(data: Record<string, unknown>) {
-  const definition = getNodeDefinition(String(data.type ?? ""));
+  const normalizedData = sanitizeNodeFieldValues(String(data.type ?? ""), data);
+  const definition = getNodeDefinition(String(normalizedData.type ?? ""));
   const fieldMap = new Map((definition?.fields ?? []).map((field) => [field.name, field]));
 
-  return Object.entries(data)
+  return Object.entries(normalizedData)
     .filter(
       ([key, value]) =>
         !["label", "type", "status", "params", "clientNodeId"].includes(key) &&
         value !== undefined &&
-        value !== "",
+        value !== "" &&
+        shouldShowNodeField(String(normalizedData.type ?? ""), key, normalizedData),
     )
     .map(([key, value]) => {
       const field = fieldMap.get(key);
@@ -32,6 +89,32 @@ export function formatNodeParams(data: Record<string, unknown>) {
 
 function buildNodeParams(data: Record<string, unknown>) {
   return formatNodeParams(data);
+}
+
+export function normalizeNumericNodeValue(value: unknown, fallback: number) {
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return fallback;
+  }
+
+  if (text.includes("{{") || text.includes("}}")) {
+    return text;
+  }
+
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : text;
+}
+
+export function formatWorkflowBuildErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const prefix = "Unsupported nodes remain in the workflow:";
+
+  if (message.startsWith(prefix)) {
+    const labels = message.slice(prefix.length).trim();
+    return `当前流程里仍有未支持的节点：${labels}。请删除或替换这些节点后再保存、运行或发布。`;
+  }
+
+  return message || "工作流构建失败。";
 }
 
 function createNodeData(type: string, extra: Record<string, unknown> = {}): CanvasNodeData {
@@ -193,70 +276,81 @@ export function buildWorkflowDefinition(
   return {
     nodes: orderedNodes.map((node) => {
       const type = String(node.data.type);
+      const nodeData = sanitizeNodeFieldValues(type, node.data);
       const baseNode = {
         clientNodeId: node.id,
         type,
       } as Record<string, unknown>;
 
       if (type === "open_page") {
-        baseNode.url = String(node.data.url ?? "");
+        baseNode.url = String(nodeData.url ?? "");
       } else if (type === "click") {
-        baseNode.selector = String(node.data.selector ?? "");
+        baseNode.selector = String(nodeData.selector ?? "");
       } else if (type === "input") {
-        baseNode.selector = String(node.data.selector ?? "");
-        baseNode.value = String(node.data.value ?? "");
+        baseNode.selector = String(nodeData.selector ?? "");
+        baseNode.value = String(nodeData.value ?? "");
       } else if (type === "hover") {
-        baseNode.selector = String(node.data.selector ?? "");
+        baseNode.selector = String(nodeData.selector ?? "");
       } else if (type === "press_key") {
-        baseNode.key = String(node.data.key ?? "");
+        baseNode.key = String(nodeData.key ?? "");
       } else if (type === "select_option") {
-        baseNode.selector = String(node.data.selector ?? "");
-        baseNode.value = String(node.data.value ?? "");
+        baseNode.selector = String(nodeData.selector ?? "");
+        baseNode.value = String(nodeData.value ?? "");
       } else if (type === "check" || type === "uncheck") {
-        baseNode.selector = String(node.data.selector ?? "");
+        baseNode.selector = String(nodeData.selector ?? "");
       } else if (type === "set_variable") {
-        baseNode.key = String(node.data.key ?? "");
-        baseNode.value = String(node.data.value ?? "");
+        baseNode.key = String(nodeData.key ?? "");
+        baseNode.value = String(nodeData.value ?? "");
       } else if (type === "condition") {
-        baseNode.left = String(node.data.left ?? "");
-        baseNode.operator = String(node.data.operator ?? "equals");
-        baseNode.right = String(node.data.right ?? "");
+        baseNode.left = String(nodeData.left ?? "");
+        baseNode.operator = String(nodeData.operator ?? "equals");
+        if (shouldShowNodeField(type, "right", nodeData)) {
+          baseNode.right = String(nodeData.right ?? "");
+        }
       } else if (type === "wait") {
-        baseNode.time = Number(node.data.time ?? 1000);
+        baseNode.time = normalizeNumericNodeValue(nodeData.time, 1000);
       } else if (type === "wait_for_element") {
-        baseNode.selector = String(node.data.selector ?? "");
-        baseNode.state = String(node.data.state ?? "visible");
-        baseNode.timeout = Number(node.data.timeout ?? 10000);
+        baseNode.selector = String(nodeData.selector ?? "");
+        baseNode.state = String(nodeData.state ?? "visible");
+        baseNode.timeout = normalizeNumericNodeValue(nodeData.timeout, 10000);
       } else if (type === "wait_for_text") {
-        baseNode.selector = String(node.data.selector ?? "");
-        baseNode.text = String(node.data.text ?? "");
-        baseNode.matchMode = String(node.data.matchMode ?? "contains");
-        baseNode.timeout = Number(node.data.timeout ?? 10000);
+        baseNode.selector = String(nodeData.selector ?? "");
+        if (shouldShowNodeField(type, "text", nodeData)) {
+          baseNode.text = String(nodeData.text ?? "");
+        }
+        baseNode.matchMode = String(nodeData.matchMode ?? "contains");
+        baseNode.timeout = normalizeNumericNodeValue(nodeData.timeout, 10000);
       } else if (type === "wait_for_class") {
-        baseNode.selector = String(node.data.selector ?? "");
-        baseNode.className = String(node.data.className ?? "");
-        baseNode.condition = String(node.data.condition ?? "contains");
-        baseNode.timeout = Number(node.data.timeout ?? 10000);
+        baseNode.selector = String(nodeData.selector ?? "");
+        baseNode.className = String(nodeData.className ?? "");
+        baseNode.condition = String(nodeData.condition ?? "contains");
+        baseNode.timeout = normalizeNumericNodeValue(nodeData.timeout, 10000);
       } else if (type === "wait_for_url") {
-        baseNode.urlIncludes = String(node.data.urlIncludes ?? "");
-        baseNode.waitUntil = String(node.data.waitUntil ?? "load");
-        baseNode.timeout = Number(node.data.timeout ?? 10000);
+        baseNode.urlIncludes = String(nodeData.urlIncludes ?? "");
+        baseNode.waitUntil = String(nodeData.waitUntil ?? "load");
+        baseNode.timeout = normalizeNumericNodeValue(nodeData.timeout, 10000);
       } else if (type === "switch_iframe") {
-        baseNode.selector = String(node.data.selector ?? "");
-        baseNode.name = String(node.data.name ?? "");
-        baseNode.urlIncludes = String(node.data.urlIncludes ?? "");
-        baseNode.timeout = Number(node.data.timeout ?? 10000);
+        baseNode.selector = String(nodeData.selector ?? "");
+        baseNode.name = String(nodeData.name ?? "");
+        baseNode.urlIncludes = String(nodeData.urlIncludes ?? "");
+        baseNode.timeout = normalizeNumericNodeValue(nodeData.timeout, 10000);
       } else if (type === "scroll") {
-        baseNode.direction = String(node.data.direction ?? "down");
-        baseNode.distance = Number(node.data.distance ?? 500);
+        baseNode.direction = String(nodeData.direction ?? "down");
+        if (shouldShowNodeField(type, "distance", nodeData)) {
+          baseNode.distance = normalizeNumericNodeValue(nodeData.distance, 500);
+        }
       } else if (type === "extract") {
-        baseNode.selector = String(node.data.selector ?? "");
-        baseNode.property = String(node.data.property ?? "text");
-        baseNode.attributeName = String(node.data.attributeName ?? "");
-        baseNode.saveAs = String(node.data.saveAs ?? "");
+        baseNode.selector = String(nodeData.selector ?? "");
+        baseNode.property = String(nodeData.property ?? "text");
+        if (shouldShowNodeField(type, "attributeName", nodeData)) {
+          baseNode.attributeName = String(nodeData.attributeName ?? "");
+        }
+        baseNode.saveAs = String(nodeData.saveAs ?? "");
       } else if (type === "screenshot") {
-        baseNode.scope = String(node.data.scope ?? "viewport");
-        baseNode.selector = String(node.data.selector ?? "");
+        baseNode.scope = String(nodeData.scope ?? "viewport");
+        if (shouldShowNodeField(type, "selector", nodeData)) {
+          baseNode.selector = String(nodeData.selector ?? "");
+        }
       }
 
       return baseNode;

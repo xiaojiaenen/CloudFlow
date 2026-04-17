@@ -26,6 +26,7 @@ import {
   cancelTask,
   CanvasNodeData,
   createCredential,
+  formatWorkflowBuildErrorMessage,
   getTaskExecutionScreenshotSrc,
   createEmptyCanvasGraph,
   createWorkflow,
@@ -49,6 +50,7 @@ import {
   TaskExecutionRecord,
   updateWorkflow,
   updateCredential,
+  validateWorkflowSchema,
   WorkflowCredentialRequirement,
   WorkflowInputField,
   WorkflowRecord,
@@ -107,9 +109,21 @@ function getLatestPersistedScreenshot(taskId: string, events: TaskExecutionRecor
     : null;
 }
 
+function normalizeSelectInputValue(field: WorkflowInputField, value?: string) {
+  if (field.type !== "select") {
+    return value ?? "";
+  }
+
+  if (!value) {
+    return "";
+  }
+
+  return field.options?.some((option) => option.value === value) ? value : "";
+}
+
 function buildInitialRunValues(schema: WorkflowInputField[]) {
   return schema.reduce<Record<string, string>>((acc, field) => {
-    acc[field.key] = field.defaultValue ?? "";
+    acc[field.key] = normalizeSelectInputValue(field, field.defaultValue);
     return acc;
   }, {});
 }
@@ -308,15 +322,27 @@ export default function Workspace() {
 
     return "已发布";
   }, [workflowStatus]);
-  const parameterSummary = useMemo(
-    () => `参数 ${inputSchema.length} 项 · 凭据要求 ${credentialRequirements.length} 项`,
-    [credentialRequirements.length, inputSchema.length],
-  );
   const canManagePublishedTemplate = useMemo(
     () =>
       !publishedTemplate ||
       Boolean(user?.isSuperAdmin || (publishedTemplate.publisherId && publishedTemplate.publisherId === user?.id)),
     [publishedTemplate, user?.id, user?.isSuperAdmin],
+  );
+  const workflowSchemaValidation = useMemo(
+    () => validateWorkflowSchema(inputSchema, credentialRequirements),
+    [credentialRequirements, inputSchema],
+  );
+  const parameterSummary = useMemo(
+    () =>
+      workflowSchemaValidation.hasErrors
+        ? `参数 ${inputSchema.length} 项 · 凭据要求 ${credentialRequirements.length} 项 · 待修复 ${workflowSchemaValidation.totalIssues} 项`
+        : `参数 ${inputSchema.length} 项 · 凭据要求 ${credentialRequirements.length} 项`,
+    [
+      credentialRequirements.length,
+      inputSchema.length,
+      workflowSchemaValidation.hasErrors,
+      workflowSchemaValidation.totalIssues,
+    ],
   );
   const workflowDraftSnapshot = useMemo(
     () =>
@@ -487,6 +513,24 @@ export default function Workspace() {
     [addLog, loadCredentials],
   );
 
+  const ensureWorkflowSchemaReady = useCallback(
+    (purpose: "run" | "publish") => {
+      if (!workflowSchemaValidation.hasErrors) {
+        return true;
+      }
+
+      const actionLabel = purpose === "publish" ? "发布" : "运行";
+      const detail = workflowSchemaValidation.messages.slice(0, 3).join("；");
+      addLog(
+        "error",
+        `当前参数/凭据配置还有 ${workflowSchemaValidation.totalIssues} 个问题，请先修复后再${actionLabel}。${detail}${workflowSchemaValidation.messages.length > 3 ? "；..." : ""}`,
+      );
+      setSettingsOpen(true);
+      return false;
+    },
+    [addLog, workflowSchemaValidation],
+  );
+
   const persistWorkflow = useCallback(
     async (options?: { silent?: boolean; snapshot?: string }) => {
       const definition = buildWorkflowDefinition(flowNodes, flowEdges, {
@@ -539,7 +583,7 @@ export default function Workspace() {
         if (autoSaveSnapshotRef.current === snapshotToPersist) {
           autoSaveSnapshotRef.current = null;
         }
-        addLog("error", error instanceof Error ? error.message : "保存工作流失败。");
+        addLog("error", formatWorkflowBuildErrorMessage(error));
         throw error;
       } finally {
         setIsSavingWorkflow(false);
@@ -783,7 +827,7 @@ export default function Workspace() {
 
       for (const field of inputSchema) {
         if (current[field.key] !== undefined) {
-          next[field.key] = current[field.key];
+          next[field.key] = normalizeSelectInputValue(field, current[field.key]);
         }
       }
 
@@ -885,6 +929,10 @@ export default function Workspace() {
       return;
     }
 
+    if (!ensureWorkflowSchemaReady("publish")) {
+      return;
+    }
+
     try {
       setIsPublishingTemplate(true);
       const workflow = await persistWorkflow({ silent: true });
@@ -908,7 +956,7 @@ export default function Workspace() {
     } finally {
       setIsPublishingTemplate(false);
     }
-  }, [addLog, persistWorkflow, publishForm, user?.role]);
+  }, [addLog, ensureWorkflowSchemaReady, persistWorkflow, publishForm, user?.role]);
 
   const startWorkflowRun = useCallback(
     async (
@@ -980,6 +1028,10 @@ export default function Workspace() {
       return;
     }
 
+    if (!ensureWorkflowSchemaReady("run")) {
+      return;
+    }
+
     setSelectedNodeId(null);
     setLogs([]);
     setScreenshot(null);
@@ -1035,6 +1087,7 @@ export default function Workspace() {
     runCredentialBindings,
     runFormValues,
     taskId,
+    ensureWorkflowSchemaReady,
   ]);
 
   return (
@@ -1370,6 +1423,11 @@ export default function Workspace() {
           </Tabs>
 
           <div className="sticky bottom-0 z-10 flex justify-end gap-3 border-t border-white/[0.05] bg-zinc-950/95 px-6 py-4 backdrop-blur">
+            {workflowSchemaValidation.hasErrors ? (
+              <div className="mr-auto flex items-center text-xs text-amber-300">
+                参数/凭据还有 {workflowSchemaValidation.totalIssues} 个待修复项，当前仍可保存草稿。
+              </div>
+            ) : null}
             <Button variant="ghost" onClick={() => setSettingsOpen(false)}>
               取消
             </Button>

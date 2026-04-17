@@ -6,12 +6,14 @@ import { Button } from "@/src/components/ui/Button";
 import { Input } from "@/src/components/ui/Input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/src/components/ui/Card";
 import { useAuth } from "@/src/context/AuthContext";
+import { useNotice } from "@/src/context/NoticeContext";
 import { BRAND, buildPageTitle } from "@/src/lib/brand";
 
 export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   const { login } = useAuth();
+  const { notify } = useNotice();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -28,15 +30,28 @@ export default function Login() {
   const handleLogin = async (event: FormEvent) => {
     event.preventDefault();
     setErrorMessage("");
+    const normalizedEmail = email.trim();
 
     try {
       setIsSubmitting(true);
-      const user = await login(email, password);
+      const user = await login(normalizedEmail, password);
+      notify({
+        tone: "success",
+        title: "登录成功",
+        description: `欢迎回来，${user.name}。`,
+        durationMs: 2400,
+      });
       navigate(user.role === "admin" && redirectTo === "/login" ? "/admin" : redirectTo, {
         replace: true,
       });
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "登录失败，请稍后重试。");
+      const message = error instanceof Error ? error.message : "登录失败，请稍后重试。";
+      setErrorMessage(message);
+      notify({
+        tone: "error",
+        title: "登录失败",
+        description: message,
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -97,7 +112,7 @@ export default function Login() {
               </div>
             ) : null}
 
-            <Button type="submit" className="w-full" disabled={isSubmitting}>
+            <Button type="submit" className="w-full" disabled={isSubmitting || !email.trim() || !password.trim()}>
               {isSubmitting ? "登录中..." : "登录"}
             </Button>
           </form>

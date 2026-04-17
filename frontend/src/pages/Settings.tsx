@@ -20,7 +20,9 @@ import { Button } from "@/src/components/ui/Button";
 import { Input } from "@/src/components/ui/Input";
 import { Select } from "@/src/components/ui/Select";
 import { useAuth } from "@/src/context/AuthContext";
+import { useNotice } from "@/src/context/NoticeContext";
 import { useOverlayDialog } from "@/src/context/OverlayDialogContext";
+import { useDebouncedValue } from "@/src/hooks/useDebouncedValue";
 import {
   changeCurrentUserPassword,
   listWorkflowSchedules,
@@ -84,6 +86,7 @@ function getTaskStatusMeta(
 export default function Settings() {
   const navigate = useNavigate();
   const { user, refreshUser } = useAuth();
+  const { notify } = useNotice();
   const { confirm } = useOverlayDialog();
   const [schedules, setSchedules] = useState<WorkflowScheduleRecord[]>([]);
   const [page, setPage] = useState(1);
@@ -104,6 +107,7 @@ export default function Settings() {
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
   const [profileMessage, setProfileMessage] = useState("");
+  const debouncedSearch = useDebouncedValue(search, 350);
 
   const loadSchedules = useCallback(async () => {
     try {
@@ -111,7 +115,7 @@ export default function Settings() {
       const data = await listWorkflowSchedules({
         page,
         pageSize,
-        search,
+        search: debouncedSearch,
         lastStatus: statusFilter,
       });
 
@@ -124,10 +128,16 @@ export default function Settings() {
       setTotal(data.total);
       setTotalPages(data.totalPages);
       setSelectedIds((current) => current.filter((id) => data.items.some((item) => item.id === id)));
+    } catch (error) {
+      notify({
+        tone: "error",
+        title: "加载调度列表失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
     } finally {
       setIsLoading(false);
     }
-  }, [page, pageSize, search, statusFilter]);
+  }, [debouncedSearch, notify, page, pageSize, statusFilter]);
 
   useEffect(() => {
     void loadSchedules();
@@ -174,6 +184,17 @@ export default function Settings() {
         },
       });
       await loadSchedules();
+      notify({
+        tone: "success",
+        title: "调度已停用",
+        description: `“${item.name}”不会再自动触发。`,
+      });
+    } catch (error) {
+      notify({
+        tone: "error",
+        title: "停用调度失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
     } finally {
       setUpdatingWorkflowId(null);
     }
@@ -201,29 +222,129 @@ export default function Settings() {
 
     try {
       setUpdatingWorkflowId("batch");
-      for (const workflowId of selectedIds) {
-        await updateWorkflow(workflowId, {
-          schedule: {
-            enabled: false,
-          },
+      const selectedSet = new Set(selectedIds);
+      const orderedIds = schedules.filter((item) => selectedSet.has(item.id)).map((item) => item.id);
+      const results = await Promise.allSettled(
+        orderedIds.map((workflowId) =>
+          updateWorkflow(workflowId, {
+            schedule: {
+              enabled: false,
+            },
+          }),
+        ),
+      );
+      const failedIds = orderedIds.filter((_, index) => results[index]?.status === "rejected");
+      const failedCount = failedIds.length;
+      const successCount = orderedIds.length - failedCount;
+
+      if (successCount > 0) {
+        notify({
+          tone: failedCount > 0 ? "warning" : "success",
+          title: failedCount > 0 ? "批量停用部分完成" : "批量停用已完成",
+          description:
+            failedCount > 0
+              ? `成功停用 ${successCount} 个调度，另有 ${failedCount} 个失败。`
+              : `已停用 ${successCount} 个调度。`,
+        });
+      } else {
+        notify({
+          tone: "error",
+          title: "批量停用失败",
+          description: "没有任何调度停用成功，请稍后重试。",
         });
       }
-      setSelectedIds([]);
+
       await loadSchedules();
+      setSelectedIds(failedIds);
+    } catch (error) {
+      notify({
+        tone: "error",
+        title: "批量停用失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
     } finally {
       setUpdatingWorkflowId(null);
+    }
+  };
+
+  const saveProfile = async () => {
+    try {
+      setIsSavingProfile(true);
+      setProfileMessage("");
+      await updateCurrentUserProfile({ name: profileName.trim() });
+      await refreshUser();
+      setProfileMessage("个人资料已更新。");
+      notify({
+        tone: "success",
+        title: "个人资料已更新",
+        description: "新的显示名称已经生效。",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "更新个人资料失败。";
+      setProfileMessage(message);
+      notify({
+        tone: "error",
+        title: "更新个人资料失败",
+        description: message,
+      });
+    } finally {
+      setIsSavingProfile(false);
+    }
+  };
+
+  const savePassword = async () => {
+    if (newPassword !== confirmPassword) {
+      const message = "两次输入的新密码不一致。";
+      setProfileMessage(message);
+      notify({
+        tone: "warning",
+        title: "无法修改密码",
+        description: message,
+      });
+      return;
+    }
+
+    try {
+      setIsChangingPassword(true);
+      setProfileMessage("");
+      await changeCurrentUserPassword({
+        currentPassword,
+        newPassword,
+      });
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setProfileMessage("密码已修改成功。");
+      notify({
+        tone: "success",
+        title: "密码已修改",
+        description: "后续请使用新密码登录。",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "修改密码失败。";
+      setProfileMessage(message);
+      notify({
+        tone: "error",
+        title: "修改密码失败",
+        description: message,
+      });
+    } finally {
+      setIsChangingPassword(false);
     }
   };
 
   const statusOptions = [
     { value: "all", label: "全部状态", description: "查看全部调度记录", group: "执行状态" },
     { value: "never", label: "从未执行", description: "已配置但尚未产生历史任务", group: "执行状态" },
-    { value: "running", label: "运行中", description: "最近一次任务仍在运行", group: "执行状态" },
+    { value: "running", label: "运行中", description: "最近一次任务仍在执行", group: "执行状态" },
     { value: "success", label: "最近成功", description: "最近一次任务执行成功", group: "执行状态" },
     { value: "failed", label: "最近失败", description: "最近一次任务执行失败", tone: "danger" as const, group: "执行状态" },
     { value: "cancelled", label: "最近已取消", description: "最近一次任务被取消", group: "执行状态" },
     { value: "pending", label: "等待中", description: "最近一次任务还在等待执行", group: "执行状态" },
   ];
+
+  const searchHint =
+    search !== debouncedSearch ? "正在应用搜索条件..." : "支持按状态筛选、按名称搜索，并可批量停用调度。";
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#09090b] font-sans text-zinc-50 selection:bg-sky-500/30">
@@ -300,6 +421,8 @@ export default function Settings() {
                     {selectedIds.length === schedules.length && schedules.length > 0 ? "取消全选" : "全选当前页"}
                   </Button>
                 </div>
+
+                <div className="text-xs text-zinc-500">{searchHint}</div>
 
                 <div className="space-y-4 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
                   {schedules.length === 0 && !isLoading ? (
@@ -408,7 +531,7 @@ export default function Settings() {
                 </div>
 
                 <div className="flex items-center justify-between gap-4 pt-2">
-                  <div className="text-xs text-zinc-500">调度管理中心已启用分页，避免工作流过多时需要一直向下滑。</div>
+                  <div className="text-xs text-zinc-500">调度管理中心已启用分页，避免工作流过多时需要一直向下滑动。</div>
                   <div className="flex items-center gap-2">
                     <Button
                       variant="outline"
@@ -460,22 +583,7 @@ export default function Settings() {
                   <Input value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="显示名称" />
                   <div className="text-xs text-zinc-500">当前角色：{user?.role === "admin" ? "管理员" : "普通用户"}</div>
                   <div className="flex justify-end">
-                    <Button
-                      disabled={!profileName.trim() || isSavingProfile}
-                      onClick={async () => {
-                        try {
-                          setIsSavingProfile(true);
-                          setProfileMessage("");
-                          await updateCurrentUserProfile({ name: profileName.trim() });
-                          await refreshUser();
-                          setProfileMessage("个人资料已更新。");
-                        } catch (error) {
-                          setProfileMessage(error instanceof Error ? error.message : "更新个人资料失败。");
-                        } finally {
-                          setIsSavingProfile(false);
-                        }
-                      }}
-                    >
+                    <Button disabled={!profileName.trim() || isSavingProfile} onClick={() => void saveProfile()}>
                       {isSavingProfile ? "保存中..." : "保存资料"}
                     </Button>
                   </div>
@@ -502,29 +610,7 @@ export default function Settings() {
                         confirmPassword !== newPassword ||
                         isChangingPassword
                       }
-                      onClick={async () => {
-                        if (newPassword !== confirmPassword) {
-                          setProfileMessage("两次输入的新密码不一致。");
-                          return;
-                        }
-
-                        try {
-                          setIsChangingPassword(true);
-                          setProfileMessage("");
-                          await changeCurrentUserPassword({
-                            currentPassword,
-                            newPassword,
-                          });
-                          setCurrentPassword("");
-                          setNewPassword("");
-                          setConfirmPassword("");
-                          setProfileMessage("密码已修改成功。");
-                        } catch (error) {
-                          setProfileMessage(error instanceof Error ? error.message : "修改密码失败。");
-                        } finally {
-                          setIsChangingPassword(false);
-                        }
-                      }}
+                      onClick={() => void savePassword()}
                     >
                       {isChangingPassword ? "提交中..." : "修改密码"}
                     </Button>

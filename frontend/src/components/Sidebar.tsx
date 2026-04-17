@@ -3,6 +3,8 @@ import {
   Activity,
   Archive,
   CalendarClock,
+  ChevronDown,
+  ChevronRight,
   Copy,
   LayoutGrid,
   MoreHorizontal,
@@ -10,6 +12,7 @@ import {
   PanelLeftOpen,
   PencilLine,
   Plus,
+  RotateCcw,
   Search,
   Settings,
   ShieldAlert,
@@ -18,6 +21,7 @@ import {
 } from "lucide-react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/src/context/AuthContext";
+import { useNotice } from "@/src/context/NoticeContext";
 import { useOverlayDialog } from "@/src/context/OverlayDialogContext";
 import { cn } from "@/src/lib/utils";
 import {
@@ -55,8 +59,29 @@ const navItems = [
   { path: "/settings", icon: CalendarClock, label: "调度管理中心" },
 ];
 
+function filterWorkflows(workflows: WorkflowRecord[], keyword: string, status: "archived" | "active") {
+  const normalizedKeyword = keyword.trim().toLowerCase();
+
+  return workflows.filter((workflow) => {
+    const matchesStatus = status === "archived" ? workflow.status === "archived" : workflow.status !== "archived";
+    if (!matchesStatus) {
+      return false;
+    }
+
+    if (!normalizedKeyword) {
+      return true;
+    }
+
+    return (
+      workflow.name.toLowerCase().includes(normalizedKeyword) ||
+      (workflow.description ?? "").toLowerCase().includes(normalizedKeyword)
+    );
+  });
+}
+
 export function Sidebar() {
   const { user } = useAuth();
+  const { notify } = useNotice();
   const { confirm, prompt } = useOverlayDialog();
   const navigate = useNavigate();
   const location = useLocation();
@@ -64,12 +89,13 @@ export function Sidebar() {
   const currentWorkflowId = searchParams.get("workflowId");
 
   const [isCollapsed, setIsCollapsed] = useState(() => localStorage.getItem("sidebarCollapsed") === "true");
+  const [showArchived, setShowArchived] = useState(() => localStorage.getItem("sidebarShowArchived") === "true");
   const [workflows, setWorkflows] = useState<WorkflowRecord[]>([]);
   const [workflowSearch, setWorkflowSearch] = useState("");
   const [isLoadingWorkflows, setIsLoadingWorkflows] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isCreatingWorkflow, setIsCreatingWorkflow] = useState(false);
-  const [deletingWorkflowId, setDeletingWorkflowId] = useState<string | null>(null);
+  const [actionWorkflowId, setActionWorkflowId] = useState<string | null>(null);
   const [newWorkflowName, setNewWorkflowName] = useState("");
 
   const isWorkspacePage = location.pathname === "/";
@@ -77,16 +103,26 @@ export function Sidebar() {
   const fetchWorkflows = useCallback(async () => {
     try {
       setIsLoadingWorkflows(true);
-      const data = await listWorkflows();
+      const data = await listWorkflows({ includeArchived: true });
       setWorkflows(data);
+    } catch (error) {
+      notify({
+        tone: "error",
+        title: "加载工作流失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
     } finally {
       setIsLoadingWorkflows(false);
     }
-  }, []);
+  }, [notify]);
 
   useEffect(() => {
     localStorage.setItem("sidebarCollapsed", String(isCollapsed));
   }, [isCollapsed]);
+
+  useEffect(() => {
+    localStorage.setItem("sidebarShowArchived", String(showArchived));
+  }, [showArchived]);
 
   useEffect(() => {
     void fetchWorkflows();
@@ -106,26 +142,23 @@ export function Sidebar() {
     [user?.role],
   );
 
-  const visibleWorkflows = useMemo(() => {
-    const keyword = workflowSearch.trim().toLowerCase();
-    return workflows.filter((workflow) => {
-      if (workflow.status === "archived") {
-        return false;
-      }
+  const activeWorkflows = useMemo(
+    () => filterWorkflows(workflows, workflowSearch, "active"),
+    [workflowSearch, workflows],
+  );
 
-      if (!keyword) {
-        return true;
-      }
+  const archivedWorkflows = useMemo(
+    () => filterWorkflows(workflows, workflowSearch, "archived"),
+    [workflowSearch, workflows],
+  );
 
-      return (
-        workflow.name.toLowerCase().includes(keyword) ||
-        (workflow.description ?? "").toLowerCase().includes(keyword)
-      );
-    });
-  }, [workflowSearch, workflows]);
-
-  const totalVisibleWorkflowCount = useMemo(
+  const totalActiveWorkflowCount = useMemo(
     () => workflows.filter((workflow) => workflow.status !== "archived").length,
+    [workflows],
+  );
+
+  const totalArchivedWorkflowCount = useMemo(
+    () => workflows.filter((workflow) => workflow.status === "archived").length,
     [workflows],
   );
 
@@ -154,6 +187,17 @@ export function Sidebar() {
       setNewWorkflowName("");
       setIsCreateModalOpen(false);
       navigate(`/?workflowId=${createdWorkflow.id}`);
+      notify({
+        tone: "success",
+        title: mode === "demo" ? "示例工作流已创建" : "空白工作流已创建",
+        description: `已为你创建“${createdWorkflow.name}”。`,
+      });
+    } catch (error) {
+      notify({
+        tone: "error",
+        title: "创建工作流失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
     } finally {
       setIsCreatingWorkflow(false);
     }
@@ -181,27 +225,38 @@ export function Sidebar() {
     }
 
     try {
-      setDeletingWorkflowId(workflow.id);
+      setActionWorkflowId(workflow.id);
       await deleteWorkflow(workflow.id);
       window.dispatchEvent(new CustomEvent(WORKFLOW_SAVED_EVENT));
+      notify({
+        tone: "success",
+        title: "工作流已删除",
+        description: `“${workflow.name}”已从侧边栏移除。`,
+      });
 
       if (currentWorkflowId === workflow.id && isWorkspacePage) {
         window.dispatchEvent(new CustomEvent(WORKFLOW_OPEN_BLANK_EVENT));
         navigate("/", { replace: true });
       }
+    } catch (error) {
+      notify({
+        tone: "error",
+        title: "删除工作流失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
     } finally {
-      setDeletingWorkflowId(null);
+      setActionWorkflowId(null);
     }
   };
 
   const renameWorkflow = async (workflow: WorkflowRecord) => {
     const nextName = await prompt({
       title: "重命名工作流",
-      description: "修改后会立即同步到工作区和任务入口。",
+      description: "修改后会立即同步到工作区、监控中心和调度中心。",
       label: "工作流名称",
       placeholder: "输入新的工作流名称",
       defaultValue: workflow.name,
-      inputHint: "建议使用清晰的业务名称，方便在侧边栏、监控中心和调度中心快速识别。",
+      inputHint: "建议使用清晰的业务名称，方便后续检索和协作。",
       confirmText: "保存名称",
       cancelText: "取消",
     });
@@ -215,16 +270,48 @@ export function Sidebar() {
       return;
     }
 
-    await updateWorkflow(workflow.id, {
-      name: normalizedName,
-    });
-    window.dispatchEvent(new CustomEvent(WORKFLOW_SAVED_EVENT));
+    try {
+      setActionWorkflowId(workflow.id);
+      await updateWorkflow(workflow.id, {
+        name: normalizedName,
+      });
+      window.dispatchEvent(new CustomEvent(WORKFLOW_SAVED_EVENT));
+      notify({
+        tone: "success",
+        title: "工作流名称已更新",
+        description: `已重命名为“${normalizedName}”。`,
+      });
+    } catch (error) {
+      notify({
+        tone: "error",
+        title: "重命名失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
+    } finally {
+      setActionWorkflowId(null);
+    }
   };
 
   const duplicateExistingWorkflow = async (workflow: WorkflowRecord) => {
-    const duplicated = await duplicateWorkflow(workflow.id);
-    window.dispatchEvent(new CustomEvent(WORKFLOW_SAVED_EVENT));
-    navigate(`/?workflowId=${duplicated.id}`);
+    try {
+      setActionWorkflowId(workflow.id);
+      const duplicated = await duplicateWorkflow(workflow.id);
+      window.dispatchEvent(new CustomEvent(WORKFLOW_SAVED_EVENT));
+      navigate(`/?workflowId=${duplicated.id}`);
+      notify({
+        tone: "success",
+        title: "工作流已复制",
+        description: `已创建副本“${duplicated.name}”。`,
+      });
+    } catch (error) {
+      notify({
+        tone: "error",
+        title: "复制工作流失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
+    } finally {
+      setActionWorkflowId(null);
+    }
   };
 
   const archiveWorkflow = async (workflow: WorkflowRecord) => {
@@ -238,18 +325,199 @@ export function Sidebar() {
       return;
     }
 
-    await updateWorkflow(workflow.id, {
-      status: "archived",
-      schedule: {
-        enabled: false,
-      },
-    });
-    window.dispatchEvent(new CustomEvent(WORKFLOW_SAVED_EVENT));
+    try {
+      setActionWorkflowId(workflow.id);
+      await updateWorkflow(workflow.id, {
+        status: "archived",
+        schedule: {
+          enabled: false,
+        },
+      });
+      window.dispatchEvent(new CustomEvent(WORKFLOW_SAVED_EVENT));
+      setShowArchived(true);
+      notify({
+        tone: "success",
+        title: "工作流已归档",
+        description: `“${workflow.name}”已移入已归档列表。`,
+      });
 
-    if (currentWorkflowId === workflow.id && isWorkspacePage) {
-      window.dispatchEvent(new CustomEvent(WORKFLOW_OPEN_BLANK_EVENT));
-      navigate("/", { replace: true });
+      if (currentWorkflowId === workflow.id && isWorkspacePage) {
+        window.dispatchEvent(new CustomEvent(WORKFLOW_OPEN_BLANK_EVENT));
+        navigate("/", { replace: true });
+      }
+    } catch (error) {
+      notify({
+        tone: "error",
+        title: "归档工作流失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
+    } finally {
+      setActionWorkflowId(null);
     }
+  };
+
+  const restoreWorkflow = async (workflow: WorkflowRecord) => {
+    const confirmed = await confirm({
+      title: "恢复工作流",
+      description: `确认恢复“${workflow.name}”吗？恢复后会重新出现在工作区，状态将变为草稿，便于你确认后再继续运行。`,
+      confirmText: "恢复为草稿",
+      cancelText: "取消",
+    });
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setActionWorkflowId(workflow.id);
+      await updateWorkflow(workflow.id, {
+        status: "draft",
+      });
+      window.dispatchEvent(new CustomEvent(WORKFLOW_SAVED_EVENT));
+      navigate(`/?workflowId=${workflow.id}`);
+      notify({
+        tone: "success",
+        title: "工作流已恢复",
+        description: `“${workflow.name}”已回到工作区，当前状态为草稿。`,
+      });
+    } catch (error) {
+      notify({
+        tone: "error",
+        title: "恢复工作流失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
+    } finally {
+      setActionWorkflowId(null);
+    }
+  };
+
+  const renderWorkflowItem = (workflow: WorkflowRecord, mode: "active" | "archived") => {
+    const active = currentWorkflowId === workflow.id && isWorkspacePage;
+    const isBusy = actionWorkflowId === workflow.id;
+
+    return (
+      <div
+        key={workflow.id}
+        onClick={() => selectWorkflow(workflow.id)}
+        title={workflow.name}
+        className={cn(
+          "group flex cursor-pointer rounded-xl text-sm transition-colors",
+          isCollapsed ? "items-center justify-center py-2.5" : "items-start justify-between gap-3 px-3 py-2.5",
+          active
+            ? "border border-sky-400/15 bg-sky-500/10 text-zinc-50"
+            : "text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200",
+        )}
+      >
+        <div className="flex min-w-0 items-start gap-2.5">
+          <div
+            className={cn(
+              "mt-1.5 h-2 w-2 shrink-0 rounded-full",
+              mode === "archived"
+                ? "bg-amber-400/80"
+                : active
+                  ? "bg-sky-400 shadow-[0_0_10px_rgba(56,189,248,0.8)]"
+                  : "bg-zinc-600",
+            )}
+          />
+          {!isCollapsed ? (
+            <div className="min-w-0 flex-1">
+              <div className="max-w-[180px] truncate text-[13px] font-medium leading-5" title={workflow.name}>
+                {workflow.name}
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                {workflow.status === "draft" ? (
+                  <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-300">
+                    草稿
+                  </span>
+                ) : null}
+                {workflow.scheduleEnabled ? (
+                  <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-300">
+                    已调度
+                  </span>
+                ) : null}
+                {mode === "archived" ? (
+                  <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 text-[10px] text-zinc-400">
+                    已归档
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        {!isCollapsed ? (
+          <div className="flex shrink-0 items-center gap-1">
+            {active ? <MoreHorizontal className="h-4 w-4 text-zinc-600" /> : null}
+
+            {mode === "active" ? (
+              <>
+                <button
+                  type="button"
+                  disabled={isBusy}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void renameWorkflow(workflow);
+                  }}
+                  className="rounded-md p-1 text-zinc-500 opacity-0 transition-opacity hover:bg-white/[0.06] hover:text-zinc-200 group-hover:opacity-100 disabled:opacity-40"
+                  title="重命名"
+                >
+                  <PencilLine className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  disabled={isBusy}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void duplicateExistingWorkflow(workflow);
+                  }}
+                  className="rounded-md p-1 text-zinc-500 opacity-0 transition-opacity hover:bg-sky-500/10 hover:text-sky-300 group-hover:opacity-100 disabled:opacity-40"
+                  title="复制"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  disabled={isBusy}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void archiveWorkflow(workflow);
+                  }}
+                  className="rounded-md p-1 text-zinc-500 opacity-0 transition-opacity hover:bg-amber-500/10 hover:text-amber-300 group-hover:opacity-100 disabled:opacity-40"
+                  title="归档"
+                >
+                  <Archive className="h-3.5 w-3.5" />
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void restoreWorkflow(workflow);
+                }}
+                className="rounded-md p-1 text-zinc-500 opacity-0 transition-opacity hover:bg-emerald-500/10 hover:text-emerald-300 group-hover:opacity-100 disabled:opacity-40"
+                title="恢复为草稿"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+              </button>
+            )}
+
+            <button
+              type="button"
+              disabled={isBusy}
+              onClick={(event) => {
+                event.stopPropagation();
+                void removeWorkflow(workflow);
+              }}
+              className="rounded-md p-1 text-zinc-500 opacity-0 transition-opacity hover:bg-red-500/10 hover:text-red-300 group-hover:opacity-100 disabled:opacity-40"
+              title="删除"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ) : null}
+      </div>
+    );
   };
 
   return (
@@ -324,7 +592,8 @@ export function Sidebar() {
                 <div>
                   <div className="text-[11px] font-medium uppercase tracking-[0.24em] text-zinc-500">工作流</div>
                   <div className="mt-1 text-xs text-zinc-600">
-                    {visibleWorkflows.length} / {totalVisibleWorkflowCount} 个可见
+                    常用 {activeWorkflows.length} / {totalActiveWorkflowCount}
+                    {totalArchivedWorkflowCount > 0 ? ` · 归档 ${totalArchivedWorkflowCount}` : ""}
                   </div>
                 </div>
                 {isWorkspacePage ? (
@@ -356,12 +625,12 @@ export function Sidebar() {
             <div
               className={cn("min-h-0 flex-1", !isCollapsed && "rounded-2xl border border-white/[0.04] bg-white/[0.02] p-2")}
             >
-              <div className="h-full space-y-1 overflow-y-auto pr-1">
+              <div className="h-full space-y-3 overflow-y-auto pr-1">
                 {isLoadingWorkflows && !isCollapsed ? (
                   <div className="px-3 py-3 text-xs text-zinc-500">正在加载工作流...</div>
                 ) : null}
 
-                {!isLoadingWorkflows && visibleWorkflows.length === 0 && !isCollapsed ? (
+                {!isLoadingWorkflows && activeWorkflows.length === 0 && archivedWorkflows.length === 0 && !isCollapsed ? (
                   <div className="rounded-xl border border-dashed border-white/[0.08] bg-black/20 px-3 py-4 text-xs leading-6 text-zinc-500">
                     {workflowSearch.trim()
                       ? "没有匹配的工作流，试试换一个关键词。"
@@ -369,103 +638,43 @@ export function Sidebar() {
                   </div>
                 ) : null}
 
-                {visibleWorkflows.map((workflow) => {
-                  const active = currentWorkflowId === workflow.id && isWorkspacePage;
+                <div className="space-y-1">
+                  {!isCollapsed ? (
+                    <div className="px-2 pb-1 text-[11px] uppercase tracking-[0.24em] text-zinc-500">常用工作流</div>
+                  ) : null}
+                  {activeWorkflows.map((workflow) => renderWorkflowItem(workflow, "active"))}
+                </div>
 
-                  return (
-                    <div
-                      key={workflow.id}
-                      onClick={() => selectWorkflow(workflow.id)}
-                      title={workflow.name}
-                      className={cn(
-                        "group flex cursor-pointer rounded-xl text-sm transition-colors",
-                        isCollapsed ? "items-center justify-center py-2.5" : "items-start justify-between gap-3 px-3 py-2.5",
-                        active
-                          ? "border border-sky-400/15 bg-sky-500/10 text-zinc-50"
-                          : "text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200",
-                      )}
+                {!isCollapsed && totalArchivedWorkflowCount > 0 ? (
+                  <div className="space-y-2 border-t border-white/[0.05] pt-3">
+                    <button
+                      type="button"
+                      onClick={() => setShowArchived((current) => !current)}
+                      className="flex w-full items-center justify-between rounded-xl px-2 py-2 text-left text-xs uppercase tracking-[0.18em] text-zinc-500 transition-colors hover:bg-white/[0.03] hover:text-zinc-300"
                     >
-                      <div className="flex min-w-0 items-start gap-2.5">
-                        <div
-                          className={cn(
-                            "mt-1.5 h-2 w-2 shrink-0 rounded-full",
-                            active ? "bg-sky-400 shadow-[0_0_10px_rgba(56,189,248,0.8)]" : "bg-zinc-600",
-                          )}
-                        />
-                        {!isCollapsed ? (
-                          <div className="min-w-0 flex-1">
-                            <div className="max-w-[180px] truncate text-[13px] font-medium leading-5" title={workflow.name}>
-                              {workflow.name}
-                            </div>
-                            <div className="mt-1 flex flex-wrap items-center gap-2">
-                              {workflow.status === "draft" ? (
-                                <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-300">
-                                  草稿
-                                </span>
-                              ) : null}
-                              {workflow.scheduleEnabled ? (
-                                <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-300">
-                                  已调度
-                                </span>
-                              ) : null}
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
+                      <span className="flex items-center gap-2">
+                        <Archive className="h-3.5 w-3.5" />
+                        已归档
+                      </span>
+                      <span className="flex items-center gap-2 text-[11px] normal-case tracking-normal">
+                        {archivedWorkflows.length} 条
+                        {showArchived ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                      </span>
+                    </button>
 
-                      {!isCollapsed ? (
-                        <div className="flex shrink-0 items-center gap-1">
-                          {active ? <MoreHorizontal className="h-4 w-4 text-zinc-600" /> : null}
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void renameWorkflow(workflow);
-                            }}
-                            className="rounded-md p-1 text-zinc-500 opacity-0 transition-opacity hover:bg-white/[0.06] hover:text-zinc-200 group-hover:opacity-100"
-                            title="重命名"
-                          >
-                            <PencilLine className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void duplicateExistingWorkflow(workflow);
-                            }}
-                            className="rounded-md p-1 text-zinc-500 opacity-0 transition-opacity hover:bg-sky-500/10 hover:text-sky-300 group-hover:opacity-100"
-                            title="复制"
-                          >
-                            <Copy className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void archiveWorkflow(workflow);
-                            }}
-                            className="rounded-md p-1 text-zinc-500 opacity-0 transition-opacity hover:bg-amber-500/10 hover:text-amber-300 group-hover:opacity-100"
-                            title="归档"
-                          >
-                            <Archive className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            disabled={deletingWorkflowId === workflow.id}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void removeWorkflow(workflow);
-                            }}
-                            className="rounded-md p-1 text-zinc-500 opacity-0 transition-opacity hover:bg-red-500/10 hover:text-red-300 group-hover:opacity-100 disabled:opacity-40"
-                            title="删除"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
+                    {showArchived ? (
+                      <div className="space-y-1">
+                        {archivedWorkflows.length > 0 ? (
+                          archivedWorkflows.map((workflow) => renderWorkflowItem(workflow, "archived"))
+                        ) : (
+                          <div className="rounded-xl border border-dashed border-white/[0.08] bg-black/20 px-3 py-4 text-xs leading-6 text-zinc-500">
+                            当前筛选条件下没有匹配的归档工作流。
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>

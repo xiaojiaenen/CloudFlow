@@ -4,6 +4,7 @@ import { Button } from "@/src/components/ui/Button";
 import { Input } from "@/src/components/ui/Input";
 import { Select } from "@/src/components/ui/Select";
 import { Switch } from "@/src/components/ui/Switch";
+import { useNotice } from "@/src/context/NoticeContext";
 import { useOverlayDialog } from "@/src/context/OverlayDialogContext";
 import {
   CredentialRecord,
@@ -138,10 +139,12 @@ export function CredentialLibraryManager({
   onUpdate,
   onDelete,
 }: CredentialLibraryManagerProps) {
+  const { notify } = useNotice();
   const { confirm } = useOverlayDialog();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftCredential>(() => createDraft());
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!editingId && credentials.length === 0) {
@@ -152,7 +155,12 @@ export function CredentialLibraryManager({
   const isCreating = editingId === "new";
   const currentPresetFields = PRESET_FIELDS[draft.type];
   const customEntries = useMemo(() => Object.entries(draft.payload), [draft.payload]);
-  const canSubmit = draft.name.trim().length > 0 && draft.key.trim().length > 0;
+  const normalizedKey = normalizeKey(draft.key);
+  const sanitizedDraftPayload = useMemo(() => sanitizePayload(draft), [draft]);
+  const canSubmit =
+    draft.name.trim().length > 0 &&
+    normalizedKey.length > 0 &&
+    Object.keys(sanitizedDraftPayload).length > 0;
 
   const beginCreate = () => {
     setEditingId("new");
@@ -185,26 +193,52 @@ export function CredentialLibraryManager({
 
   const handleSave = async () => {
     if (!canSubmit) {
+      notify({
+        tone: "warning",
+        title: "无法保存凭据",
+        description:
+          draft.name.trim().length === 0
+            ? "请先填写凭据名称。"
+            : normalizedKey.length === 0
+              ? "凭据 key 不能为空，请使用字母、数字或下划线。"
+              : "请至少填写一个有效的凭据字段。",
+      });
       return;
     }
 
     const payload: CredentialUpsertPayload = {
       name: draft.name.trim(),
-      key: normalizeKey(draft.key),
+      key: normalizedKey,
       type: draft.type,
       provider: draft.provider.trim() || undefined,
       description: draft.description.trim() || undefined,
-      payload: sanitizePayload(draft),
+      payload: sanitizedDraftPayload,
     };
 
     try {
       setIsSubmitting(true);
       if (isCreating) {
         await onCreate(payload);
+        notify({
+          tone: "success",
+          title: "凭据已创建",
+          description: `“${payload.name}”已加入凭据库。`,
+        });
       } else if (editingId) {
         await onUpdate(editingId, payload);
+        notify({
+          tone: "success",
+          title: "凭据已更新",
+          description: `“${payload.name}”的配置已保存。`,
+        });
       }
       resetEditor();
+    } catch (error) {
+      notify({
+        tone: "error",
+        title: isCreating ? "创建凭据失败" : "更新凭据失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -222,9 +256,15 @@ export function CredentialLibraryManager({
             在这里维护账号、API Key、Cookie 等凭据。运行工作流时只做绑定，执行快照里不会保存明文。
           </div>
         </div>
-        <Button variant="outline" size="sm" className="gap-2" onClick={beginCreate}>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-2"
+          onClick={beginCreate}
+          disabled={Boolean(editingId) || isSubmitting}
+        >
           <Plus className="h-3.5 w-3.5" />
-          新建凭据
+          {editingId ? "编辑中..." : "新建凭据"}
         </Button>
       </div>
 
@@ -445,7 +485,13 @@ export function CredentialLibraryManager({
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" className="gap-2" onClick={() => beginEdit(credential)}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-2"
+                    onClick={() => beginEdit(credential)}
+                    disabled={isSubmitting || deletingId === credential.id}
+                  >
                     <Pencil className="h-3.5 w-3.5" />
                     编辑
                   </Button>
@@ -453,6 +499,7 @@ export function CredentialLibraryManager({
                     variant="ghost"
                     size="sm"
                     className="gap-2 text-red-300 hover:bg-red-500/10 hover:text-red-200"
+                    disabled={isSubmitting || deletingId === credential.id}
                     onClick={async () => {
                       const confirmed = await confirm({
                         title: "删除凭据",
@@ -464,14 +511,30 @@ export function CredentialLibraryManager({
                       if (!confirmed) {
                         return;
                       }
-                      await onDelete(credential.id);
-                      if (editingId === credential.id) {
-                        resetEditor();
+                      try {
+                        setDeletingId(credential.id);
+                        await onDelete(credential.id);
+                        if (editingId === credential.id) {
+                          resetEditor();
+                        }
+                        notify({
+                          tone: "success",
+                          title: "凭据已删除",
+                          description: `“${credential.name}”已从凭据库移除。`,
+                        });
+                      } catch (error) {
+                        notify({
+                          tone: "error",
+                          title: "删除凭据失败",
+                          description: error instanceof Error ? error.message : "请稍后重试。",
+                        });
+                      } finally {
+                        setDeletingId(null);
                       }
                     }}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
-                    删除
+                    {deletingId === credential.id ? "删除中..." : "删除"}
                   </Button>
                 </div>
               </div>

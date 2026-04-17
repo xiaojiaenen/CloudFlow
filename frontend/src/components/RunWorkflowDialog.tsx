@@ -49,6 +49,7 @@ function renderField(field: WorkflowInputField, value: string, onChange: (nextVa
         value={value}
         onChange={onChange}
         placeholder="请选择"
+        disabled={(field.options ?? []).length === 0}
         options={(field.options ?? []).map((option) => ({
           value: option.value,
           label: option.label,
@@ -57,9 +58,19 @@ function renderField(field: WorkflowInputField, value: string, onChange: (nextVa
     );
   }
 
+  const inputType =
+    field.type === "password" ||
+    field.type === "email" ||
+    field.type === "date" ||
+    field.type === "number"
+      ? field.type
+      : "text";
+
   return (
     <Input
-      type={field.type}
+      type={inputType}
+      inputMode={field.type === "number" ? "decimal" : undefined}
+      autoComplete={field.type === "password" ? "new-password" : undefined}
       value={value}
       onChange={(event) => onChange(event.target.value)}
       placeholder={field.placeholder}
@@ -214,12 +225,12 @@ export function RunWorkflowDialog({
 
                     {selectedCredential ? (
                       <div className="mt-3 flex flex-wrap gap-2">
-                        {Object.entries(selectedCredential.maskedPayload ?? {}).map(([key, value]) => (
+                        {Object.entries(selectedCredential.maskedPayload ?? {}).map(([key, maskedValue]) => (
                           <div
                             key={key}
                             className="rounded-full border border-white/[0.08] bg-black/20 px-2.5 py-1 text-[11px] text-zinc-300"
                           >
-                            {key}: {value || "空"}
+                            {key}: {maskedValue || "空"}
                           </div>
                         ))}
                       </div>
@@ -232,7 +243,7 @@ export function RunWorkflowDialog({
                     {availableCredentials.length === 0 ? (
                       <div className="mt-3 flex items-start gap-2 rounded-2xl border border-amber-500/10 bg-amber-500/5 px-3 py-3 text-xs text-amber-100">
                         <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                        当前凭据库里没有匹配这项需求的凭据。请先到工作流设置中的“参数与凭据”页创建凭据。
+                        当前凭据库里没有匹配这项需求的凭据。请先到“参数与凭据”里创建对应凭据。
                       </div>
                     ) : null}
                   </div>

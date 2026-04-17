@@ -4,6 +4,11 @@ import { ArrowRight, KeyRound, Wand2, X } from "lucide-react";
 import { Input } from "@/src/components/ui/Input";
 import { Select } from "@/src/components/ui/Select";
 import { WorkflowCredentialRequirement, WorkflowInputField } from "@/src/lib/cloudflow";
+import {
+  formatNodeParams,
+  sanitizeNodeFieldValues,
+  shouldShowNodeField,
+} from "@/src/lib/cloudflow/canvas";
 import { getNodeDefinition } from "@/src/registry/nodes";
 
 interface NodeConfigPanelProps {
@@ -33,23 +38,20 @@ function appendTemplate(currentValue: string, template: string) {
   return `${currentValue}${currentValue.endsWith(" ") ? "" : " "}${template}`;
 }
 
-function buildNodeParamsPreview(definitionFields: NonNullable<ReturnType<typeof getNodeDefinition>>["fields"], data: Record<string, unknown>) {
-  const fieldMap = new Map(definitionFields.map((field) => [field.name, field]));
+function supportsTemplateReference(fieldType: "text" | "number" | "select") {
+  return fieldType === "text" || fieldType === "number";
+}
 
-  return Object.entries(data)
-    .filter(
-      ([key, value]) =>
-        !["label", "type", "status", "params", "clientNodeId"].includes(key) &&
-        value !== undefined &&
-        value !== "",
-    )
-    .map(([key, value]) => {
-      const field = fieldMap.get(key);
-      const displayValue =
-        field?.options?.find((option) => option.value === String(value))?.label ?? String(value);
-      return `${field?.label ?? key}: ${displayValue}`;
-    })
-    .join("，");
+function mergeTemplateValue(
+  currentValue: string,
+  template: string,
+  fieldType: "text" | "number" | "select",
+) {
+  if (fieldType === "number") {
+    return template;
+  }
+
+  return appendTemplate(currentValue, template);
 }
 
 export function NodeConfigPanel({
@@ -66,7 +68,12 @@ export function NodeConfigPanel({
 
   useEffect(() => {
     if (node) {
-      setLocalData(node.data || {});
+      setLocalData(
+        sanitizeNodeFieldValues(
+          node.data.type as string | undefined,
+          (node.data || {}) as Record<string, unknown>,
+        ),
+      );
       setInputSelections({});
       setCredentialSelections({});
     }
@@ -80,7 +87,7 @@ export function NodeConfigPanel({
       credentialRequirements.flatMap((requirement) =>
         (CREDENTIAL_FIELD_OPTIONS[requirement.type] ?? CREDENTIAL_FIELD_OPTIONS.custom).map((fieldName) => ({
           value: `{{credentials.${requirement.key}.${fieldName}}}`,
-          label: `${requirement.label || requirement.key} · ${fieldName}`,
+          label: `${requirement.label || requirement.key} / ${fieldName}`,
           description: requirement.provider
             ? `${requirement.provider} / ${requirement.type}`
             : requirement.type,
@@ -95,10 +102,12 @@ export function NodeConfigPanel({
   }
 
   const commitNodeData = (nextData: Record<string, unknown>) => {
+    const sanitizedData = sanitizeNodeFieldValues(nodeType, nextData);
     const nextPayload = {
-      ...nextData,
-      params: buildNodeParamsPreview(definition.fields, nextData),
+      ...sanitizedData,
+      params: formatNodeParams(sanitizedData),
     };
+
     setLocalData(nextPayload);
     updateNodeData(nodeId, nextPayload);
   };
@@ -110,7 +119,7 @@ export function NodeConfigPanel({
     });
   };
 
-  const insertInputTemplate = (fieldName: string) => {
+  const insertInputTemplate = (fieldName: string, fieldType: "text" | "number" | "select") => {
     const selectedKey = inputSelections[fieldName];
     if (!selectedKey) {
       return;
@@ -118,17 +127,27 @@ export function NodeConfigPanel({
 
     handleChange(
       fieldName,
-      appendTemplate(String(localData[fieldName] ?? ""), `{{inputs.${selectedKey}}}`),
+      mergeTemplateValue(
+        String(localData[fieldName] ?? ""),
+        `{{inputs.${selectedKey}}}`,
+        fieldType,
+      ),
     );
   };
 
-  const insertCredentialTemplate = (fieldName: string) => {
+  const insertCredentialTemplate = (
+    fieldName: string,
+    fieldType: "text" | "number" | "select",
+  ) => {
     const template = credentialSelections[fieldName];
     if (!template) {
       return;
     }
 
-    handleChange(fieldName, appendTemplate(String(localData[fieldName] ?? ""), template));
+    handleChange(
+      fieldName,
+      mergeTemplateValue(String(localData[fieldName] ?? ""), template, fieldType),
+    );
   };
 
   return (
@@ -151,13 +170,16 @@ export function NodeConfigPanel({
 
       <div className="flex-1 space-y-6 overflow-y-auto p-6">
         <div className="rounded-2xl border border-sky-500/10 bg-sky-500/5 px-3 py-3 text-xs leading-6 text-sky-100">
-          <div className="font-medium">{definition.description ?? "配置这个节点的执行参数。"}</div>
+          <div className="font-medium">
+            {definition.description ?? "配置这个节点的执行参数。"}
+          </div>
           <div className="mt-2">
             支持引用
             <code className="mx-1 rounded bg-black/20 px-1.5 py-0.5">{`{{inputs.xxx}}`}</code>
             <code className="mr-1 rounded bg-black/20 px-1.5 py-0.5">{`{{variables.xxx}}`}</code>
             和
-            <code className="ml-1 rounded bg-black/20 px-1.5 py-0.5">{`{{credentials.xxx.field}}`}</code>。
+            <code className="ml-1 rounded bg-black/20 px-1.5 py-0.5">{`{{credentials.xxx.field}}`}</code>
+            。
           </div>
         </div>
 
@@ -167,16 +189,23 @@ export function NodeConfigPanel({
             <Input
               value={String(localData.label || "")}
               onChange={(event) => handleChange("label", event.target.value)}
-              placeholder="给这个节点起个更容易识别的名字"
+              placeholder="给这个节点起一个更容易识别的名字"
             />
           </div>
 
           {definition.fields.map((field) => {
+            if (!shouldShowNodeField(nodeType, field.name, localData)) {
+              return null;
+            }
+
             const currentValue = String(localData[field.name] ?? field.defaultValue ?? "");
-            const isTextField = field.type === "text";
+            const canUseTemplate = supportsTemplateReference(field.type);
 
             return (
-              <div key={field.name} className="space-y-3 rounded-2xl border border-white/[0.05] bg-white/[0.02] p-4">
+              <div
+                key={field.name}
+                className="space-y-3 rounded-2xl border border-white/[0.05] bg-white/[0.02] p-4"
+              >
                 <div className="space-y-1">
                   <label className="text-sm font-medium text-zinc-200">{field.label}</label>
                   {field.description ? (
@@ -195,14 +224,15 @@ export function NodeConfigPanel({
                   />
                 ) : (
                   <Input
-                    type={field.type === "number" ? "number" : "text"}
+                    type="text"
+                    inputMode={field.type === "number" ? "decimal" : undefined}
                     value={currentValue}
                     onChange={(event) => handleChange(field.name, event.target.value)}
                     placeholder={field.placeholder}
                   />
                 )}
 
-                {isTextField && inputSchema.length > 0 ? (
+                {canUseTemplate && inputSchema.length > 0 ? (
                   <div className="rounded-xl border border-white/[0.05] bg-black/10 p-3">
                     <div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.2em] text-zinc-500">
                       <Wand2 className="h-3.5 w-3.5" />
@@ -226,7 +256,7 @@ export function NodeConfigPanel({
                       />
                       <button
                         type="button"
-                        onClick={() => insertInputTemplate(field.name)}
+                        onClick={() => insertInputTemplate(field.name, field.type)}
                         className="inline-flex items-center gap-1 rounded-xl border border-sky-500/20 bg-sky-500/10 px-3 text-xs text-sky-200 transition-colors hover:bg-sky-500/20"
                       >
                         插入
@@ -236,7 +266,7 @@ export function NodeConfigPanel({
                   </div>
                 ) : null}
 
-                {isTextField && credentialVariableOptions.length > 0 ? (
+                {canUseTemplate && credentialVariableOptions.length > 0 ? (
                   <div className="rounded-xl border border-amber-500/10 bg-amber-500/5 p-3">
                     <div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.2em] text-amber-200/80">
                       <KeyRound className="h-3.5 w-3.5" />
@@ -257,7 +287,7 @@ export function NodeConfigPanel({
                       />
                       <button
                         type="button"
-                        onClick={() => insertCredentialTemplate(field.name)}
+                        onClick={() => insertCredentialTemplate(field.name, field.type)}
                         className="inline-flex items-center gap-1 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 text-xs text-amber-100 transition-colors hover:bg-amber-500/20"
                       >
                         插入

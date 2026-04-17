@@ -10,36 +10,51 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/src
 import { Input } from "@/src/components/ui/Input";
 import { Select } from "@/src/components/ui/Select";
 import { useAuth } from "@/src/context/AuthContext";
+import { useNotice } from "@/src/context/NoticeContext";
+import { useDebouncedValue } from "@/src/hooks/useDebouncedValue";
 import { createWorkflow, listStoreTemplates, listWorkflows, type WorkflowRecord, type WorkflowTemplateRecord } from "@/src/lib/cloudflow";
 import { cn } from "@/src/lib/utils";
 
 export default function Store() {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { notify } = useNotice();
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
   const [workflows, setWorkflows] = useState<WorkflowRecord[]>([]);
   const [templates, setTemplates] = useState<WorkflowTemplateRecord[]>([]);
+  const [allTemplateCategories, setAllTemplateCategories] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [installingId, setInstallingId] = useState<string | null>(null);
+  const debouncedSearch = useDebouncedValue(search, 350);
 
   const loadData = useCallback(async () => {
     try {
       setIsLoading(true);
-      const [workflowData, templateData] = await Promise.all([
+      const [workflowData, templateData, allTemplates] = await Promise.all([
         listWorkflows(),
         listStoreTemplates({
-          search,
+          search: debouncedSearch,
           category: category === "all" ? undefined : category,
         }),
+        listStoreTemplates(),
       ]);
 
       setWorkflows(workflowData);
       setTemplates(templateData);
+      setAllTemplateCategories(
+        Array.from(new Set(allTemplates.map((item) => item.category).filter(Boolean))),
+      );
+    } catch (error) {
+      notify({
+        tone: "error",
+        title: "加载商店失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
     } finally {
       setIsLoading(false);
     }
-  }, [category, search]);
+  }, [category, debouncedSearch, notify]);
 
   useEffect(() => {
     void loadData();
@@ -54,16 +69,16 @@ export default function Store() {
   }, [workflows]);
 
   const categories = useMemo(() => {
-    return ["all", ...Array.from(new Set(templates.map((item) => item.category).filter(Boolean)))];
-  }, [templates]);
+    return ["all", ...allTemplateCategories];
+  }, [allTemplateCategories]);
 
   const categoryOptions = useMemo(() => {
     return categories.map((item) => ({
       value: item,
-      label: item === "all" ? "All categories" : item,
-      description: item === "all" ? "Browse every published template" : `Filter templates in ${item}`,
+      label: item === "all" ? "全部分类" : item,
+      description: item === "all" ? "查看所有已发布模板" : `只看 ${item} 分类模板`,
       icon: <Layers3 className="h-3.5 w-3.5" />,
-      group: "Template categories",
+      group: "模板分类",
       keywords: [item],
     }));
   }, [categories]);
@@ -86,6 +101,17 @@ export default function Store() {
       });
 
       navigate(`/?workflowId=${createdWorkflow.id}`);
+      notify({
+        tone: "success",
+        title: "模板已安装",
+        description: `“${template.title}”已经导入到你的工作区。`,
+      });
+    } catch (error) {
+      notify({
+        tone: "error",
+        title: "安装模板失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
     } finally {
       setInstallingId(null);
     }
@@ -97,13 +123,13 @@ export default function Store() {
       <div className="relative flex min-w-0 flex-1 flex-col bg-[#0B0C10]">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-blue-900/10 via-transparent to-transparent" />
         <AppTopbar
-          title="Workflow Store"
-          subtitle="Browse published workflow templates, install them into your workspace, and reopen installed templates from a stable template relation."
+          title="工作流商店"
+          subtitle="浏览已发布模板，安装到你的工作区，并随时回到已安装工作流继续编辑。"
           badge="Store"
           actions={
             <Button variant="outline" size="sm" onClick={() => void loadData()} className="gap-2">
               <RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} />
-              Refresh
+              刷新
             </Button>
           }
         />
@@ -112,7 +138,7 @@ export default function Store() {
           <div className="mx-auto max-w-6xl space-y-6">
             <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-center">
               <div className="text-sm text-zinc-500">
-                {templates.length} published templates are available. Search, filter, and install in one click.
+                当前找到 {templates.length} 个模板，可直接搜索、筛选并一键安装。
               </div>
               <div className="flex flex-wrap items-center gap-3">
                 <div className="relative w-full md:w-72">
@@ -120,7 +146,7 @@ export default function Store() {
                   <Input
                     value={search}
                     onChange={(event) => setSearch(event.target.value)}
-                    placeholder="Search templates..."
+                    placeholder="搜索模板标题、作者或描述"
                     className="pl-9"
                   />
                 </div>
@@ -130,7 +156,7 @@ export default function Store() {
                   options={categoryOptions}
                   className="min-w-[220px]"
                   searchable
-                  searchPlaceholder="Search categories"
+                  searchPlaceholder="搜索分类"
                 />
               </div>
             </div>
@@ -153,20 +179,20 @@ export default function Store() {
                             {template.featured ? (
                               <Badge variant="success" className="gap-1">
                                 <Sparkles className="h-3 w-3" />
-                                Featured
+                                推荐
                               </Badge>
                             ) : null}
-                            {isMine ? <Badge variant="secondary">Published by me</Badge> : null}
+                            {isMine ? <Badge variant="secondary">我发布的</Badge> : null}
                           </div>
                           <div className="flex items-center gap-3 text-xs text-zinc-400">
                             <InitialAvatar name={template.authorName} className="h-8 w-8 rounded-xl text-xs" />
                             <div className="min-w-0">
                               <div className="truncate font-medium text-zinc-200">{template.authorName}</div>
-                              <div className="mt-0.5 truncate text-zinc-500">{template.category || "Uncategorized"}</div>
+                              <div className="mt-0.5 truncate text-zinc-500">{template.category || "未分类"}</div>
                             </div>
                           </div>
                         </div>
-                        {installedWorkflow ? <Badge variant="success">Installed</Badge> : null}
+                        {installedWorkflow ? <Badge variant="success">已安装</Badge> : null}
                       </div>
                       <CardDescription className="line-clamp-3 min-h-[60px]">{template.description}</CardDescription>
                     </CardHeader>
@@ -179,7 +205,7 @@ export default function Store() {
                         ))}
                       </div>
                       <div className="text-xs text-zinc-500">
-                        Includes {template.definition.nodes.length} core nodes and can be edited immediately after installation.
+                        包含 {template.definition.nodes.length} 个核心节点，安装后可立即继续编辑。
                       </div>
                     </CardContent>
                     <div className="mt-auto flex items-center justify-between gap-3 px-6 pb-6 pt-0">
@@ -199,7 +225,7 @@ export default function Store() {
                         disabled={installingId === template.id}
                         onClick={() => void handleInstall(template)}
                       >
-                        {installingId === template.id ? "Installing..." : installedWorkflow ? "Open" : "Install"}
+                        {installingId === template.id ? "安装中..." : installedWorkflow ? "打开" : "安装"}
                       </Button>
                     </div>
                   </Card>
@@ -209,7 +235,7 @@ export default function Store() {
 
             {templates.length === 0 && !isLoading ? (
               <div className="rounded-xl border border-dashed border-white/[0.08] bg-white/[0.02] p-10 text-center text-sm text-zinc-500">
-                No templates match the current filters. Try another category or clear the search.
+                当前筛选条件下没有匹配模板，试试切换分类或清空搜索词。
               </div>
             ) : null}
           </div>

@@ -10,7 +10,9 @@ import { Input } from "@/src/components/ui/Input";
 import { Select } from "@/src/components/ui/Select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/src/components/ui/Tabs";
 import { useAuth } from "@/src/context/AuthContext";
+import { useNotice } from "@/src/context/NoticeContext";
 import { useOverlayDialog } from "@/src/context/OverlayDialogContext";
+import { useDebouncedValue } from "@/src/hooks/useDebouncedValue";
 import {
   AdminOverviewRecord,
   createAdminTemplate,
@@ -79,6 +81,7 @@ function HealthBadge({ value }: { value: string | boolean }) {
 
 export default function Admin() {
   const { user } = useAuth();
+  const { notify } = useNotice();
   const { confirm } = useOverlayDialog();
   const [overview, setOverview] = useState<AdminOverviewRecord | null>(null);
   const [health, setHealth] = useState<HealthRecord | null>(null);
@@ -87,7 +90,10 @@ export default function Admin() {
   const [users, setUsers] = useState<UserRecord[]>([]);
   const [templateSearch, setTemplateSearch] = useState("");
   const [templateFilter, setTemplateFilter] = useState<"all" | "true" | "false">("all");
-  const [isLoading, setIsLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState("overview");
+  const [isLoadingOverview, setIsLoadingOverview] = useState(false);
+  const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
+  const [isLoadingSystem, setIsLoadingSystem] = useState(false);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
   const [isTestingSmtp, setIsTestingSmtp] = useState(false);
   const [minioTestMode, setMinioTestMode] = useState<"connection" | "bucket" | null>(null);
@@ -101,30 +107,100 @@ export default function Admin() {
   const [minioTestError, setMinioTestError] = useState<string | null>(null);
   const [newTemplate, setNewTemplate] = useState({ slug: "", title: "", description: "", category: "", tags: "", authorName: "CloudFlow 官方" });
   const [newUser, setNewUser] = useState({ email: "", name: "", role: "user" as "admin" | "user", password: "" });
+  const debouncedTemplateSearch = useDebouncedValue(templateSearch, 350);
 
-  const loadAll = useCallback(async () => {
+  const loadOverviewSection = useCallback(async () => {
     try {
-      setIsLoading(true);
-      const [overviewData, healthData, configData, templateData, userData] = await Promise.all([
+      setIsLoadingOverview(true);
+      const [overviewData, healthData, userData] = await Promise.all([
         getAdminOverview(),
         getHealthStatus(),
-        getSystemConfig(),
-        listAdminTemplates({ search: templateSearch, published: templateFilter }),
         listUsers(),
       ]);
       setOverview(overviewData);
       setHealth(healthData);
-      setConfig(configData);
-      setTemplates(templateData);
       setUsers(userData);
+    } catch (error) {
+      notify({
+        tone: "error",
+        title: "加载管理总览失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
     } finally {
-      setIsLoading(false);
+      setIsLoadingOverview(false);
     }
-  }, [templateFilter, templateSearch]);
+  }, [notify]);
+
+  const loadTemplateSection = useCallback(async () => {
+    try {
+      setIsLoadingTemplates(true);
+      const templateData = await listAdminTemplates({
+        search: debouncedTemplateSearch,
+        published: templateFilter,
+      });
+      setTemplates(templateData);
+    } catch (error) {
+      notify({
+        tone: "error",
+        title: "加载模板列表失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
+    } finally {
+      setIsLoadingTemplates(false);
+    }
+  }, [debouncedTemplateSearch, notify, templateFilter]);
+
+  const loadSystemSection = useCallback(async () => {
+    try {
+      setIsLoadingSystem(true);
+      const [configData, healthData] = await Promise.all([
+        getSystemConfig(),
+        getHealthStatus(),
+      ]);
+      setConfig(configData);
+      setHealth(healthData);
+    } catch (error) {
+      notify({
+        tone: "error",
+        title: "加载系统配置失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
+    } finally {
+      setIsLoadingSystem(false);
+    }
+  }, [notify]);
+
+  const loadActiveTab = useCallback(async () => {
+    if (activeTab === "overview") {
+      await loadOverviewSection();
+      return;
+    }
+
+    if (activeTab === "templates") {
+      await loadTemplateSection();
+      return;
+    }
+
+    await loadSystemSection();
+  }, [activeTab, loadOverviewSection, loadSystemSection, loadTemplateSection]);
 
   useEffect(() => {
-    void loadAll();
-  }, [loadAll]);
+    void loadOverviewSection();
+  }, [loadOverviewSection]);
+
+  useEffect(() => {
+    if (activeTab === "templates") {
+      void loadTemplateSection();
+    }
+  }, [activeTab, loadTemplateSection]);
+
+  useEffect(() => {
+    if (activeTab === "system") {
+      void loadSystemSection();
+    }
+  }, [activeTab, loadSystemSection]);
+
+  const isLoading = isLoadingOverview || isLoadingTemplates || isLoadingSystem;
 
   const templateStats = useMemo(() => ({
     total: templates.length,
@@ -164,6 +240,27 @@ export default function Admin() {
     scheduledTaskPriority: config.scheduledTaskPriority,
   };
 
+  const saveSystemConfig = useCallback(async () => {
+    try {
+      setIsSavingConfig(true);
+      await updateSystemConfig(systemConfigPayload);
+      await loadSystemSection();
+      notify({
+        tone: "success",
+        title: "系统配置已保存",
+        description: "最新配置已经同步到后台。",
+      });
+    } catch (error) {
+      notify({
+        tone: "error",
+        title: "保存系统配置失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
+    } finally {
+      setIsSavingConfig(false);
+    }
+  }, [loadSystemSection, notify, systemConfigPayload]);
+
   return (
     <div className="h-screen w-screen bg-[#09090b] text-zinc-50 flex overflow-hidden font-sans selection:bg-indigo-500/30">
       <div className="fixed inset-0 z-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(56,189,248,0.12),rgba(255,255,255,0))] pointer-events-none" />
@@ -174,7 +271,7 @@ export default function Admin() {
           subtitle="这里承接平台级能力，包括用户管理、模板运营、SMTP 配置、对象存储与健康检查。"
           badge="Admin"
           actions={
-            <Button variant="outline" onClick={() => void loadAll()} className="gap-2">
+            <Button variant="outline" onClick={() => void loadActiveTab()} className="gap-2">
               <RefreshCw className={cn("w-4 h-4", isLoading && "animate-spin")} />
               刷新
             </Button>
@@ -189,7 +286,7 @@ export default function Admin() {
               </div>
             )}
 
-            <Tabs defaultValue="overview">
+            <Tabs value={activeTab} onValueChange={setActiveTab}>
               <TabsList className="sticky top-0 z-10 w-fit backdrop-blur-md">
                 <TabsTrigger value="overview">角色与总览</TabsTrigger>
                 <TabsTrigger value="templates">模板后台</TabsTrigger>
@@ -255,7 +352,10 @@ export default function Admin() {
                             setIsCreatingUser(true);
                             await createAdminUser({ name: newUser.name.trim(), email: newUser.email.trim(), role: newUser.role, password: newUser.password });
                             setNewUser({ email: "", name: "", role: "user", password: "" });
-                            await loadAll();
+                            await loadOverviewSection();
+                            notify({ tone: "success", title: "用户已创建", description: "新用户已经加入平台。" });
+                          } catch (error) {
+                            notify({ tone: "error", title: "创建用户失败", description: error instanceof Error ? error.message : "请稍后重试。" });
                           } finally {
                             setIsCreatingUser(false);
                           }
@@ -275,13 +375,13 @@ export default function Admin() {
                             {user.isSuperAdmin ? <Badge variant="default">超级管理员</Badge> : null}
                             <Badge variant={user.role === "admin" ? "default" : "secondary"}>{user.role === "admin" ? "管理员" : "普通用户"}</Badge>
                             <Badge variant={user.status === "active" ? "success" : "outline"}>{user.status === "active" ? "启用中" : "已停用"}</Badge>
-                            <Button variant="outline" size="sm" disabled={activeUserId === user.id} onClick={async () => { const confirmed = await confirm({ title: "切换用户角色", description: `确认将 ${user.name} ${user.role === "admin" ? "改为普通用户" : "提升为管理员"}吗？`, confirmText: "确认切换", cancelText: "取消" }); if (!confirmed) { return; } try { setActiveUserId(user.id); await updateAdminUser(user.id, { role: user.role === "admin" ? "user" : "admin" }); await loadAll(); } finally { setActiveUserId(null); } }}>
+                            <Button variant="outline" size="sm" disabled={activeUserId === user.id} onClick={async () => { const confirmed = await confirm({ title: "切换用户角色", description: `确认将 ${user.name} ${user.role === "admin" ? "改为普通用户" : "提升为管理员"}吗？`, confirmText: "确认切换", cancelText: "取消" }); if (!confirmed) { return; } try { setActiveUserId(user.id); await updateAdminUser(user.id, { role: user.role === "admin" ? "user" : "admin" }); await loadOverviewSection(); notify({ tone: "success", title: "用户角色已更新", description: `${user.name} 的角色已调整。` }); } catch (error) { notify({ tone: "error", title: "更新用户角色失败", description: error instanceof Error ? error.message : "请稍后重试。" }); } finally { setActiveUserId(null); } }}>
                               {user.role === "admin" ? "设为普通用户" : "设为管理员"}
                             </Button>
-                            <Button variant="outline" size="sm" disabled={activeUserId === user.id} onClick={async () => { const confirmed = await confirm({ title: user.status === "active" ? "停用用户" : "恢复用户", description: user.status === "active" ? `确认停用 ${user.name} 吗？停用后该用户将无法登录。` : `确认恢复 ${user.name} 吗？恢复后该用户可以重新登录。`, confirmText: user.status === "active" ? "确认停用" : "确认恢复", cancelText: "取消", tone: user.status === "active" ? "danger" : "default" }); if (!confirmed) { return; } try { setActiveUserId(user.id); await updateAdminUser(user.id, { status: user.status === "active" ? "suspended" : "active" }); await loadAll(); } finally { setActiveUserId(null); } }}>
+                            <Button variant="outline" size="sm" disabled={activeUserId === user.id} onClick={async () => { const confirmed = await confirm({ title: user.status === "active" ? "停用用户" : "恢复用户", description: user.status === "active" ? `确认停用 ${user.name} 吗？停用后该用户将无法登录。` : `确认恢复 ${user.name} 吗？恢复后该用户可以重新登录。`, confirmText: user.status === "active" ? "确认停用" : "确认恢复", cancelText: "取消", tone: user.status === "active" ? "danger" : "default" }); if (!confirmed) { return; } try { setActiveUserId(user.id); await updateAdminUser(user.id, { status: user.status === "active" ? "suspended" : "active" }); await loadOverviewSection(); notify({ tone: "success", title: user.status === "active" ? "用户已停用" : "用户已恢复", description: `${user.name} 的账号状态已更新。` }); } catch (error) { notify({ tone: "error", title: "更新用户状态失败", description: error instanceof Error ? error.message : "请稍后重试。" }); } finally { setActiveUserId(null); } }}>
                               {user.status === "active" ? "停用用户" : "恢复启用"}
                             </Button>
-                            <Button variant="outline" size="sm" disabled={activeUserId === user.id} onClick={async () => { const confirmed = await confirm({ title: "重置用户密码", description: `确认重置 ${user.name} 的登录密码吗？系统将生成新的临时密码。`, confirmText: "确认重置", cancelText: "取消", tone: "danger" }); if (!confirmed) { return; } try { setActiveUserId(user.id); setResetPasswordResult(await resetAdminUserPassword(user.id)); } finally { setActiveUserId(null); } }}>
+                            <Button variant="outline" size="sm" disabled={activeUserId === user.id} onClick={async () => { const confirmed = await confirm({ title: "重置用户密码", description: `确认重置 ${user.name} 的登录密码吗？系统将生成新的临时密码。`, confirmText: "确认重置", cancelText: "取消", tone: "danger" }); if (!confirmed) { return; } try { setActiveUserId(user.id); setResetPasswordResult(await resetAdminUserPassword(user.id)); notify({ tone: "success", title: "密码已重置", description: `${user.name} 的临时密码已经生成。` }); } catch (error) { notify({ tone: "error", title: "重置密码失败", description: error instanceof Error ? error.message : "请稍后重试。" }); } finally { setActiveUserId(null); } }}>
                               重置密码
                             </Button>
                           </div>
@@ -344,7 +444,10 @@ export default function Admin() {
                               definition: { nodes: [], canvas: { nodes: [], edges: [] } },
                             });
                             setNewTemplate({ slug: "", title: "", description: "", category: "", tags: "", authorName: "CloudFlow 官方" });
-                            await loadAll();
+                            await loadTemplateSection();
+                            notify({ tone: "success", title: "模板草稿已创建", description: "可以继续在工作区发布真实工作流模板。" });
+                          } catch (error) {
+                            notify({ tone: "error", title: "创建模板失败", description: error instanceof Error ? error.message : "请稍后重试。" });
                           } finally {
                             setIsCreatingTemplate(false);
                           }
@@ -401,10 +504,10 @@ export default function Admin() {
                             </div>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
-                            <Button variant="outline" size="sm" disabled={!canManageTemplate(template)} title={!canManageTemplate(template) ? "仅模板发布者或超级管理员可更新该模板" : undefined} onClick={async () => { const confirmed = await confirm({ title: template.published ? "下架模板" : "发布模板", description: template.published ? `确认下架模板“${template.title}”吗？` : `确认发布模板“${template.title}”吗？`, confirmText: template.published ? "确认下架" : "确认发布", cancelText: "取消" }); if (!confirmed) { return; } await updateAdminTemplate(template.id, { published: !template.published }); await loadAll(); }}>
+                            <Button variant="outline" size="sm" disabled={!canManageTemplate(template)} title={!canManageTemplate(template) ? "仅模板发布者或超级管理员可更新该模板" : undefined} onClick={async () => { const confirmed = await confirm({ title: template.published ? "下架模板" : "发布模板", description: template.published ? `确认下架模板“${template.title}”吗？` : `确认发布模板“${template.title}”吗？`, confirmText: template.published ? "确认下架" : "确认发布", cancelText: "取消" }); if (!confirmed) { return; } try { await updateAdminTemplate(template.id, { published: !template.published }); await loadTemplateSection(); notify({ tone: "success", title: template.published ? "模板已下架" : "模板已发布", description: `“${template.title}”的发布状态已更新。` }); } catch (error) { notify({ tone: "error", title: "更新模板状态失败", description: error instanceof Error ? error.message : "请稍后重试。" }); } }}>
                               {template.published ? "下架" : "发布"}
                             </Button>
-                            <Button variant="outline" size="sm" disabled={!canManageTemplate(template)} title={!canManageTemplate(template) ? "仅模板发布者或超级管理员可更新该模板" : undefined} onClick={async () => { const confirmed = await confirm({ title: template.featured ? "取消推荐" : "设为推荐", description: template.featured ? `确认取消模板“${template.title}”的推荐位吗？` : `确认将模板“${template.title}”设为推荐吗？`, confirmText: template.featured ? "确认取消" : "确认推荐", cancelText: "取消" }); if (!confirmed) { return; } await updateAdminTemplate(template.id, { featured: !template.featured }); await loadAll(); }}>
+                            <Button variant="outline" size="sm" disabled={!canManageTemplate(template)} title={!canManageTemplate(template) ? "仅模板发布者或超级管理员可更新该模板" : undefined} onClick={async () => { const confirmed = await confirm({ title: template.featured ? "取消推荐" : "设为推荐", description: template.featured ? `确认取消模板“${template.title}”的推荐位吗？` : `确认将模板“${template.title}”设为推荐吗？`, confirmText: template.featured ? "确认取消" : "确认推荐", cancelText: "取消" }); if (!confirmed) { return; } try { await updateAdminTemplate(template.id, { featured: !template.featured }); await loadTemplateSection(); notify({ tone: "success", title: template.featured ? "已取消推荐" : "已设为推荐", description: `“${template.title}”的推荐位已更新。` }); } catch (error) { notify({ tone: "error", title: "更新模板推荐状态失败", description: error instanceof Error ? error.message : "请稍后重试。" }); } }}>
                               {template.featured ? "取消推荐" : "设为推荐"}
                             </Button>
                           </div>
@@ -471,8 +574,15 @@ export default function Admin() {
                                 smtpIgnoreTlsCertificate: config.smtpIgnoreTlsCertificate,
                               });
                               setSmtpTestResult(result);
+                              notify({ tone: "success", title: "SMTP 连接成功", description: result.message });
                             } catch (error) {
-                              setSmtpTestError(error instanceof Error ? error.message : "SMTP 测试连接失败");
+                              const message = error instanceof Error ? error.message : "SMTP 测试连接失败";
+                              setSmtpTestError(message);
+                              notify({
+                                tone: "error",
+                                title: "SMTP 测试失败",
+                                description: message,
+                              });
                             } finally {
                               setIsTestingSmtp(false);
                             }
@@ -481,7 +591,7 @@ export default function Admin() {
                           <Mail className="w-4 h-4" />
                           {isTestingSmtp ? "测试中..." : "测试连接"}
                         </Button>
-                        <Button className="gap-2" disabled={isSavingConfig} onClick={async () => { try { setIsSavingConfig(true); await updateSystemConfig(systemConfigPayload); await loadAll(); } finally { setIsSavingConfig(false); } }}>
+                        <Button className="gap-2" disabled={isSavingConfig} onClick={() => void saveSystemConfig()}>
                           <Settings2 className="w-4 h-4" />
                           {isSavingConfig ? "保存中..." : "保存系统配置"}
                         </Button>
@@ -553,8 +663,15 @@ export default function Admin() {
                                 minioBucket: config.minioBucket,
                               });
                               setMinioTestResult(result);
+                              notify({ tone: "success", title: "MinIO 连接成功", description: result.message });
                             } catch (error) {
-                              setMinioTestError(error instanceof Error ? error.message : "MinIO 连接测试失败");
+                              const message = error instanceof Error ? error.message : "MinIO 连接测试失败";
+                              setMinioTestError(message);
+                              notify({
+                                tone: "error",
+                                title: "MinIO 连接测试失败",
+                                description: message,
+                              });
                             } finally {
                               setMinioTestMode(null);
                             }
@@ -581,8 +698,15 @@ export default function Admin() {
                                 minioBucket: config.minioBucket,
                               });
                               setMinioTestResult(result);
+                              notify({ tone: "success", title: "MinIO Bucket 检查完成", description: result.message });
                             } catch (error) {
-                              setMinioTestError(error instanceof Error ? error.message : "MinIO Bucket 测试失败");
+                              const message = error instanceof Error ? error.message : "MinIO Bucket 测试失败";
+                              setMinioTestError(message);
+                              notify({
+                                tone: "error",
+                                title: "MinIO Bucket 测试失败",
+                                description: message,
+                              });
                             } finally {
                               setMinioTestMode(null);
                             }
@@ -591,7 +715,7 @@ export default function Admin() {
                           <ShieldCheck className="w-4 h-4" />
                           {minioTestMode === "bucket" ? "Bucket 测试中..." : "测试 bucket"}
                         </Button>
-                        <Button className="gap-2" disabled={isSavingConfig} onClick={async () => { try { setIsSavingConfig(true); await updateSystemConfig(systemConfigPayload); await loadAll(); } finally { setIsSavingConfig(false); } }}>
+                        <Button className="gap-2" disabled={isSavingConfig} onClick={() => void saveSystemConfig()}>
                           <Settings2 className="w-4 h-4" />
                           {isSavingConfig ? "保存中..." : "保存系统配置"}
                         </Button>

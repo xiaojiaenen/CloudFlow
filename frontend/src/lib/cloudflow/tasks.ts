@@ -44,7 +44,7 @@ export async function listTasks(params?: {
     {
       headers: buildAuthHeaders(),
     },
-    "Failed to load tasks.",
+    "加载任务列表失败。",
   );
 }
 
@@ -78,7 +78,7 @@ export async function getTaskSummary(params?: {
     {
       headers: buildAuthHeaders(),
     },
-    "Failed to load task summary.",
+    "加载任务概览失败。",
   );
 }
 
@@ -88,7 +88,7 @@ export async function getTask(id: string) {
     {
       headers: buildAuthHeaders(),
     },
-    "Failed to load the task.",
+    "加载任务详情失败。",
   );
 }
 
@@ -114,7 +114,7 @@ export async function listAlerts(params?: {
     {
       headers: buildAuthHeaders(),
     },
-    "Failed to load alerts.",
+    "加载告警列表失败。",
   );
 }
 
@@ -133,7 +133,7 @@ export async function runTask(
       },
       body: JSON.stringify({ workflowId, inputs, credentialBindings }),
     },
-    "Failed to start the task.",
+    "启动任务失败。",
   );
 }
 
@@ -144,7 +144,7 @@ export async function cancelTask(taskId: string) {
       method: "POST",
       headers: buildAuthHeaders(),
     },
-    "Failed to cancel the task.",
+    "取消任务失败。",
   );
 }
 
@@ -155,6 +155,6 @@ export async function retryTask(taskId: string) {
       method: "POST",
       headers: buildAuthHeaders(),
     },
-    "Failed to retry the task.",
+    "重试任务失败。",
   );
 }

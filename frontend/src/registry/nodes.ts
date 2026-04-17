@@ -37,6 +37,24 @@ export interface NodeDefinition {
   fields: NodeField[];
 }
 
+const COMMON_KEY_OPTIONS: Array<{ label: string; value: string }> = [
+  { label: "Enter", value: "Enter" },
+  { label: "Tab", value: "Tab" },
+  { label: "Escape", value: "Escape" },
+  { label: "Space", value: " " },
+  { label: "Backspace", value: "Backspace" },
+  { label: "Delete", value: "Delete" },
+  { label: "Arrow Up", value: "ArrowUp" },
+  { label: "Arrow Down", value: "ArrowDown" },
+  { label: "Arrow Left", value: "ArrowLeft" },
+  { label: "Arrow Right", value: "ArrowRight" },
+  { label: "Home", value: "Home" },
+  { label: "End", value: "End" },
+  { label: "Page Up", value: "PageUp" },
+  { label: "Page Down", value: "PageDown" },
+  { label: "F5", value: "F5" },
+];
+
 export const nodeRegistry: NodeDefinition[] = [
   {
     type: "open_page",
@@ -461,5 +479,27 @@ export const nodeRegistry: NodeDefinition[] = [
 ];
 
 export const getNodeDefinition = (type: string): NodeDefinition | undefined => {
-  return nodeRegistry.find((node) => node.type === type);
+  const node = nodeRegistry.find((item) => item.type === type);
+  if (!node) {
+    return undefined;
+  }
+
+  if (type !== "press_key") {
+    return node;
+  }
+
+  return {
+    ...node,
+    fields: node.fields.map((field) =>
+      field.name === "key"
+        ? {
+            ...field,
+            type: "select" as const,
+            defaultValue: field.defaultValue ?? "Enter",
+            description: field.description ?? "优先使用常见按键，避免手写格式。",
+            options: COMMON_KEY_OPTIONS,
+          }
+        : field,
+    ),
+  };
 };

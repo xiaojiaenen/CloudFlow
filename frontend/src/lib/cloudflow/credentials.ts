@@ -7,7 +7,7 @@ export async function listCredentials() {
     {
       headers: buildAuthHeaders(),
     },
-    "Failed to load credentials.",
+    "加载凭据列表失败。",
   );
 }
 
@@ -22,7 +22,7 @@ export async function createCredential(payload: CredentialUpsertPayload) {
       },
       body: JSON.stringify(payload),
     },
-    "Failed to create the credential.",
+    "创建凭据失败。",
   );
 }
 
@@ -37,7 +37,7 @@ export async function updateCredential(id: string, payload: CredentialUpsertPayl
       },
       body: JSON.stringify(payload),
     },
-    "Failed to update the credential.",
+    "更新凭据失败。",
   );
 }
 
@@ -48,6 +48,6 @@ export async function deleteCredential(id: string) {
       method: "DELETE",
       headers: buildAuthHeaders(),
     },
-    "Failed to delete the credential.",
+    "删除凭据失败。",
   );
 }

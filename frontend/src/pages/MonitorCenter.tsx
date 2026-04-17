@@ -26,6 +26,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/src/componen
 import { Input } from "@/src/components/ui/Input";
 import { Select } from "@/src/components/ui/Select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/src/components/ui/Tabs";
+import { useNotice } from "@/src/context/NoticeContext";
+import { useDebouncedValue } from "@/src/hooks/useDebouncedValue";
 import { cancelTask, getTask, getTaskExecutionScreenshotSrc, getTaskSummary, listTasks, retryTask, TaskExecutionRecord, TaskRecord, TaskSummaryRecord } from "@/src/lib/cloudflow";
 import { cn } from "@/src/lib/utils";
 
@@ -197,6 +199,7 @@ function CompactMetric({ label, value, colorClass }: { label: string; value: num
 export function MonitorCenter() {
   const [searchParams, setSearchParams] = useSearchParams();
   const taskIdFromQuery = searchParams.get("taskId");
+  const { notify } = useNotice();
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<TaskRecord["status"] | "all">("all");
@@ -214,6 +217,10 @@ export function MonitorCenter() {
   const [isScreenshotDialogOpen, setIsScreenshotDialogOpen] = useState(false);
   const [isLoadingTasks, setIsLoadingTasks] = useState(false);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
+  const [mutatingTaskId, setMutatingTaskId] = useState<string | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const debouncedSearch = useDebouncedValue(search, 350);
 
   const loadTasks = useCallback(async () => {
     try {
@@ -223,12 +230,13 @@ export function MonitorCenter() {
         pageSize: taskPageSize,
         status: statusFilter === "all" ? undefined : statusFilter,
         triggerSource: triggerFilter === "all" ? undefined : triggerFilter,
-        search,
+        search: debouncedSearch,
       });
 
       setTaskTotal(data.total);
       setTaskTotalPages(data.totalPages);
       setTasks(data.items);
+      setListError(null);
       setSelectedTaskId((current) => {
         if (current) {
           return current;
@@ -240,25 +248,35 @@ export function MonitorCenter() {
 
         return data.items[0]?.id ?? null;
       });
+    } catch (error) {
+      setListError(error instanceof Error ? error.message : "加载任务列表失败。");
     } finally {
       setIsLoadingTasks(false);
     }
-  }, [search, statusFilter, taskIdFromQuery, taskPage, taskPageSize, triggerFilter]);
+  }, [debouncedSearch, statusFilter, taskIdFromQuery, taskPage, taskPageSize, triggerFilter]);
 
   const loadSummary = useCallback(async () => {
-    const data = await getTaskSummary({
-      status: statusFilter === "all" ? undefined : statusFilter,
-      triggerSource: triggerFilter === "all" ? undefined : triggerFilter,
-      search,
-    });
-    setSummary(data);
-  }, [search, statusFilter, triggerFilter]);
+    try {
+      const data = await getTaskSummary({
+        status: statusFilter === "all" ? undefined : statusFilter,
+        triggerSource: triggerFilter === "all" ? undefined : triggerFilter,
+        search: debouncedSearch,
+      });
+      setSummary(data);
+    } catch (error) {
+      setListError(error instanceof Error ? error.message : "加载任务汇总失败。");
+    }
+  }, [debouncedSearch, statusFilter, triggerFilter]);
 
   const loadTaskDetail = useCallback(async (taskId: string) => {
     try {
       setIsLoadingDetail(true);
       const data = await getTask(taskId);
       setSelectedTask(data);
+      setDetailError(null);
+    } catch (error) {
+      setSelectedTask(null);
+      setDetailError(error instanceof Error ? error.message : "加载任务详情失败。");
     } finally {
       setIsLoadingDetail(false);
     }
@@ -637,7 +655,7 @@ export function MonitorCenter() {
                 </div>
               </div>
 
-              <div className="px-5 py-4 border-b border-white/[0.05] space-y-3">
+                <div className="px-5 py-4 border-b border-white/[0.05] space-y-3">
                 <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_160px_160px] gap-3">
                   <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索任务 ID 或工作流名称" />
                   <Select
@@ -662,10 +680,15 @@ export function MonitorCenter() {
                     ]}
                   />
                 </div>
-                <div className="text-xs text-zinc-500">点击任务卡片即可查看详情，支持分页与筛选。</div>
+                <div className="text-xs text-zinc-500">
+                  {search !== debouncedSearch ? "正在应用搜索条件..." : "点击任务卡片即可查看详情，支持分页与筛选。"}
+                </div>
               </div>
 
               <div className="divide-y divide-white/[0.05] xl:min-h-0 xl:flex-1 xl:overflow-y-auto">
+                {listError ? (
+                  <div className="px-5 py-4 text-sm text-red-300">{listError}</div>
+                ) : null}
                 {tasks.length === 0 && (
                   <div className="px-5 py-12 text-center text-sm text-zinc-500">当前没有符合条件的任务记录。</div>
                 )}
@@ -709,28 +732,64 @@ export function MonitorCenter() {
                             <Button
                               variant="outline"
                               size="sm"
+                              disabled={mutatingTaskId === task.id}
                               onClick={(event) => {
                                 event.stopPropagation();
-                                void cancelTask(task.id).then(async () => {
-                                  await handleTaskMutationRefresh();
-                                });
+                                void (async () => {
+                                  try {
+                                    setMutatingTaskId(task.id);
+                                    await cancelTask(task.id);
+                                    await handleTaskMutationRefresh();
+                                    notify({
+                                      tone: "success",
+                                      title: "停止请求已发送",
+                                      description: `任务 ${task.id} 正在等待 Worker 安全退出。`,
+                                    });
+                                  } catch (error) {
+                                    notify({
+                                      tone: "error",
+                                      title: "停止任务失败",
+                                      description: error instanceof Error ? error.message : "请稍后重试。",
+                                    });
+                                  } finally {
+                                    setMutatingTaskId(null);
+                                  }
+                                })();
                               }}
                             >
-                              取消
+                              {mutatingTaskId === task.id ? "处理中..." : "取消"}
                             </Button>
                           )}
                           {(task.status === "failed" || task.status === "cancelled") && (
                             <Button
                               variant="outline"
                               size="sm"
+                              disabled={mutatingTaskId === task.id}
                               onClick={(event) => {
                                 event.stopPropagation();
-                                void retryTask(task.id).then(async () => {
-                                  await handleTaskMutationRefresh();
-                                });
+                                void (async () => {
+                                  try {
+                                    setMutatingTaskId(task.id);
+                                    await retryTask(task.id);
+                                    await handleTaskMutationRefresh();
+                                    notify({
+                                      tone: "success",
+                                      title: "任务已重新入队",
+                                      description: `任务 ${task.id} 会按最新快照重新执行。`,
+                                    });
+                                  } catch (error) {
+                                    notify({
+                                      tone: "error",
+                                      title: "重试任务失败",
+                                      description: error instanceof Error ? error.message : "请稍后重试。",
+                                    });
+                                  } finally {
+                                    setMutatingTaskId(null);
+                                  }
+                                })();
                               }}
                             >
-                              重试
+                              {mutatingTaskId === task.id ? "处理中..." : "重试"}
                             </Button>
                           )}
                           <div className={cn("px-2 py-1 rounded text-[10px] font-medium flex items-center gap-1.5 shrink-0", statusMeta.className)}>
@@ -782,7 +841,11 @@ export function MonitorCenter() {
                 {isLoadingDetail && <div className="text-xs text-zinc-500">正在加载...</div>}
               </div>
 
-              {!selectedTask && !isLoadingDetail ? (
+              {detailError && !isLoadingDetail ? (
+                <div className="px-5 py-6 text-sm text-red-300">{detailError}</div>
+              ) : null}
+
+              {!selectedTask && !isLoadingDetail && !detailError ? (
                 <div className="px-5 py-12 text-center text-sm text-zinc-500">请选择左侧任务查看详细信息。</div>
               ) : (
                   <div className="p-5 space-y-6 xl:min-h-0 xl:flex-1 xl:overflow-y-auto">

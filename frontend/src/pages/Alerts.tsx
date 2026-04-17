@@ -7,6 +7,7 @@ import { Button } from "@/src/components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/src/components/ui/Card";
 import { Select } from "@/src/components/ui/Select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/src/components/ui/Table";
+import { useNotice } from "@/src/context/NoticeContext";
 import { AlertRecord, listAlerts } from "@/src/lib/cloudflow";
 import { cn } from "@/src/lib/utils";
 
@@ -42,6 +43,7 @@ function getAlertMeta(level: AlertRecord["level"]) {
 
 export default function Alerts() {
   const navigate = useNavigate();
+  const { notify } = useNotice();
   const [alerts, setAlerts] = useState<AlertRecord[]>([]);
   const [page, setPage] = useState(1);
   const [pageSize] = useState(10);
@@ -61,10 +63,16 @@ export default function Alerts() {
       setAlerts(data.items);
       setTotal(data.total);
       setTotalPages(data.totalPages);
+    } catch (error) {
+      notify({
+        tone: "error",
+        title: "加载告警失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
     } finally {
       setIsLoading(false);
     }
-  }, [levelFilter, page, pageSize]);
+  }, [levelFilter, notify, page, pageSize]);
 
   useEffect(() => {
     void loadAlerts();

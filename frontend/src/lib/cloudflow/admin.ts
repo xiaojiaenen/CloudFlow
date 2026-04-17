@@ -17,7 +17,7 @@ export async function getAdminOverview() {
     {
       headers: buildAuthHeaders(),
     },
-    "Failed to load the admin overview.",
+    "加载管理总览失败。",
   );
 }
 
@@ -27,7 +27,7 @@ export async function getHealthStatus() {
     {
       headers: buildAuthHeaders(),
     },
-    "Failed to load system health.",
+    "加载系统健康状态失败。",
   );
 }
 
@@ -37,7 +37,7 @@ export async function getSystemConfig() {
     {
       headers: buildAuthHeaders(),
     },
-    "Failed to load system config.",
+    "加载系统配置失败。",
   );
 }
 
@@ -52,48 +52,45 @@ export async function updateSystemConfig(payload: Partial<SystemConfigRecord>) {
       },
       body: JSON.stringify(payload),
     },
-    "Failed to update system config.",
+    "保存系统配置失败。",
   );
 }
 
 export async function testSystemSmtpConnection(payload: Partial<SystemConfigRecord>) {
-  const actualResponse = await fetch(`${getApiBaseUrl()}/admin/system-config/test-smtp`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...buildAuthHeaders(),
+  const result = await requestJson<SmtpTestResult>(
+    "/admin/system-config/test-smtp",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...buildAuthHeaders(),
+      },
+      body: JSON.stringify(payload),
     },
-    body: JSON.stringify(payload),
-  });
+    "SMTP 连接测试失败。",
+  );
 
-  if (!actualResponse.ok) {
-    throw new Error(await parseErrorMessage(actualResponse, "SMTP test failed."));
-  }
-
-  const result = (await actualResponse.json()) as SmtpTestResult;
   return {
     ...result,
-    message: `SMTP connected: ${result.host}:${result.port}${result.secure ? " (SSL/TLS)" : ""}${
-      result.ignoreTlsCertificate ? " with certificate bypass" : ""
+    message: `SMTP 连接成功：${result.host}:${result.port}${result.secure ? "（SSL/TLS）" : ""}${
+      result.ignoreTlsCertificate ? "，已忽略证书校验" : ""
     }`,
   };
 }
 
 export async function testSystemMinioConnection(payload: Partial<SystemConfigRecord>) {
-  const response = await fetch(`${getApiBaseUrl()}/admin/system-config/test-minio`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...buildAuthHeaders(),
+  return requestJson<MinioTestResult>(
+    "/admin/system-config/test-minio",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...buildAuthHeaders(),
+      },
+      body: JSON.stringify(payload),
     },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    throw new Error(await parseErrorMessage(response, "MinIO test failed."));
-  }
-
-  return (await response.json()) as MinioTestResult;
+    "MinIO 测试失败。",
+  );
 }
 
 export async function listAdminTemplates(params?: {
@@ -113,7 +110,7 @@ export async function listAdminTemplates(params?: {
     {
       headers: buildAuthHeaders(),
     },
-    "Failed to load templates.",
+    "加载模板列表失败。",
   );
 }
 
@@ -139,7 +136,7 @@ export async function createAdminTemplate(payload: {
       },
       body: JSON.stringify(payload),
     },
-    "Failed to create the template.",
+    "创建模板失败。",
   );
 }
 
@@ -164,7 +161,7 @@ export async function publishWorkflowTemplate(payload: {
       },
       body: JSON.stringify(payload),
     },
-    "Failed to publish the template.",
+    "发布模板失败。",
   );
 }
 
@@ -193,7 +190,7 @@ export async function updateAdminTemplate(
       },
       body: JSON.stringify(payload),
     },
-    "Failed to update the template.",
+    "更新模板失败。",
   );
 }
 
@@ -203,7 +200,7 @@ export async function listUsers() {
     {
       headers: buildAuthHeaders(),
     },
-    "Failed to load users.",
+    "加载用户列表失败。",
   );
 }
 
@@ -224,7 +221,7 @@ export async function createAdminUser(payload: {
       },
       body: JSON.stringify(payload),
     },
-    "Failed to create the user.",
+    "创建用户失败。",
   );
 }
 
@@ -246,7 +243,7 @@ export async function updateAdminUser(
       },
       body: JSON.stringify(payload),
     },
-    "Failed to update the user.",
+    "更新用户失败。",
   );
 }
 
@@ -261,6 +258,6 @@ export async function resetAdminUserPassword(id: string, newPassword?: string) {
       },
       body: JSON.stringify(newPassword ? { newPassword } : {}),
     },
-    "Failed to reset the password.",
+    "重置密码失败。",
   );
 }
