@@ -72,8 +72,11 @@ export class AdminController {
   }
 
   @Put('system-config')
-  updateSystemConfig(@Body() payload: UpdateSystemConfigDto) {
-    return this.adminService.updateSystemConfig(payload);
+  updateSystemConfig(
+    @Body() payload: UpdateSystemConfigDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.adminService.updateSystemConfig(payload, request.user);
   }
 
   @Post('system-config/test-smtp')

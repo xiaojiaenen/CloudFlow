@@ -1,30 +1,19 @@
 import 'dotenv/config';
-import { existsSync, readdirSync } from 'fs';
 import { mkdir, writeFile } from 'fs/promises';
-import os from 'os';
 import path from 'path';
 import { PrismaClient } from '@prisma/client';
 import { DelayedError, Job, Worker } from 'bullmq';
-import { Browser, BrowserContext, Frame, Page, chromium } from 'playwright';
+import { Frame, Page } from 'playwright';
 import {
   DEFAULT_TASK_EXECUTION_POLICY,
   TaskExecutionPolicySnapshot,
 } from '../src/common/constants/task-execution.constants';
 import {
   TASK_CANCEL_CHANNEL,
-  TASK_CANCEL_KEY_PREFIX,
-  TASK_EVENTS_CHANNEL,
   TASK_EXECUTION_JOB_NAME,
   TASK_QUEUE_NAME,
 } from '../src/common/constants/redis.constants';
-import {
-  TaskExecutionEvent,
-  TaskExecutionStatus,
-  TaskExtractPayload,
-  TaskLogLevel,
-  TaskQueuePayload,
-  TaskScreenshotPayload,
-} from '../src/common/types/execution-event.types';
+import { TaskQueuePayload } from '../src/common/types/execution-event.types';
 import {
   WorkflowCanvasEdge,
   WorkflowDefinition,
@@ -34,6 +23,13 @@ import {
   createRedisConnection,
   resolveRedisConfig,
 } from '../src/common/utils/redis-connection';
+import {
+  TaskCancelledError,
+  createTaskCancellationManager,
+} from './runtime/cancellation';
+import { closeBrowser, getBrowser } from './runtime/browser';
+import { createTaskEventPublisher } from './runtime/events';
+import { createTaskResourceManager } from './runtime/resources';
 
 const prisma = new PrismaClient();
 const redisConfig = resolveRedisConfig(process.env);
@@ -59,20 +55,8 @@ const USER_RUNNING_KEY_PREFIX = 'cloudflow:user-running:';
 const USER_RUNNING_SLOT_TTL_MS = 90_000;
 const USER_RUNNING_SLOT_RETRY_DELAY_MS = 3_000;
 const USER_RUNNING_SLOT_RENEW_INTERVAL_MS = 30_000;
-const RESOURCE_MONITOR_INTERVAL_MS = 2_000;
-const cpuCoreCount =
-  typeof os.availableParallelism === 'function'
-    ? Math.max(1, os.availableParallelism())
-    : Math.max(1, os.cpus().length);
 
-let browserPromise: Promise<Browser> | null = null;
 let workerInstance: Worker<TaskQueuePayload> | null = null;
-const taskControllers = new Map<string, { cancelRequested: boolean; context?: BrowserContext }>();
-
-const DEFAULT_PLAYWRIGHT_BROWSER_ROOTS = [
-  '/ms-playwright',
-  path.join(os.homedir(), '.cache', 'ms-playwright'),
-];
 
 interface ExecutionContext {
   page: Page;
@@ -99,212 +83,26 @@ interface TaskRuntimeOptions {
   tempDir: string;
 }
 
-interface ResourceSnapshot {
-  memoryRssMb: number;
-  heapUsedMb: number;
-  cpuPercent: number;
-}
+const {
+  publishLog,
+  publishStatus,
+  publishScreenshot,
+  publishExtract,
+} = createTaskEventPublisher(publisher);
 
-class TaskCancelledError extends Error {
-  constructor(taskId: string) {
-    super(`Task ${taskId} cancelled by user.`);
-    this.name = 'TaskCancelledError';
-  }
-}
+const {
+  getTaskController,
+  requestTaskCancellation,
+  isTaskCancellationRequested,
+  ensureTaskNotCancelled,
+  clearTaskCancellation,
+} = createTaskCancellationManager(publisher);
 
-async function getBrowser() {
-  if (!browserPromise) {
-    const headless = process.env.BROWSER_HEADLESS !== 'false';
-    const executablePath = resolveChromiumExecutablePath(headless);
-    console.log(
-      `[worker] Launching Chromium (headless=${headless}) using ${
-        executablePath ?? 'Playwright default resolution'
-      }`,
-    );
-    browserPromise = chromium.launch({
-      headless,
-      ...(executablePath ? { executablePath } : {}),
-    });
-  }
-
-  return browserPromise;
-}
-
-function resolveChromiumExecutablePath(headless: boolean) {
-  const explicitPath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH?.trim();
-  if (explicitPath) {
-    return explicitPath;
-  }
-
-  const browserRoots = Array.from(
-    new Set(
-      [process.env.PLAYWRIGHT_BROWSERS_PATH, ...DEFAULT_PLAYWRIGHT_BROWSER_ROOTS].filter(
-        (value): value is string => Boolean(value?.trim()),
-      ),
-    ),
-  );
-
-  const preferredCandidates = [
-    {
-      directoryPrefix: 'chromium-',
-      executableSegments: ['chrome-linux64', 'chrome'],
-    },
-    {
-      directoryPrefix: 'chromium_headless_shell-',
-      executableSegments: [
-        'chrome-headless-shell-linux64',
-        'chrome-headless-shell',
-      ],
-    },
-  ];
-
-  for (const browserRoot of browserRoots) {
-    for (const candidate of preferredCandidates) {
-      const executablePath = findBrowserExecutable(
-        browserRoot,
-        candidate.directoryPrefix,
-        candidate.executableSegments,
-      );
-
-      if (executablePath) {
-        return executablePath;
-      }
-    }
-  }
-
-  return undefined;
-}
-
-function findBrowserExecutable(
-  browserRoot: string,
-  directoryPrefix: string,
-  executableSegments: string[],
-) {
-  if (!existsSync(browserRoot)) {
-    return undefined;
-  }
-
-  const candidateDirectories = readdirSync(browserRoot, {
-    withFileTypes: true,
-  })
-    .filter((entry) => entry.isDirectory() && entry.name.startsWith(directoryPrefix))
-    .sort((left, right) => right.name.localeCompare(left.name));
-
-  for (const directory of candidateDirectories) {
-    const executablePath = path.join(
-      browserRoot,
-      directory.name,
-      ...executableSegments,
-    );
-
-    if (existsSync(executablePath)) {
-      return executablePath;
-    }
-  }
-
-  return undefined;
-}
-
-async function publishEvent(event: TaskExecutionEvent) {
-  await publisher.publish(TASK_EVENTS_CHANNEL, JSON.stringify(event));
-}
-
-async function publishLog(
-  taskId: string,
-  message: string,
-  level: TaskLogLevel = 'info',
-  nodeId?: string,
-) {
-  await publishEvent({
-    taskId,
-    type: 'log',
-    data: {
-      message,
-      level,
-      nodeId,
-      timestamp: new Date().toISOString(),
-    },
-  });
-}
-
-async function publishStatus(taskId: string, status: TaskExecutionStatus, errorMessage?: string) {
-  await publishEvent({
-    taskId,
-    type: 'status',
-    data: {
-      status,
-      errorMessage,
-      timestamp: new Date().toISOString(),
-    },
-  });
-}
-
-async function publishScreenshot(taskId: string, payload: TaskScreenshotPayload) {
-  await publishEvent({
-    taskId,
-    type: 'screenshot',
-    data: payload,
-  });
-}
-
-async function publishExtract(taskId: string, payload: TaskExtractPayload) {
-  await publishEvent({
-    taskId,
-    type: 'extract',
-    data: payload,
-  });
-}
-
-function getCancellationKey(taskId: string) {
-  return `${TASK_CANCEL_KEY_PREFIX}${taskId}`;
-}
-
-function getTaskController(taskId: string) {
-  const existingController = taskControllers.get(taskId);
-
-  if (existingController) {
-    return existingController;
-  }
-
-  const controller = {
-    cancelRequested: false,
-    context: undefined as BrowserContext | undefined,
-  };
-
-  taskControllers.set(taskId, controller);
-  return controller;
-}
-
-function requestTaskCancellation(taskId: string) {
-  const controller = getTaskController(taskId);
-  controller.cancelRequested = true;
-
-  if (controller.context) {
-    void controller.context.close().catch(() => undefined);
-  }
-}
-
-async function isTaskCancellationRequested(taskId: string) {
-  const controller = taskControllers.get(taskId);
-
-  if (controller?.cancelRequested) {
-    return true;
-  }
-
-  const result = await publisher.exists(getCancellationKey(taskId));
-  return result === 1;
-}
-
-async function ensureTaskNotCancelled(taskId: string) {
-  if (await isTaskCancellationRequested(taskId)) {
-    throw new TaskCancelledError(taskId);
-  }
-}
-
-async function clearTaskCancellation(taskId: string) {
-  taskControllers.delete(taskId);
-  await publisher.del(getCancellationKey(taskId));
-}
+const {
+  ensureTaskTempDir,
+  startResourceMonitor,
+  startScreenshotStream,
+} = createTaskResourceManager(prisma, taskRuntimeBaseDir);
 
 async function getTaskExecutionPolicy(): Promise<TaskExecutionPolicySnapshot> {
   const config = await prisma.systemConfig.findFirst({
@@ -409,130 +207,6 @@ async function releaseUserExecutionSlot(ownerId: string) {
     getUserRunningKey(ownerId),
     String(USER_RUNNING_SLOT_TTL_MS),
   );
-}
-
-async function ensureTaskTempDir(taskId: string) {
-  const tempDir = path.join(taskRuntimeBaseDir, taskId);
-  await mkdir(tempDir, { recursive: true });
-  return tempDir;
-}
-
-function toMb(bytes: number) {
-  return Number((bytes / 1024 / 1024).toFixed(2));
-}
-
-function createResourceSnapshot(
-  previousCpuUsage: NodeJS.CpuUsage,
-  previousTimestamp: bigint,
-): { snapshot: ResourceSnapshot; cpuUsage: NodeJS.CpuUsage; timestamp: bigint } {
-  const memory = process.memoryUsage();
-  const currentCpuUsage = process.cpuUsage();
-  const currentTimestamp = process.hrtime.bigint();
-  const elapsedMicroseconds = Math.max(1, Number(currentTimestamp - previousTimestamp) / 1000);
-  const cpuDeltaUser = currentCpuUsage.user - previousCpuUsage.user;
-  const cpuDeltaSystem = currentCpuUsage.system - previousCpuUsage.system;
-  const cpuPercent = Math.min(
-    100,
-    Number((((cpuDeltaUser + cpuDeltaSystem) / (elapsedMicroseconds * cpuCoreCount)) * 100).toFixed(2)),
-  );
-
-  return {
-    snapshot: {
-      memoryRssMb: toMb(memory.rss),
-      heapUsedMb: toMb(memory.heapUsed),
-      cpuPercent: Number.isFinite(cpuPercent) ? cpuPercent : 0,
-    },
-    cpuUsage: currentCpuUsage,
-    timestamp: currentTimestamp,
-  };
-}
-
-function startResourceMonitor(taskId: string) {
-  let previousCpuUsage = process.cpuUsage();
-  let previousTimestamp = process.hrtime.bigint();
-  let peakMemoryRssMb = 0;
-  let peakHeapUsedMb = 0;
-  let peakCpuPercent = 0;
-  let flushing = false;
-
-  const flush = async () => {
-    if (flushing) {
-      return;
-    }
-
-    flushing = true;
-
-    try {
-      const nextSample = createResourceSnapshot(previousCpuUsage, previousTimestamp);
-      previousCpuUsage = nextSample.cpuUsage;
-      previousTimestamp = nextSample.timestamp;
-      peakMemoryRssMb = Math.max(peakMemoryRssMb, nextSample.snapshot.memoryRssMb);
-      peakHeapUsedMb = Math.max(peakHeapUsedMb, nextSample.snapshot.heapUsedMb);
-      peakCpuPercent = Math.max(peakCpuPercent, nextSample.snapshot.cpuPercent);
-
-      await prisma.task.update({
-        where: { id: taskId },
-        data: {
-          workerPid: process.pid,
-          resourceHeartbeatAt: new Date(),
-          memoryRssMb: nextSample.snapshot.memoryRssMb,
-          peakMemoryRssMb,
-          heapUsedMb: nextSample.snapshot.heapUsedMb,
-          peakHeapUsedMb,
-          cpuPercent: nextSample.snapshot.cpuPercent,
-          peakCpuPercent,
-        },
-      });
-    } catch {
-      // Ignore transient sampling failures so execution can continue.
-    } finally {
-      flushing = false;
-    }
-  };
-
-  void flush();
-
-  const interval = setInterval(() => {
-    void flush();
-  }, RESOURCE_MONITOR_INTERVAL_MS);
-
-  return async () => {
-    clearInterval(interval);
-    await flush();
-  };
-}
-
-function startScreenshotStream(taskId: string, page: Page, intervalMs: number, tempDir: string) {
-  let capturing = false;
-
-  const interval = setInterval(async () => {
-    if (capturing || page.isClosed()) {
-      return;
-    }
-
-    capturing = true;
-
-    try {
-      const buffer = await page.screenshot({
-        type: 'jpeg',
-        quality: 60,
-      });
-      await writeFile(path.join(tempDir, 'latest-stream.jpg'), buffer).catch(() => undefined);
-
-      await publishScreenshot(taskId, {
-        imageBase64: buffer.toString('base64'),
-        mimeType: 'image/jpeg',
-        source: 'stream',
-        timestamp: new Date().toISOString(),
-      });
-    } catch {
-      // Ignore transient screenshot failures when pages are navigating.
-    } finally {
-      capturing = false;
-    }
-  }, Math.max(100, intervalMs));
-
-  return () => clearInterval(interval);
 }
 
 function resolveTemplateValue(
@@ -1450,6 +1124,7 @@ async function runTask(job: Job<TaskQueuePayload>, runtimeOptions: TaskRuntimeOp
     page,
     runtimeOptions.screenshotIntervalMs,
     runtimeOptions.tempDir,
+    publishScreenshot,
   );
   const stopResourceMonitor = startResourceMonitor(taskId);
 
@@ -1624,11 +1299,7 @@ async function shutdown(code = 0) {
   await publisher.quit();
   await workerConnection.quit();
   await prisma.$disconnect();
-
-  if (browserPromise) {
-    const browser = await browserPromise;
-    await browser.close();
-  }
+  await closeBrowser().catch(() => undefined);
 
   process.exit(code);
 }

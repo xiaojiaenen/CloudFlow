@@ -6,8 +6,13 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma } from '@prisma/client';
+import { Prisma, SystemConfig } from '@prisma/client';
 import { randomBytes } from 'crypto';
+import {
+  decryptSecretValue,
+  encryptSecretValue,
+  maskSecretValue,
+} from 'src/common/utils/secret-envelope';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { QueueService } from 'src/queue/queue.service';
 import { buildStoredPasswordHash } from '../auth/auth.utils';
@@ -291,91 +296,46 @@ export class AdminService {
   }
 
   async getSystemConfig() {
-    return this.ensureSystemConfig();
+    const config = await this.ensureSystemConfig();
+    return this.serializeSystemConfig(config);
   }
 
-  async updateSystemConfig(payload: UpdateSystemConfigDto) {
+  async updateSystemConfig(
+    payload: UpdateSystemConfigDto,
+    currentUser: AuthenticatedUser,
+  ) {
     const config = await this.ensureSystemConfig();
+    const beforeSnapshot = this.serializeSystemConfig(config);
+    const data = this.buildSystemConfigUpdateData(payload);
 
-    return this.prismaService.systemConfig.update({
+    const updatedConfig = await this.prismaService.systemConfig.update({
       where: {
         id: config.id,
       },
-      data: {
-        ...(payload.platformName !== undefined
-          ? { platformName: payload.platformName.trim() || 'CloudFlow' }
-          : {}),
-        ...(payload.supportEmail !== undefined
-          ? { supportEmail: payload.supportEmail?.trim() || null }
-          : {}),
-        ...(payload.smtpHost !== undefined
-          ? { smtpHost: payload.smtpHost?.trim() || null }
-          : {}),
-        ...(payload.smtpPort !== undefined ? { smtpPort: payload.smtpPort } : {}),
-        ...(payload.smtpUser !== undefined
-          ? { smtpUser: payload.smtpUser?.trim() || null }
-          : {}),
-        ...(payload.smtpPass !== undefined
-          ? { smtpPass: payload.smtpPass?.trim() || null }
-          : {}),
-        ...(payload.smtpSecure !== undefined
-          ? { smtpSecure: payload.smtpSecure }
-          : {}),
-        ...(payload.smtpIgnoreTlsCertificate !== undefined
-          ? {
-              smtpIgnoreTlsCertificate: payload.smtpIgnoreTlsCertificate,
-            }
-          : {}),
-        ...(payload.smtpFrom !== undefined
-          ? { smtpFrom: payload.smtpFrom?.trim() || null }
-          : {}),
-        ...(payload.minioEndpoint !== undefined
-          ? { minioEndpoint: payload.minioEndpoint?.trim() || null }
-          : {}),
-        ...(payload.minioPort !== undefined
-          ? { minioPort: payload.minioPort }
-          : {}),
-        ...(payload.minioUseSSL !== undefined
-          ? { minioUseSSL: payload.minioUseSSL }
-          : {}),
-        ...(payload.minioAccessKey !== undefined
-          ? { minioAccessKey: payload.minioAccessKey?.trim() || null }
-          : {}),
-        ...(payload.minioSecretKey !== undefined
-          ? { minioSecretKey: payload.minioSecretKey?.trim() || null }
-          : {}),
-        ...(payload.minioBucket !== undefined
-          ? {
-              minioBucket:
-                payload.minioBucket?.trim() || 'cloudflow-task-artifacts',
-            }
-          : {}),
-        ...(payload.screenshotIntervalMs !== undefined
-          ? { screenshotIntervalMs: payload.screenshotIntervalMs }
-          : {}),
-        ...(payload.screenshotPersistIntervalMs !== undefined
-          ? { screenshotPersistIntervalMs: payload.screenshotPersistIntervalMs }
-          : {}),
-        ...(payload.taskRetentionDays !== undefined
-          ? { taskRetentionDays: payload.taskRetentionDays }
-          : {}),
-        ...(payload.monitorPageSize !== undefined
-          ? { monitorPageSize: payload.monitorPageSize }
-          : {}),
-        ...(payload.globalTaskConcurrency !== undefined
-          ? { globalTaskConcurrency: payload.globalTaskConcurrency }
-          : {}),
-        ...(payload.perUserTaskConcurrency !== undefined
-          ? { perUserTaskConcurrency: payload.perUserTaskConcurrency }
-          : {}),
-        ...(payload.manualTaskPriority !== undefined
-          ? { manualTaskPriority: payload.manualTaskPriority }
-          : {}),
-        ...(payload.scheduledTaskPriority !== undefined
-          ? { scheduledTaskPriority: payload.scheduledTaskPriority }
-          : {}),
-      },
+      data,
     });
+    const afterSnapshot = this.serializeSystemConfig(updatedConfig);
+
+    const changedFields = Object.keys(data);
+    if (changedFields.length > 0) {
+      await this.prismaService.systemConfigAudit.create({
+        data: {
+          systemConfigId: updatedConfig.id,
+          actorId: currentUser.id,
+          changedFields: changedFields as unknown as Prisma.InputJsonValue,
+          beforeSnapshot: this.buildConfigAuditSnapshot(
+            beforeSnapshot,
+            changedFields,
+          ) as unknown as Prisma.InputJsonValue,
+          afterSnapshot: this.buildConfigAuditSnapshot(
+            afterSnapshot,
+            changedFields,
+          ) as unknown as Prisma.InputJsonValue,
+        },
+      });
+    }
+
+    return afterSnapshot;
   }
 
   async testSmtpConnection(payload: UpdateSystemConfigDto) {
@@ -391,8 +351,8 @@ export class AdminService {
 
       return {
         success: true,
-        message: `SMTP connection verified: ${result.host}:${result.port}${
-          result.secure ? ' (SSL/TLS)' : ''
+        message: `SMTP 连接成功：${result.host}:${result.port}${
+          result.secure ? '（SSL/TLS）' : ''
         }`,
         ...result,
         checkedAt: new Date().toISOString(),
@@ -404,8 +364,8 @@ export class AdminService {
 
       throw new BadRequestException(
         error instanceof Error
-          ? `SMTP test failed: ${error.message}`
-          : 'SMTP test failed. Please verify host, port, username and password.',
+          ? `SMTP 测试失败：${error.message}`
+          : 'SMTP 测试失败，请检查主机、端口、账号和密码。',
       );
     }
   }
@@ -424,8 +384,8 @@ export class AdminService {
       return {
         success: true,
         message: result.bucketExists
-          ? `MinIO connection verified, bucket "${result.bucket}" is available.`
-          : `MinIO connection verified, but bucket "${result.bucket}" does not exist yet.`,
+          ? `MinIO 连接成功，Bucket「${result.bucket}」可用。`
+          : `MinIO 连接成功，但 Bucket「${result.bucket}」当前不存在。`,
         ...result,
         checkedAt: new Date().toISOString(),
       };
@@ -436,8 +396,8 @@ export class AdminService {
 
       throw new BadRequestException(
         error instanceof Error
-          ? `MinIO test failed: ${error.message}`
-          : 'MinIO test failed. Please verify endpoint, port, access key, secret key and bucket.',
+          ? `MinIO 测试失败：${error.message}`
+          : 'MinIO 测试失败，请检查 Endpoint、端口、Access Key、Secret Key 和 Bucket。',
       );
     }
   }
@@ -499,7 +459,7 @@ export class AdminService {
           category: payload.category.trim(),
           tags: payload.tags as unknown as Prisma.InputJsonValue,
           definition: payload.definition as Prisma.InputJsonValue,
-          authorName: payload.authorName?.trim() || 'CloudFlow',
+          authorName: payload.authorName?.trim() || 'CloudFlow 官方',
           published: payload.published ?? false,
           featured: payload.featured ?? false,
           rating: payload.rating ?? 4.8,
@@ -615,7 +575,7 @@ export class AdminService {
               }
             : {}),
           ...(payload.authorName !== undefined
-            ? { authorName: payload.authorName.trim() || 'CloudFlow' }
+            ? { authorName: payload.authorName.trim() || 'CloudFlow 官方' }
             : {}),
           ...(payload.published !== undefined
             ? { published: payload.published }
@@ -630,6 +590,142 @@ export class AdminService {
       this.handleTemplateConflict(error);
       throw error;
     }
+  }
+
+  private buildSystemConfigUpdateData(payload: UpdateSystemConfigDto) {
+    const nextSecretKey = this.getSecretEnvelopeKey();
+    const data: Prisma.SystemConfigUpdateInput = {
+      ...(payload.platformName !== undefined
+        ? { platformName: payload.platformName.trim() || 'CloudFlow' }
+        : {}),
+      ...(payload.supportEmail !== undefined
+        ? { supportEmail: payload.supportEmail?.trim() || null }
+        : {}),
+      ...(payload.smtpHost !== undefined
+        ? { smtpHost: payload.smtpHost?.trim() || null }
+        : {}),
+      ...(payload.smtpPort !== undefined ? { smtpPort: payload.smtpPort } : {}),
+      ...(payload.smtpUser !== undefined
+        ? { smtpUser: payload.smtpUser?.trim() || null }
+        : {}),
+      ...(payload.smtpPass !== undefined
+        ? {
+            smtpPass: payload.smtpPass?.trim()
+              ? encryptSecretValue(payload.smtpPass.trim(), nextSecretKey)
+              : null,
+          }
+        : {}),
+      ...(payload.smtpSecure !== undefined
+        ? { smtpSecure: payload.smtpSecure }
+        : {}),
+      ...(payload.smtpIgnoreTlsCertificate !== undefined
+        ? {
+            smtpIgnoreTlsCertificate: payload.smtpIgnoreTlsCertificate,
+          }
+        : {}),
+      ...(payload.smtpFrom !== undefined
+        ? { smtpFrom: payload.smtpFrom?.trim() || null }
+        : {}),
+      ...(payload.minioEndpoint !== undefined
+        ? { minioEndpoint: payload.minioEndpoint?.trim() || null }
+        : {}),
+      ...(payload.minioPort !== undefined
+        ? { minioPort: payload.minioPort }
+        : {}),
+      ...(payload.minioUseSSL !== undefined
+        ? { minioUseSSL: payload.minioUseSSL }
+        : {}),
+      ...(payload.minioAccessKey !== undefined
+        ? {
+            minioAccessKey: payload.minioAccessKey?.trim()
+              ? encryptSecretValue(payload.minioAccessKey.trim(), nextSecretKey)
+              : null,
+          }
+        : {}),
+      ...(payload.minioSecretKey !== undefined
+        ? {
+            minioSecretKey: payload.minioSecretKey?.trim()
+              ? encryptSecretValue(payload.minioSecretKey.trim(), nextSecretKey)
+              : null,
+          }
+        : {}),
+      ...(payload.minioBucket !== undefined
+        ? {
+            minioBucket:
+              payload.minioBucket?.trim() || 'cloudflow-task-artifacts',
+          }
+        : {}),
+      ...(payload.screenshotIntervalMs !== undefined
+        ? { screenshotIntervalMs: payload.screenshotIntervalMs }
+        : {}),
+      ...(payload.screenshotPersistIntervalMs !== undefined
+        ? { screenshotPersistIntervalMs: payload.screenshotPersistIntervalMs }
+        : {}),
+      ...(payload.taskRetentionDays !== undefined
+        ? { taskRetentionDays: payload.taskRetentionDays }
+        : {}),
+      ...(payload.monitorPageSize !== undefined
+        ? { monitorPageSize: payload.monitorPageSize }
+        : {}),
+      ...(payload.globalTaskConcurrency !== undefined
+        ? { globalTaskConcurrency: payload.globalTaskConcurrency }
+        : {}),
+      ...(payload.perUserTaskConcurrency !== undefined
+        ? { perUserTaskConcurrency: payload.perUserTaskConcurrency }
+        : {}),
+      ...(payload.manualTaskPriority !== undefined
+        ? { manualTaskPriority: payload.manualTaskPriority }
+        : {}),
+      ...(payload.scheduledTaskPriority !== undefined
+        ? { scheduledTaskPriority: payload.scheduledTaskPriority }
+        : {}),
+    };
+
+    return data;
+  }
+
+  private serializeSystemConfig(config: SystemConfig) {
+    return {
+      ...config,
+      smtpPass: this.decryptOptionalSecret(config.smtpPass),
+      minioAccessKey: this.decryptOptionalSecret(config.minioAccessKey),
+      minioSecretKey: this.decryptOptionalSecret(config.minioSecretKey),
+    };
+  }
+
+  private buildConfigAuditSnapshot(
+    config: ReturnType<AdminService['serializeSystemConfig']>,
+    changedFields: string[],
+  ) {
+    return Object.fromEntries(
+      changedFields.map((field) => {
+        const value = config[field as keyof typeof config];
+        if (
+          field === 'smtpPass' ||
+          field === 'minioAccessKey' ||
+          field === 'minioSecretKey'
+        ) {
+          return [field, value ? maskSecretValue(String(value)) : ''];
+        }
+
+        return [field, value ?? null];
+      }),
+    );
+  }
+
+  private decryptOptionalSecret(value?: string | null) {
+    if (!value?.trim()) {
+      return '';
+    }
+
+    return decryptSecretValue(value, this.getSecretEnvelopeKey());
+  }
+
+  private getSecretEnvelopeKey() {
+    return this.configService.get<string>(
+      'SECRET_ENCRYPTION_KEY',
+      'cloudflow-dev-secret-key',
+    );
   }
 
   private assertCanEditTemplate(
@@ -648,7 +744,7 @@ export class AdminService {
     }
 
     throw new ForbiddenException(
-      `You are not allowed to update template "${template.title}".`,
+      `你没有权限更新模板「${template.title}」。`,
     );
   }
 
@@ -657,7 +753,7 @@ export class AdminService {
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === 'P2002'
     ) {
-      throw new ConflictException('Template slug already exists.');
+      throw new ConflictException('模板 slug 已存在。');
     }
   }
 

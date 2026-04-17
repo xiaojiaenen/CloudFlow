@@ -1,16 +1,29 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import Login from "./pages/Login";
-import Workspace from "./pages/Workspace";
-import Store from "./pages/Store";
-import Admin from "./pages/Admin";
-import Alerts from "./pages/Alerts";
-import Settings from "./pages/Settings";
-import { MonitorCenter } from "./pages/MonitorCenter";
-import { StarTrail } from "./components/StarTrail";
+import { Suspense, lazy } from "react";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { GlobalContextMenu } from "./components/GlobalContextMenu";
+import { ProtectedRoute } from "./components/ProtectedRoute";
+import { StarTrail } from "./components/StarTrail";
 import { AuthProvider } from "./context/AuthContext";
 import { OverlayDialogProvider } from "./context/OverlayDialogContext";
-import { ProtectedRoute } from "./components/ProtectedRoute";
+
+const Login = lazy(() => import("./pages/Login"));
+const Workspace = lazy(() => import("./pages/Workspace"));
+const Store = lazy(() => import("./pages/Store"));
+const Admin = lazy(() => import("./pages/Admin"));
+const Alerts = lazy(() => import("./pages/Alerts"));
+const Settings = lazy(() => import("./pages/Settings"));
+const MonitorCenter = lazy(async () => {
+  const module = await import("./pages/MonitorCenter");
+  return { default: module.MonitorCenter };
+});
+
+function RouteFallback() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-[#0B0C10] text-sm text-zinc-400">
+      Loading...
+    </div>
+  );
+}
 
 export default function App() {
   return (
@@ -19,58 +32,60 @@ export default function App() {
         <BrowserRouter>
           <StarTrail />
           <GlobalContextMenu />
-          <Routes>
-            <Route path="/login" element={<Login />} />
-            <Route
-              path="/"
-              element={
-                <ProtectedRoute>
-                  <Workspace />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/monitor"
-              element={
-                <ProtectedRoute>
-                  <MonitorCenter />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/store"
-              element={
-                <ProtectedRoute>
-                  <Store />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/admin"
-              element={
-                <ProtectedRoute requireAdmin>
-                  <Admin />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/alerts"
-              element={
-                <ProtectedRoute>
-                  <Alerts />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/settings"
-              element={
-                <ProtectedRoute>
-                  <Settings />
-                </ProtectedRoute>
-              }
-            />
-            <Route path="*" element={<Navigate to="/login" replace />} />
-          </Routes>
+          <Suspense fallback={<RouteFallback />}>
+            <Routes>
+              <Route path="/login" element={<Login />} />
+              <Route
+                path="/"
+                element={
+                  <ProtectedRoute>
+                    <Workspace />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/monitor"
+                element={
+                  <ProtectedRoute>
+                    <MonitorCenter />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/store"
+                element={
+                  <ProtectedRoute>
+                    <Store />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/admin"
+                element={
+                  <ProtectedRoute requireAdmin>
+                    <Admin />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/alerts"
+                element={
+                  <ProtectedRoute>
+                    <Alerts />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/settings"
+                element={
+                  <ProtectedRoute>
+                    <Settings />
+                  </ProtectedRoute>
+                }
+              />
+              <Route path="*" element={<Navigate to="/login" replace />} />
+            </Routes>
+          </Suspense>
         </BrowserRouter>
       </OverlayDialogProvider>
     </AuthProvider>

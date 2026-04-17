@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Prisma, TaskStatus, TaskTriggerSource } from '@prisma/client';
 import {
   buildWorkflowExecutionSnapshot,
@@ -6,6 +7,7 @@ import {
   resolveWorkflowRuntimeInputs,
   type ResolvableCredentialRecord,
 } from 'src/common/utils/workflow-runtime';
+import { decryptJsonValue } from 'src/common/utils/secret-envelope';
 import { WorkflowDefinition } from 'src/common/types/workflow.types';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { QueueService } from 'src/queue/queue.service';
@@ -19,6 +21,7 @@ export class TaskService {
     private readonly prismaService: PrismaService,
     private readonly queueService: QueueService,
     private readonly storageService: TaskArtifactStorageService,
+    private readonly configService: ConfigService,
   ) {}
 
   async run(runTaskDto: RunTaskDto, currentUser: AuthenticatedUser) {
@@ -457,14 +460,28 @@ export class TaskService {
             type: true,
             provider: true,
             payload: true,
+            payloadCiphertext: true,
           },
         })
       : [];
+    const normalizedCredentials = credentials.map<ResolvableCredentialRecord>((credential) => ({
+      ...credential,
+      payload: credential.payloadCiphertext?.trim()
+        ? decryptJsonValue(credential.payloadCiphertext, this.getSecretEnvelopeKey())
+        : credential.payload,
+    }));
 
     return resolveWorkflowCredentialBindings(
       workflowDefinition.credentialRequirements ?? [],
       providedBindings,
-      credentials,
+      normalizedCredentials,
+    );
+  }
+
+  private getSecretEnvelopeKey() {
+    return this.configService.get<string>(
+      'SECRET_ENCRYPTION_KEY',
+      'cloudflow-dev-secret-key',
     );
   }
 

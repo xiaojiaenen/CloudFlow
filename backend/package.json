@@ -12,6 +12,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "lint": "tsc --noEmit",
+    "test": "vitest run",
     "ownership:backfill": "ts-node -r tsconfig-paths/register scripts/backfill-ownership.ts"
   },
   "keywords": [
@@ -51,6 +52,7 @@
     "ts-node": "^10.9.2",
     "tsc-alias": "^1.8.16",
     "tsconfig-paths": "^4.2.0",
-    "typescript": "^5.8.2"
+    "typescript": "^5.8.2",
+    "vitest": "^3.2.4"
   }
 }

@@ -47,6 +47,8 @@ model Workflow {
   id               String   @id @default(cuid())
   ownerId          String
   owner            User     @relation("UserWorkflows", fields: [ownerId], references: [id])
+  installedFromTemplateId String?
+  installedFromTemplate WorkflowTemplate? @relation("InstalledTemplateWorkflows", fields: [installedFromTemplateId], references: [id])
   name             String
   description      String?
   definition       Json
@@ -64,6 +66,7 @@ model Workflow {
   updatedAt        DateTime @updatedAt
 
   @@index([ownerId])
+  @@index([installedFromTemplateId])
   @@index([scheduleEnabled])
   @@index([deletedAt])
   @@index([status])
@@ -130,6 +133,7 @@ model WorkflowTemplate {
   slug             String    @unique
   sourceWorkflowId String?
   sourceWorkflow   Workflow? @relation("WorkflowPublishedTemplates", fields: [sourceWorkflowId], references: [id])
+  installedWorkflows Workflow[] @relation("InstalledTemplateWorkflows")
   publisherId      String?
   publisher        User?     @relation("PublishedTemplates", fields: [publisherId], references: [id])
   title            String
@@ -177,8 +181,24 @@ model SystemConfig {
   perUserTaskConcurrency Int    @default(1)
   manualTaskPriority   Int      @default(1)
   scheduledTaskPriority Int     @default(10)
+  audits               SystemConfigAudit[]
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
+}
+
+model SystemConfigAudit {
+  id             String   @id @default(cuid())
+  systemConfigId String
+  systemConfig   SystemConfig @relation(fields: [systemConfigId], references: [id], onDelete: Cascade)
+  actorId        String?
+  actor          User?    @relation("UserSystemConfigAudits", fields: [actorId], references: [id], onDelete: SetNull)
+  changedFields  Json
+  beforeSnapshot Json
+  afterSnapshot  Json
+  createdAt      DateTime @default(now())
+
+  @@index([systemConfigId, createdAt])
+  @@index([actorId, createdAt])
 }
 
 model Credential {
@@ -191,6 +211,7 @@ model Credential {
   provider    String?
   description String?
   payload     Json
+  payloadCiphertext String? @db.LongText
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -210,6 +231,7 @@ model User {
   tasks              Task[]             @relation("UserTasks")
   credentials        Credential[]       @relation("UserCredentials")
   publishedTemplates WorkflowTemplate[] @relation("PublishedTemplates")
+  systemConfigAudits SystemConfigAudit[] @relation("UserSystemConfigAudits")
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
 

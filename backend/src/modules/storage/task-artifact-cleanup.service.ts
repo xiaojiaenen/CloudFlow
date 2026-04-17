@@ -1,17 +1,23 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { TaskStatus } from '@prisma/client';
+import { readdir, stat } from 'fs/promises';
+import path from 'path';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { TaskArtifactStorageService } from './task-artifact-storage.service';
 
 const CLEANUP_INTERVAL_MS = 1000 * 60 * 30;
 const CLEANUP_BATCH_SIZE = 20;
 const TERMINAL_STATUSES: TaskStatus[] = ['success', 'failed', 'cancelled'];
+const ORPHAN_DIR_MIN_AGE_MS = 1000 * 60 * 60 * 6;
 
 @Injectable()
 export class TaskArtifactCleanupService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(TaskArtifactCleanupService.name);
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private readonly taskRuntimeBaseDir = process.env.TASK_RUNTIME_BASE_DIR
+    ? path.resolve(process.env.TASK_RUNTIME_BASE_DIR)
+    : path.resolve(process.cwd(), 'runtime', 'tasks');
 
   constructor(
     private readonly prismaService: PrismaService,
@@ -48,6 +54,8 @@ export class TaskArtifactCleanupService implements OnModuleInit, OnModuleDestroy
       });
       const retentionDays = Math.max(1, systemConfig?.taskRetentionDays ?? 30);
       const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+      let deletedTaskCount = 0;
+      let deletedScreenshotCount = 0;
 
       const expiredTasks = await this.prismaService.task.findMany({
         where: {
@@ -86,6 +94,7 @@ export class TaskArtifactCleanupService implements OnModuleInit, OnModuleDestroy
       for (const task of expiredTasks) {
         for (const event of task.executionEvents) {
           await this.storageService.deleteScreenshot(event);
+          deletedScreenshotCount += 1;
         }
 
         await this.storageService.removeTaskTempDir(task.tempDir);
@@ -94,10 +103,13 @@ export class TaskArtifactCleanupService implements OnModuleInit, OnModuleDestroy
             id: task.id,
           },
         });
+        deletedTaskCount += 1;
       }
 
+      const orphanDirCount = await this.cleanupOrphanTaskDirs(cutoff);
+
       this.logger.log(
-        `Cleaned up ${expiredTasks.length} expired tasks and their historical screenshots.`,
+        `Cleanup finished: deleted ${deletedTaskCount} expired tasks, removed ${deletedScreenshotCount} screenshots, removed ${orphanDirCount} orphan runtime directories.`,
       );
     } catch (error) {
       this.logger.error(
@@ -107,5 +119,67 @@ export class TaskArtifactCleanupService implements OnModuleInit, OnModuleDestroy
     } finally {
       this.running = false;
     }
+  }
+
+  private async cleanupOrphanTaskDirs(cutoff: Date) {
+    const entries = await readdir(this.taskRuntimeBaseDir, {
+      withFileTypes: true,
+    }).catch(() => []);
+
+    if (entries.length === 0) {
+      return 0;
+    }
+
+    const keepTasks = await this.prismaService.task.findMany({
+      where: {
+        OR: [
+          {
+            status: {
+              notIn: TERMINAL_STATUSES,
+            },
+          },
+          {
+            completedAt: {
+              gte: cutoff,
+            },
+          },
+        ],
+        tempDir: {
+          not: null,
+        },
+      },
+      select: {
+        tempDir: true,
+      },
+    });
+
+    const keepDirSet = new Set(
+      keepTasks
+        .map((task) => task.tempDir)
+        .filter((tempDir): tempDir is string => Boolean(tempDir))
+        .map((tempDir) => path.resolve(tempDir)),
+    );
+
+    let removedCount = 0;
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+
+      const resolvedDir = path.resolve(this.taskRuntimeBaseDir, entry.name);
+      if (keepDirSet.has(resolvedDir)) {
+        continue;
+      }
+
+      const metadata = await stat(resolvedDir).catch(() => null);
+      if (!metadata || Date.now() - metadata.mtimeMs < ORPHAN_DIR_MIN_AGE_MS) {
+        continue;
+      }
+
+      await this.storageService.removeTaskTempDir(resolvedDir);
+      removedCount += 1;
+    }
+
+    return removedCount;
   }
 }

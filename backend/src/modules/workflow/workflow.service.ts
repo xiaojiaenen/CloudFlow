@@ -39,24 +39,45 @@ export class WorkflowService {
       createWorkflowDto.schedule,
       nextStatus,
     );
+    const installedFromTemplateId = await this.resolveInstalledTemplateId(
+      createWorkflowDto.installedFromTemplateId,
+    );
 
     await this.validateSchedule(normalizedSchedule);
     this.validateAlerts(createWorkflowDto.alerts);
 
-    const workflow = await this.prismaService.workflow.create({
-      data: {
-        ownerId: currentUser.id,
-        name: createWorkflowDto.name,
-        description: createWorkflowDto.description,
-        definition: createWorkflowDto.definition as unknown as Prisma.InputJsonValue,
-        status: nextStatus,
-        scheduleEnabled: normalizedSchedule.enabled,
-        scheduleCron: normalizedSchedule.cron,
-        scheduleTimezone: normalizedSchedule.timezone,
-        alertEmail: createWorkflowDto.alerts?.email?.trim() || null,
-        alertOnFailure: createWorkflowDto.alerts?.onFailure ?? false,
-        alertOnSuccess: createWorkflowDto.alerts?.onSuccess ?? false,
-      },
+    const workflow = await this.prismaService.$transaction(async (tx) => {
+      const createdWorkflow = await tx.workflow.create({
+        data: {
+          ownerId: currentUser.id,
+          installedFromTemplateId,
+          name: createWorkflowDto.name,
+          description: createWorkflowDto.description,
+          definition: createWorkflowDto.definition as unknown as Prisma.InputJsonValue,
+          status: nextStatus,
+          scheduleEnabled: normalizedSchedule.enabled,
+          scheduleCron: normalizedSchedule.cron,
+          scheduleTimezone: normalizedSchedule.timezone,
+          alertEmail: createWorkflowDto.alerts?.email?.trim() || null,
+          alertOnFailure: createWorkflowDto.alerts?.onFailure ?? false,
+          alertOnSuccess: createWorkflowDto.alerts?.onSuccess ?? false,
+        },
+      });
+
+      if (installedFromTemplateId) {
+        await tx.workflowTemplate.update({
+          where: {
+            id: installedFromTemplateId,
+          },
+          data: {
+            installCount: {
+              increment: 1,
+            },
+          },
+        });
+      }
+
+      return createdWorkflow;
     });
 
     await this.queueService.syncWorkflowSchedule(workflow);
@@ -274,6 +295,7 @@ export class WorkflowService {
     const duplicatedWorkflow = await this.prismaService.workflow.create({
       data: {
         ownerId,
+        installedFromTemplateId: existingWorkflow.installedFromTemplateId,
         name: `${existingWorkflow.name} 副本`,
         description: existingWorkflow.description,
         definition: existingWorkflow.definition as Prisma.InputJsonValue,
@@ -296,6 +318,10 @@ export class WorkflowService {
     const nextStatus = this.normalizeWorkflowStatus(
       updateWorkflowDto.status ?? existingWorkflow.status,
     );
+    const installedFromTemplateId =
+      updateWorkflowDto.installedFromTemplateId !== undefined
+        ? await this.resolveInstalledTemplateId(updateWorkflowDto.installedFromTemplateId)
+        : undefined;
     const nextSchedule = this.normalizeSchedulePayload(
       updateWorkflowDto.schedule
         ? {
@@ -332,6 +358,9 @@ export class WorkflowService {
         ...(updateWorkflowDto.name ? { name: updateWorkflowDto.name } : {}),
         ...(updateWorkflowDto.description !== undefined
           ? { description: updateWorkflowDto.description }
+          : {}),
+        ...(installedFromTemplateId !== undefined
+          ? { installedFromTemplateId }
           : {}),
         ...(updateWorkflowDto.definition
           ? {
@@ -421,6 +450,29 @@ export class WorkflowService {
 
   private normalizeWorkflowStatus(status?: string | null): WorkflowLifecycleStatus {
     return this.isWorkflowStatus(status) ? status : 'active';
+  }
+
+  private async resolveInstalledTemplateId(templateId?: string | null) {
+    const normalized = templateId?.trim();
+    if (!normalized) {
+      return null;
+    }
+
+    const template = await this.prismaService.workflowTemplate.findFirst({
+      where: {
+        id: normalized,
+        deletedAt: null,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!template) {
+      throw new NotFoundException(`Template ${normalized} not found`);
+    }
+
+    return template.id;
   }
 
   private normalizeSchedulePayload(

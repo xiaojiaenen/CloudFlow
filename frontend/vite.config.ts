@@ -6,6 +6,40 @@ import {defineConfig} from 'vite';
 export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
+    build: {
+      chunkSizeWarningLimit: 950,
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (!id.includes('node_modules')) {
+              return undefined;
+            }
+
+            if (id.includes('/echarts/') || id.includes('/echarts-for-react/')) {
+              return 'echarts-vendor';
+            }
+
+            if (id.includes('/recharts/')) {
+              return 'recharts-vendor';
+            }
+
+            if (id.includes('/@xyflow/')) {
+              return 'flow-vendor';
+            }
+
+            if (id.includes('/socket.io-client/')) {
+              return 'socket-vendor';
+            }
+
+            if (id.includes('/lucide-react/')) {
+              return 'icons-vendor';
+            }
+
+            return 'vendor';
+          },
+        },
+      },
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

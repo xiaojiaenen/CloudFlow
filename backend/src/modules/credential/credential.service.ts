@@ -3,14 +3,23 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
+import {
+  decryptJsonValue,
+  encryptJsonValue,
+  maskSecretValue,
+} from 'src/common/utils/secret-envelope';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { AuthenticatedUser } from '../auth/auth.types';
 import { UpsertCredentialDto } from './dto/upsert-credential.dto';
 
 @Injectable()
 export class CredentialService {
-  constructor(private readonly prismaService: PrismaService) {}
+  constructor(
+    private readonly prismaService: PrismaService,
+    private readonly configService: ConfigService,
+  ) {}
 
   async findAll(currentUser: AuthenticatedUser) {
     const credentials = await this.prismaService.credential.findMany({
@@ -33,7 +42,8 @@ export class CredentialService {
           type: payload.type,
           provider: payload.provider?.trim() || null,
           description: payload.description?.trim() || null,
-          payload: payload.payload as Prisma.InputJsonValue,
+          payload: {},
+          payloadCiphertext: this.encryptPayload(payload.payload),
         },
       });
 
@@ -60,7 +70,8 @@ export class CredentialService {
           type: payload.type,
           provider: payload.provider?.trim() || null,
           description: payload.description?.trim() || null,
-          payload: payload.payload as Prisma.InputJsonValue,
+          payload: {},
+          payloadCiphertext: this.encryptPayload(payload.payload),
         },
       });
 
@@ -106,20 +117,16 @@ export class CredentialService {
     provider: string | null;
     description: string | null;
     payload: Prisma.JsonValue;
+    payloadCiphertext?: string | null;
     createdAt: Date;
     updatedAt: Date;
   }) {
-    const payload =
-      credential.payload &&
-      typeof credential.payload === 'object' &&
-      !Array.isArray(credential.payload)
-        ? (credential.payload as Record<string, unknown>)
-        : {};
+    const payload = this.readPayload(credential.payload, credential.payloadCiphertext);
 
     const maskedPayload = Object.entries(payload).reduce<Record<string, string>>(
       (acc, [key, value]) => {
         const text = value === null || value === undefined ? '' : String(value);
-        acc[key] = text ? `${'*'.repeat(Math.max(4, text.length - 2))}${text.slice(-2)}` : '';
+        acc[key] = text ? maskSecretValue(text) : '';
         return acc;
       },
       {},
@@ -130,6 +137,27 @@ export class CredentialService {
       payload,
       maskedPayload,
     };
+  }
+
+  private readPayload(payload: Prisma.JsonValue, payloadCiphertext?: string | null) {
+    if (payloadCiphertext?.trim()) {
+      return decryptJsonValue(payloadCiphertext, this.getSecretEnvelopeKey());
+    }
+
+    return payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : {};
+  }
+
+  private encryptPayload(payload: Record<string, unknown>) {
+    return encryptJsonValue(payload, this.getSecretEnvelopeKey());
+  }
+
+  private getSecretEnvelopeKey() {
+    return this.configService.get<string>(
+      'SECRET_ENCRYPTION_KEY',
+      'cloudflow-dev-secret-key',
+    );
   }
 
   private handleDuplicateKeyError(error: unknown, key: string) {

@@ -17,6 +17,10 @@ export class UpdateWorkflowDto {
 
   @IsOptional()
   @IsString()
+  installedFromTemplateId?: string;
+
+  @IsOptional()
+  @IsString()
   @IsIn(['draft', 'active', 'archived'])
   status?: 'draft' | 'active' | 'archived';
 

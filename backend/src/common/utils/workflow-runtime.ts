@@ -13,6 +13,7 @@ export interface ResolvableCredentialRecord {
   type: string;
   provider?: string | null;
   payload: unknown;
+  payloadCiphertext?: string | null;
 }
 
 function normalizeInputValue(value: unknown) {

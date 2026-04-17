@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Client as MinioClient } from 'minio';
 import { mkdir, readFile, rm, writeFile } from 'fs/promises';
 import path from 'path';
+import { decryptSecretValue } from 'src/common/utils/secret-envelope';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { TaskScreenshotPayload } from 'src/common/types/execution-event.types';
 
@@ -194,12 +195,12 @@ export class TaskArtifactStorageService {
     );
     const accessKey = this.pickString(
       overrides?.minioAccessKey,
-      systemConfig?.minioAccessKey,
+      this.decryptOptionalSecret(systemConfig?.minioAccessKey),
       this.configService.get<string>('MINIO_ACCESS_KEY'),
     );
     const secretKey = this.pickString(
       overrides?.minioSecretKey,
-      systemConfig?.minioSecretKey,
+      this.decryptOptionalSecret(systemConfig?.minioSecretKey),
       this.configService.get<string>('MINIO_SECRET_KEY'),
     );
     const bucket =
@@ -290,5 +291,19 @@ export class TaskArtifactStorageService {
     }
 
     return '';
+  }
+
+  private decryptOptionalSecret(value?: string | null) {
+    if (!value?.trim()) {
+      return '';
+    }
+
+    return decryptSecretValue(
+      value,
+      this.configService.get<string>(
+        'SECRET_ENCRYPTION_KEY',
+        'cloudflow-dev-secret-key',
+      ),
+    );
   }
 }

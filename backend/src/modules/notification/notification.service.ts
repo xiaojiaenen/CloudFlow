@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma, TaskStatus, Workflow } from '@prisma/client';
 import nodemailer, { Transporter } from 'nodemailer';
+import { decryptSecretValue } from 'src/common/utils/secret-envelope';
 import { PrismaService } from 'src/prisma/prisma.service';
 
 interface RecentActivityItem {
@@ -491,7 +492,7 @@ export class NotificationService {
     );
     const pass = this.pickString(
       overrides?.smtpPass,
-      systemConfig?.smtpPass,
+      this.decryptOptionalSecret(systemConfig?.smtpPass),
       this.configService.get<string>('SMTP_PASS'),
     );
     const port =
@@ -553,6 +554,20 @@ export class NotificationService {
     }
 
     return '';
+  }
+
+  private decryptOptionalSecret(value?: string | null) {
+    if (!value?.trim()) {
+      return '';
+    }
+
+    return decryptSecretValue(
+      value,
+      this.configService.get<string>(
+        'SECRET_ENCRYPTION_KEY',
+        'cloudflow-dev-secret-key',
+      ),
+    );
   }
 
   private getStatusMeta(status: TaskStatus) {
