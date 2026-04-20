@@ -62,7 +62,7 @@ export class TaskArtifactStorageService {
     const timestamp = payload.timestamp.replace(/[:.]/g, '-');
     const source = payload.source ?? 'stream';
     const key = `tasks/${taskId}/screenshots/${source}-${sequence}-${timestamp}.${extension}`;
-    const buffer = Buffer.from(payload.imageBase64, 'base64');
+    const buffer = this.resolveScreenshotBuffer(payload);
 
     if (config.provider === 'minio') {
       const client = await this.getMinioClient(config);
@@ -82,6 +82,16 @@ export class TaskArtifactStorageService {
       storageKey: key,
       sizeBytes: buffer.length,
     };
+  }
+
+  private resolveScreenshotBuffer(payload: TaskScreenshotPayload) {
+    if (payload.imageBuffer) {
+      return Buffer.isBuffer(payload.imageBuffer)
+        ? payload.imageBuffer
+        : Buffer.from(payload.imageBuffer);
+    }
+
+    return Buffer.from(payload.imageBase64 ?? '', 'base64');
   }
 
   async readScreenshot(ref: ScreenshotObjectRef) {

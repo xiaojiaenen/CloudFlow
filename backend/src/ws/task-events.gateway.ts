@@ -10,7 +10,10 @@ import {
 } from '@nestjs/websockets';
 import { Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
-import { TaskExecutionEvent } from 'src/common/types/execution-event.types';
+import {
+  TaskExecutionEvent,
+  TaskScreenshotPayload,
+} from 'src/common/types/execution-event.types';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { AuthService } from 'src/modules/auth/auth.service';
 import { AuthenticatedUser } from 'src/modules/auth/auth.types';
@@ -116,11 +119,34 @@ export class TaskEventsGateway implements OnGatewayConnection, OnGatewayDisconne
   }
 
   emitTaskEvent(taskId: string, event: TaskExecutionEvent) {
-    this.server.to(this.getTaskRoom(taskId)).emit('task:event', event);
+    this.server
+      .to(this.getTaskRoom(taskId))
+      .emit('task:event', this.serializeTaskEvent(event));
   }
 
   private getTaskRoom(taskId: string) {
     return `task:${taskId}`;
+  }
+
+  private serializeTaskEvent(event: TaskExecutionEvent): TaskExecutionEvent {
+    if (event.type !== 'screenshot') {
+      return event;
+    }
+
+    const payload = event.data as TaskScreenshotPayload;
+
+    if (!payload.imageBase64?.trim()) {
+      return event;
+    }
+
+    return {
+      ...event,
+      data: {
+        ...payload,
+        imageBase64: undefined,
+        imageBuffer: Buffer.from(payload.imageBase64, 'base64'),
+      },
+    };
   }
 
   private resolveToken(client: Socket) {

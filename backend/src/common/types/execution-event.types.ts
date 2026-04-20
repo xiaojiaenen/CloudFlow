@@ -17,7 +17,8 @@ export interface TaskLogPayload {
 }
 
 export interface TaskScreenshotPayload {
-  imageBase64: string;
+  imageBase64?: string;
+  imageBuffer?: Buffer;
   mimeType: string;
   source?: 'stream' | 'node';
   timestamp: string;

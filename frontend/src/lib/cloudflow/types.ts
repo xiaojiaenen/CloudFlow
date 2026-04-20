@@ -364,7 +364,15 @@ export interface TaskEvent {
         nodeId?: string;
       }
     | {
-        imageBase64: string;
+        imageBase64?: string;
+        imageBuffer?:
+          | ArrayBuffer
+          | Uint8Array
+          | Blob
+          | {
+              type: "Buffer";
+              data: number[];
+            };
         mimeType: string;
         source?: "stream" | "node";
         timestamp: string;

@@ -59,6 +59,17 @@ import {
   WORKFLOW_SAVED_EVENT,
 } from "@/src/lib/cloudflow";
 
+type ScreenshotBinaryPayload =
+  | ArrayBuffer
+  | Uint8Array
+  | Blob
+  | {
+      type: "Buffer";
+      data: number[];
+    };
+
+type ScreenshotTaskEventPayload = Extract<TaskEvent["data"], { mimeType: string; timestamp: string }>;
+
 function toLogTimestamp(timestamp?: string) {
   if (!timestamp) {
     return new Date().toLocaleTimeString([], {
@@ -252,6 +263,34 @@ function isWorkflowOwnedByCurrentUser(owner?: WorkflowOwnerSummary | null, userI
   return Boolean(userId && owner?.id && owner.id === userId);
 }
 
+function normalizeScreenshotBinaryPayload(payload?: ScreenshotBinaryPayload | null) {
+  if (!payload) {
+    return null;
+  }
+
+  if (payload instanceof Blob) {
+    return payload;
+  }
+
+  if (payload instanceof Uint8Array) {
+    return payload;
+  }
+
+  if (payload instanceof ArrayBuffer) {
+    return new Uint8Array(payload);
+  }
+
+  if (
+    typeof payload === "object" &&
+    payload.type === "Buffer" &&
+    Array.isArray(payload.data)
+  ) {
+    return new Uint8Array(payload.data);
+  }
+
+  return null;
+}
+
 export default function Workspace() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -308,6 +347,55 @@ export default function Workspace() {
   const persistedWorkflowSnapshotRef = useRef<string>("");
   const autoSaveTimerRef = useRef<number | null>(null);
   const autoSaveSnapshotRef = useRef<string | null>(null);
+  const liveScreenshotUrlRef = useRef<string | null>(null);
+
+  const revokeLiveScreenshotUrl = useCallback(() => {
+    if (liveScreenshotUrlRef.current) {
+      URL.revokeObjectURL(liveScreenshotUrlRef.current);
+      liveScreenshotUrlRef.current = null;
+    }
+  }, []);
+
+  const replaceScreenshot = useCallback(
+    (nextScreenshot: string | null) => {
+      revokeLiveScreenshotUrl();
+      setScreenshot(nextScreenshot);
+    },
+    [revokeLiveScreenshotUrl],
+  );
+
+  const updateScreenshotFromTaskEvent = useCallback(
+    (payload: ScreenshotTaskEventPayload) => {
+      const binaryPayload = normalizeScreenshotBinaryPayload(
+        "imageBuffer" in payload ? payload.imageBuffer : undefined,
+      );
+
+      if (binaryPayload instanceof Blob) {
+        const blobUrl = URL.createObjectURL(binaryPayload);
+        revokeLiveScreenshotUrl();
+        liveScreenshotUrlRef.current = blobUrl;
+        setScreenshot(blobUrl);
+        return;
+      }
+
+      if (binaryPayload instanceof Uint8Array) {
+        const blobUrl = URL.createObjectURL(
+          new Blob([binaryPayload], {
+            type: payload.mimeType || "image/jpeg",
+          }),
+        );
+        revokeLiveScreenshotUrl();
+        liveScreenshotUrlRef.current = blobUrl;
+        setScreenshot(blobUrl);
+        return;
+      }
+
+      if ("imageBase64" in payload && payload.imageBase64) {
+        replaceScreenshot(`data:${payload.mimeType || "image/jpeg"};base64,${payload.imageBase64}`);
+      }
+    },
+    [replaceScreenshot, revokeLiveScreenshotUrl],
+  );
 
   const pageUrl = useMemo(() => getPrimaryPageUrl(flowNodes), [flowNodes]);
   const scheduleSummary = useMemo(() => {
@@ -622,8 +710,8 @@ export default function Workspace() {
       }
 
       if (event.type === "screenshot") {
-        const payload = event.data as Extract<TaskEvent["data"], { imageBase64: string }>;
-        setScreenshot(payload.imageBase64);
+        const payload = event.data as ScreenshotTaskEventPayload;
+        updateScreenshotFromTaskEvent(payload);
         return;
       }
 
@@ -696,7 +784,9 @@ export default function Workspace() {
       socket.off("task:event");
       socket.off("connect_error");
     };
-  }, [addLog]);
+  }, [addLog, updateScreenshotFromTaskEvent]);
+
+  useEffect(() => () => revokeLiveScreenshotUrl(), [revokeLiveScreenshotUrl]);
 
   useEffect(() => {
     if (taskId) {
@@ -717,7 +807,7 @@ export default function Workspace() {
       setRunDialogOpen(false);
       setPendingRunWorkflowId(null);
       setLogs([]);
-      setScreenshot(null);
+      replaceScreenshot(null);
       setTaskRuntimeContext(null);
       setRunCredentialBindings({});
 
@@ -745,7 +835,7 @@ export default function Workspace() {
           setIsRunning(true);
           setIsCancelling(Boolean(taskDetail.cancelRequestedAt));
           setLogs(buildRestoredLogs(taskDetail.executionEvents ?? []));
-          setScreenshot(getLatestPersistedScreenshot(taskDetail.id, taskDetail.executionEvents ?? []));
+          replaceScreenshot(getLatestPersistedScreenshot(taskDetail.id, taskDetail.executionEvents ?? []));
           setTaskRuntimeContext(taskDetail.workflowSnapshot?.runtime ?? null);
           setRunCredentialBindings(taskDetail.workflowSnapshot?.runtime?.credentialBindings ?? {});
         }
@@ -763,12 +853,12 @@ export default function Workspace() {
     };
 
     void loadWorkflow();
-  }, [addLog, resetCanvasWithWorkflow, workflowId]);
+  }, [addLog, replaceScreenshot, resetCanvasWithWorkflow, workflowId]);
 
   useEffect(() => {
     const handleOpenBlankWorkflow = () => {
       setLogs([]);
-      setScreenshot(null);
+      replaceScreenshot(null);
       setTaskId(null);
       setIsRunning(false);
       setIsCancelling(false);
@@ -782,7 +872,7 @@ export default function Workspace() {
 
     window.addEventListener(WORKFLOW_OPEN_BLANK_EVENT, handleOpenBlankWorkflow);
     return () => window.removeEventListener(WORKFLOW_OPEN_BLANK_EVENT, handleOpenBlankWorkflow);
-  }, [resetCanvasWithWorkflow]);
+  }, [replaceScreenshot, resetCanvasWithWorkflow]);
 
   useEffect(() => {
     setNodeStatuses((prev) => {
@@ -1028,7 +1118,7 @@ export default function Workspace() {
 
     setSelectedNodeId(null);
     setLogs([]);
-    setScreenshot(null);
+    replaceScreenshot(null);
     setTaskId(null);
     setTaskRuntimeContext(null);
     setIsCancelling(false);
@@ -1078,6 +1168,7 @@ export default function Workspace() {
     isCancelling,
     isRunning,
     persistWorkflow,
+    replaceScreenshot,
     runCredentialBindings,
     runFormValues,
     taskId,

@@ -53,9 +53,13 @@ const taskRuntimeBaseDir = process.env.TASK_RUNTIME_BASE_DIR
   ? path.resolve(process.env.TASK_RUNTIME_BASE_DIR)
   : path.resolve(process.cwd(), 'runtime', 'tasks');
 const USER_RUNNING_KEY_PREFIX = 'cloudflow:user-running:';
+const GLOBAL_RUNNING_KEY = 'cloudflow:global-running';
 const USER_RUNNING_SLOT_TTL_MS = 90_000;
+const GLOBAL_RUNNING_SLOT_TTL_MS = 90_000;
 const USER_RUNNING_SLOT_RETRY_DELAY_MS = 3_000;
+const GLOBAL_RUNNING_SLOT_RETRY_DELAY_MS = 3_000;
 const USER_RUNNING_SLOT_RENEW_INTERVAL_MS = 30_000;
+const GLOBAL_RUNNING_SLOT_RENEW_INTERVAL_MS = 30_000;
 
 let workerInstance: Worker<TaskQueuePayload> | null = null;
 
@@ -183,12 +187,83 @@ async function tryAcquireUserExecutionSlot(ownerId: string, limit: number) {
   return Number(result) > 0;
 }
 
+async function tryAcquireGlobalExecutionSlot(taskId: string, limit: number) {
+  const result = await workerConnection.eval(
+    `
+      local key = KEYS[1]
+      local member = ARGV[1]
+      local limit = tonumber(ARGV[2])
+      local ttl = tonumber(ARGV[3])
+      local now = tonumber(ARGV[4])
+      local expiresAt = now - ttl
+
+      redis.call('ZREMRANGEBYSCORE', key, '-inf', expiresAt)
+
+      if redis.call('ZSCORE', key, member) then
+        redis.call('ZADD', key, now, member)
+        redis.call('PEXPIRE', key, ttl)
+        return 1
+      end
+
+      if redis.call('ZCARD', key) >= limit then
+        return 0
+      end
+
+      redis.call('ZADD', key, now, member)
+      redis.call('PEXPIRE', key, ttl)
+      return 1
+    `,
+    1,
+    GLOBAL_RUNNING_KEY,
+    taskId,
+    String(limit),
+    String(GLOBAL_RUNNING_SLOT_TTL_MS),
+    String(Date.now()),
+  );
+
+  return Number(result) > 0;
+}
+
 function startUserExecutionSlotHeartbeat(ownerId: string) {
   const interval = setInterval(() => {
     void workerConnection
       .pexpire(getUserRunningKey(ownerId), USER_RUNNING_SLOT_TTL_MS)
       .catch(() => undefined);
   }, USER_RUNNING_SLOT_RENEW_INTERVAL_MS);
+
+  return () => clearInterval(interval);
+}
+
+function startGlobalExecutionSlotHeartbeat(taskId: string) {
+  const interval = setInterval(() => {
+    const now = Date.now();
+
+    void workerConnection
+      .eval(
+        `
+          local key = KEYS[1]
+          local member = ARGV[1]
+          local ttl = tonumber(ARGV[2])
+          local now = tonumber(ARGV[3])
+          local expiresAt = now - ttl
+
+          redis.call('ZREMRANGEBYSCORE', key, '-inf', expiresAt)
+
+          if redis.call('ZSCORE', key, member) then
+            redis.call('ZADD', key, now, member)
+            redis.call('PEXPIRE', key, ttl)
+          end
+
+          return 1
+        `,
+        1,
+        GLOBAL_RUNNING_KEY,
+        taskId,
+        String(GLOBAL_RUNNING_SLOT_TTL_MS),
+        String(now),
+      )
+      .catch(() => undefined);
+  }, GLOBAL_RUNNING_SLOT_RENEW_INTERVAL_MS);
 
   return () => clearInterval(interval);
 }
@@ -211,6 +286,30 @@ async function releaseUserExecutionSlot(ownerId: string) {
     1,
     getUserRunningKey(ownerId),
     String(USER_RUNNING_SLOT_TTL_MS),
+  );
+}
+
+async function releaseGlobalExecutionSlot(taskId: string) {
+  await workerConnection.eval(
+    `
+      local key = KEYS[1]
+      local member = ARGV[1]
+      local ttl = tonumber(ARGV[2])
+
+      redis.call('ZREM', key, member)
+
+      if redis.call('ZCARD', key) == 0 then
+        redis.call('DEL', key)
+        return 0
+      end
+
+      redis.call('PEXPIRE', key, ttl)
+      return 1
+    `,
+    1,
+    GLOBAL_RUNNING_KEY,
+    taskId,
+    String(GLOBAL_RUNNING_SLOT_TTL_MS),
   );
 }
 
@@ -1608,12 +1707,12 @@ async function bootstrap() {
       const taskId = job.data.taskId;
       const ownerId = await resolveTaskOwnerId(taskId, job.data.ownerId);
       const runtimePolicy = await getTaskExecutionPolicy();
-      const acquired = await tryAcquireUserExecutionSlot(
+      const userSlotAcquired = await tryAcquireUserExecutionSlot(
         ownerId,
         runtimePolicy.perUserTaskConcurrency,
       );
 
-      if (!acquired) {
+      if (!userSlotAcquired) {
         await publishLog(
           taskId,
           `Per-user concurrency limit reached (${runtimePolicy.perUserTaskConcurrency}), retrying in ${USER_RUNNING_SLOT_RETRY_DELAY_MS}ms.`,
@@ -1623,7 +1722,24 @@ async function bootstrap() {
         throw new DelayedError();
       }
 
-      const stopSlotHeartbeat = startUserExecutionSlotHeartbeat(ownerId);
+      const globalSlotAcquired = await tryAcquireGlobalExecutionSlot(
+        taskId,
+        runtimePolicy.globalTaskConcurrency,
+      );
+
+      if (!globalSlotAcquired) {
+        await releaseUserExecutionSlot(ownerId).catch(() => undefined);
+        await publishLog(
+          taskId,
+          `Global concurrency limit reached (${runtimePolicy.globalTaskConcurrency}), retrying in ${GLOBAL_RUNNING_SLOT_RETRY_DELAY_MS}ms.`,
+          'warn',
+        );
+        await job.moveToDelayed(Date.now() + GLOBAL_RUNNING_SLOT_RETRY_DELAY_MS, token);
+        throw new DelayedError();
+      }
+
+      const stopUserSlotHeartbeat = startUserExecutionSlotHeartbeat(ownerId);
+      const stopGlobalSlotHeartbeat = startGlobalExecutionSlotHeartbeat(taskId);
       const tempDir = await ensureTaskTempDir(taskId);
 
       try {
@@ -1640,8 +1756,10 @@ async function bootstrap() {
           tempDir,
         });
       } finally {
-        stopSlotHeartbeat();
+        stopUserSlotHeartbeat();
+        stopGlobalSlotHeartbeat();
         await releaseUserExecutionSlot(ownerId).catch(() => undefined);
+        await releaseGlobalExecutionSlot(taskId).catch(() => undefined);
       }
     },
     {
@@ -1653,7 +1771,7 @@ async function bootstrap() {
 
   workerInstance.on('ready', () => {
     console.log(
-      `[worker] CloudFlow worker is ready (global concurrency ${workerConcurrency})`,
+      `[worker] CloudFlow worker is ready (local concurrency ${workerConcurrency}, cluster-wide limit enforced via Redis)`,
     );
   });
 

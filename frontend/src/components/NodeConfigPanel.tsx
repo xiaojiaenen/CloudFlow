@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
-import { ArrowRight, KeyRound, Wand2, X } from "lucide-react";
+import { ArrowRight, KeyRound, Plus, Trash2, Wand2, X } from "lucide-react";
+import { Button } from "@/src/components/ui/Button";
 import { Input } from "@/src/components/ui/Input";
 import { Select } from "@/src/components/ui/Select";
 import { WorkflowCredentialRequirement, WorkflowInputField } from "@/src/lib/cloudflow";
@@ -26,6 +27,30 @@ const CREDENTIAL_FIELD_OPTIONS: Record<WorkflowCredentialRequirement["type"], st
   smtp: ["host", "port", "user", "pass", "from", "secure"],
   custom: ["token", "secret", "value"],
 };
+
+type SaveDataMappingSourceType =
+  | "item"
+  | "input"
+  | "variable"
+  | "credential"
+  | "text"
+  | "number"
+  | "boolean"
+  | "null"
+  | "index"
+  | "template";
+
+interface SaveDataMappingRow {
+  id: string;
+  field: string;
+  sourceType: SaveDataMappingSourceType;
+  value: string;
+}
+
+interface ParsedSaveDataMappings {
+  rows: SaveDataMappingRow[];
+  hasUnsupportedEntries: boolean;
+}
 
 function appendTemplate(currentValue: string, template: string) {
   if (!currentValue.trim()) {
@@ -87,28 +112,226 @@ function getSaveDataFieldOptionDescription(fieldName: string, value: string) {
   return "";
 }
 
+function createSaveDataMappingRow(
+  sourceType: SaveDataMappingSourceType = "item",
+  value = "",
+  field = "",
+): SaveDataMappingRow {
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    field,
+    sourceType,
+    value,
+  };
+}
+
+function parseTemplateValueToMappingRow(
+  field: string,
+  rawValue: string,
+): SaveDataMappingRow {
+  const normalized = rawValue.trim();
+  const exactTemplate = normalized.match(/^\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}$/);
+
+  if (exactTemplate) {
+    const expression = exactTemplate[1];
+
+    if (expression === "index") {
+      return createSaveDataMappingRow("index", "", field);
+    }
+
+    if (expression === "item") {
+      return createSaveDataMappingRow("item", "", field);
+    }
+
+    if (expression.startsWith("item.")) {
+      return createSaveDataMappingRow("item", expression.slice("item.".length), field);
+    }
+
+    if (expression.startsWith("inputs.")) {
+      return createSaveDataMappingRow("input", expression.slice("inputs.".length), field);
+    }
+
+    if (expression.startsWith("variables.")) {
+      return createSaveDataMappingRow("variable", expression.slice("variables.".length), field);
+    }
+
+    if (expression.startsWith("credentials.")) {
+      return createSaveDataMappingRow("credential", expression.slice("credentials.".length), field);
+    }
+  }
+
+  if (normalized.includes("{{") && normalized.includes("}}")) {
+    return createSaveDataMappingRow("template", rawValue, field);
+  }
+
+  return createSaveDataMappingRow("text", rawValue, field);
+}
+
+function parseSaveDataMappings(rawValue: string): ParsedSaveDataMappings {
+  const normalized = rawValue.trim();
+  if (!normalized) {
+    return {
+      rows: [],
+      hasUnsupportedEntries: false,
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(normalized) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {
+        rows: [],
+        hasUnsupportedEntries: true,
+      };
+    }
+
+    const rows: SaveDataMappingRow[] = [];
+    let hasUnsupportedEntries = false;
+
+    for (const [field, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (value === null) {
+        rows.push(createSaveDataMappingRow("null", "", field));
+        continue;
+      }
+
+      if (typeof value === "string") {
+        rows.push(parseTemplateValueToMappingRow(field, value));
+        continue;
+      }
+
+      if (typeof value === "number") {
+        rows.push(createSaveDataMappingRow("number", String(value), field));
+        continue;
+      }
+
+      if (typeof value === "boolean") {
+        rows.push(createSaveDataMappingRow("boolean", value ? "true" : "false", field));
+        continue;
+      }
+
+      hasUnsupportedEntries = true;
+    }
+
+    return {
+      rows,
+      hasUnsupportedEntries,
+    };
+  } catch {
+    return {
+      rows: [],
+      hasUnsupportedEntries: true,
+    };
+  }
+}
+
+function serializeSaveDataMappings(rows: SaveDataMappingRow[]) {
+  const payload = rows.reduce<Record<string, unknown>>((acc, row) => {
+    const field = row.field.trim();
+    if (!field) {
+      return acc;
+    }
+
+    switch (row.sourceType) {
+      case "item":
+        acc[field] = row.value.trim() ? `{{item.${row.value.trim()}}}` : "{{item}}";
+        break;
+      case "input":
+        if (row.value.trim()) {
+          acc[field] = `{{inputs.${row.value.trim()}}}`;
+        }
+        break;
+      case "variable":
+        if (row.value.trim()) {
+          acc[field] = `{{variables.${row.value.trim()}}}`;
+        }
+        break;
+      case "credential":
+        if (row.value.trim()) {
+          acc[field] = `{{credentials.${row.value.trim()}}}`;
+        }
+        break;
+      case "number": {
+        const parsed = Number(row.value.trim());
+        acc[field] = Number.isFinite(parsed) ? parsed : row.value.trim();
+        break;
+      }
+      case "boolean":
+        acc[field] = row.value === "true";
+        break;
+      case "null":
+        acc[field] = null;
+        break;
+      case "index":
+        acc[field] = "{{index}}";
+        break;
+      case "template":
+        acc[field] = row.value;
+        break;
+      case "text":
+      default:
+        acc[field] = row.value;
+        break;
+    }
+
+    return acc;
+  }, {});
+
+  return Object.keys(payload).length > 0 ? JSON.stringify(payload, null, 2) : "";
+}
+
+function getSaveDataSourceOptions() {
+  return [
+    { value: "item", label: "来源字段", description: "从当前记录对象读取字段，如 item.orderNo" },
+    { value: "input", label: "运行参数", description: "引用启动工作流时输入的参数" },
+    { value: "variable", label: "流程变量", description: "引用前面节点产出的变量" },
+    { value: "credential", label: "凭据字段", description: "从绑定凭据中读取字段" },
+    { value: "text", label: "固定文本", description: "写入一个固定字符串" },
+    { value: "number", label: "数字", description: "写入数值类型" },
+    { value: "boolean", label: "布尔值", description: "写入 true / false" },
+    { value: "null", label: "空值", description: "明确写入 null" },
+    { value: "index", label: "当前序号", description: "数组模式下写入当前项序号" },
+    { value: "template", label: "高级模板", description: "需要组合模板时使用，如 {{item.id}}-{{index}}" },
+  ] as const;
+}
+
 export function NodeConfigPanel({
   nodeId,
   inputSchema,
   credentialRequirements,
   onClose,
 }: NodeConfigPanelProps) {
-  const { getNode, updateNodeData } = useReactFlow();
+  const { getNode, getNodes, updateNodeData } = useReactFlow();
   const node = getNode(nodeId);
   const [localData, setLocalData] = useState<Record<string, unknown>>({});
   const [inputSelections, setInputSelections] = useState<Record<string, string>>({});
   const [credentialSelections, setCredentialSelections] = useState<Record<string, string>>({});
+  const [saveDataMappings, setSaveDataMappings] = useState<SaveDataMappingRow[]>([]);
+  const [saveDataMappingsMode, setSaveDataMappingsMode] = useState<"visual" | "raw">("visual");
+  const [saveDataMappingsRaw, setSaveDataMappingsRaw] = useState("");
 
   useEffect(() => {
     if (node) {
+      const sanitized = sanitizeNodeFieldValues(
+        node.data.type as string | undefined,
+        (node.data || {}) as Record<string, unknown>,
+      );
       setLocalData(
-        sanitizeNodeFieldValues(
-          node.data.type as string | undefined,
-          (node.data || {}) as Record<string, unknown>,
-        ),
+        sanitized,
       );
       setInputSelections({});
       setCredentialSelections({});
+
+      if (node.data.type === "save_data") {
+        const rawMappings = String(sanitized.fieldMappings ?? "");
+        const parsedMappings = parseSaveDataMappings(rawMappings);
+        setSaveDataMappings(parsedMappings.rows.length > 0 ? parsedMappings.rows : [createSaveDataMappingRow()]);
+        setSaveDataMappingsRaw(rawMappings);
+        setSaveDataMappingsMode(parsedMappings.hasUnsupportedEntries ? "raw" : "visual");
+      } else {
+        setSaveDataMappings([]);
+        setSaveDataMappingsRaw("");
+        setSaveDataMappingsMode("visual");
+      }
     }
   }, [node, nodeId]);
 
@@ -130,6 +353,51 @@ export function NodeConfigPanel({
     [credentialRequirements],
   );
 
+  const credentialMappingOptions = useMemo(
+    () =>
+      credentialRequirements.flatMap((requirement) =>
+        (CREDENTIAL_FIELD_OPTIONS[requirement.type] ?? CREDENTIAL_FIELD_OPTIONS.custom).map((fieldName) => ({
+          value: `${requirement.key}.${fieldName}`,
+          label: `${requirement.label || requirement.key} / ${fieldName}`,
+          description: `{{credentials.${requirement.key}.${fieldName}}}`,
+          group: requirement.label || requirement.key || "凭据字段",
+        })),
+      ),
+    [credentialRequirements],
+  );
+
+  const saveDataSourceOptions = useMemo(() => getSaveDataSourceOptions(), []);
+
+  const variableOptions = useMemo(() => {
+    const values = new Set<string>();
+
+    getNodes().forEach((canvasNode) => {
+      const data = (canvasNode.data || {}) as Record<string, unknown>;
+      const nodeType = String(data.type ?? "");
+
+      if (nodeType === "set_variable" && String(data.key ?? "").trim()) {
+        values.add(String(data.key).trim());
+      }
+
+      if (nodeType === "extract" && String(data.saveKey ?? "").trim()) {
+        values.add(String(data.saveKey).trim());
+      }
+
+      if (nodeType === "save_data" && String(data.resultVariable ?? "").trim()) {
+        values.add(String(data.resultVariable).trim());
+      }
+    });
+
+    return Array.from(values)
+      .sort((left, right) => left.localeCompare(right))
+      .map((value) => ({
+        value,
+        label: value,
+        description: `{{variables.${value}}}`,
+        group: "流程变量",
+      }));
+  }, [getNodes, localData, nodeId]);
+
   if (!node || !definition) {
     return null;
   }
@@ -150,6 +418,34 @@ export function NodeConfigPanel({
       ...localData,
       [key]: value,
     });
+  };
+
+  const commitSaveDataMappings = (nextRows: SaveDataMappingRow[]) => {
+    const nextRaw = serializeSaveDataMappings(nextRows);
+    setSaveDataMappings(nextRows);
+    setSaveDataMappingsRaw(nextRaw);
+    commitNodeData({
+      ...localData,
+      fieldMappings: nextRaw,
+    });
+  };
+
+  const updateSaveDataMapping = (
+    rowId: string,
+    updater: (row: SaveDataMappingRow) => SaveDataMappingRow,
+  ) => {
+    commitSaveDataMappings(
+      saveDataMappings.map((row) => (row.id === rowId ? updater(row) : row)),
+    );
+  };
+
+  const addSaveDataMapping = () => {
+    commitSaveDataMappings([...saveDataMappings, createSaveDataMappingRow()]);
+  };
+
+  const removeSaveDataMapping = (rowId: string) => {
+    const nextRows = saveDataMappings.filter((row) => row.id !== rowId);
+    commitSaveDataMappings(nextRows.length > 0 ? nextRows : [createSaveDataMappingRow()]);
   };
 
   const insertInputTemplate = (
@@ -236,6 +532,298 @@ export function NodeConfigPanel({
 
             const currentValue = String(localData[field.name] ?? field.defaultValue ?? "");
             const canUseTemplate = supportsTemplateReference(field.type);
+
+            if (nodeType === "save_data" && field.name === "fieldMappings") {
+              return (
+                <div
+                  key={field.name}
+                  className="space-y-4 rounded-2xl border border-white/[0.05] bg-white/[0.02] p-4"
+                >
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-zinc-200">{field.label}</label>
+                    {field.description ? (
+                      <div className="text-xs leading-5 text-zinc-500">{field.description}</div>
+                    ) : null}
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="rounded-xl border border-cyan-500/10 bg-cyan-500/5 px-3 py-2 text-[11px] leading-5 text-cyan-100">
+                      常用映射已经可视化，不需要再手写 JSON。右侧高级模式仅用于兼容复杂历史映射。
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        variant={saveDataMappingsMode === "visual" ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setSaveDataMappingsMode("visual")}
+                      >
+                        可视化
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={saveDataMappingsMode === "raw" ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setSaveDataMappingsMode("raw")}
+                      >
+                        高级 JSON
+                      </Button>
+                    </div>
+                  </div>
+
+                  {saveDataMappingsMode === "visual" ? (
+                    <div className="space-y-3">
+                      {saveDataMappings.map((row, index) => (
+                        <div
+                          key={row.id}
+                          className="space-y-3 rounded-2xl border border-white/[0.06] bg-black/20 p-4"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-xs font-medium uppercase tracking-[0.2em] text-zinc-500">
+                              映射 {String(index + 1).padStart(2, "0")}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => removeSaveDataMapping(row.id)}
+                              className="rounded-full p-1 text-zinc-500 transition-colors hover:bg-red-500/10 hover:text-red-300"
+                              title="删除映射"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+
+                          <div className="grid gap-3 md:grid-cols-2">
+                            <div className="space-y-2">
+                              <label className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-500">
+                                目标字段
+                              </label>
+                              <Input
+                                value={row.field}
+                                onChange={(event) =>
+                                  updateSaveDataMapping(row.id, (current) => ({
+                                    ...current,
+                                    field: event.target.value,
+                                  }))
+                                }
+                                placeholder="如 orderNo / amount / status"
+                              />
+                            </div>
+
+                            <div className="space-y-2">
+                              <label className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-500">
+                                值来源
+                              </label>
+                              <Select
+                                value={row.sourceType}
+                                onChange={(value) =>
+                                  updateSaveDataMapping(row.id, (current) => ({
+                                    ...current,
+                                    sourceType: value as SaveDataMappingSourceType,
+                                    value:
+                                      value === "null" || value === "index"
+                                        ? ""
+                                        : current.value,
+                                  }))
+                                }
+                                options={saveDataSourceOptions.map((option) => ({
+                                  value: option.value,
+                                  label: option.label,
+                                  description: option.description,
+                                }))}
+                              />
+                            </div>
+                          </div>
+
+                          {row.sourceType === "input" ? (
+                            <div className="space-y-2">
+                              <label className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-500">
+                                运行参数
+                              </label>
+                              <Select
+                                value={row.value}
+                                onChange={(value) =>
+                                  updateSaveDataMapping(row.id, (current) => ({
+                                    ...current,
+                                    value,
+                                  }))
+                                }
+                                placeholder="选择一个运行参数"
+                                options={inputSchema.map((item) => ({
+                                  value: item.key,
+                                  label: item.label || item.key,
+                                  description: `{{inputs.${item.key}}}`,
+                                  group: "运行参数",
+                                }))}
+                              />
+                            </div>
+                          ) : null}
+
+                          {row.sourceType === "credential" ? (
+                            <div className="space-y-2">
+                              <label className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-500">
+                                凭据字段
+                              </label>
+                              <Select
+                                value={row.value}
+                                onChange={(value) =>
+                                  updateSaveDataMapping(row.id, (current) => ({
+                                    ...current,
+                                    value,
+                                  }))
+                                }
+                                placeholder="选择一个凭据字段"
+                                searchable
+                                options={credentialMappingOptions}
+                              />
+                            </div>
+                          ) : null}
+
+                          {row.sourceType === "boolean" ? (
+                            <div className="space-y-2">
+                              <label className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-500">
+                                布尔值
+                              </label>
+                              <Select
+                                value={row.value || "true"}
+                                onChange={(value) =>
+                                  updateSaveDataMapping(row.id, (current) => ({
+                                    ...current,
+                                    value,
+                                  }))
+                                }
+                                options={[
+                                  { value: "true", label: "true", description: "写入布尔真值" },
+                                  { value: "false", label: "false", description: "写入布尔假值" },
+                                ]}
+                              />
+                            </div>
+                          ) : null}
+
+                          {row.sourceType !== "input" &&
+                          row.sourceType !== "credential" &&
+                          row.sourceType !== "boolean" &&
+                          row.sourceType !== "null" &&
+                          row.sourceType !== "index" ? (
+                            <div className="space-y-2">
+                              <label className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-500">
+                                {row.sourceType === "item"
+                                  ? "来源路径"
+                                  : row.sourceType === "variable"
+                                    ? "变量名"
+                                    : row.sourceType === "number"
+                                      ? "数字值"
+                                      : row.sourceType === "template"
+                                        ? "模板表达式"
+                                        : "固定值"}
+                              </label>
+                              <Input
+                                type="text"
+                                inputMode={row.sourceType === "number" ? "decimal" : undefined}
+                                value={row.value}
+                                onChange={(event) =>
+                                  updateSaveDataMapping(row.id, (current) => ({
+                                    ...current,
+                                    value: event.target.value,
+                                  }))
+                                }
+                                placeholder={
+                                  row.sourceType === "item"
+                                    ? "如 orderNo / data.amount"
+                                    : row.sourceType === "variable"
+                                      ? "如 currentShopName"
+                                      : row.sourceType === "number"
+                                        ? "如 100"
+                                        : row.sourceType === "template"
+                                          ? "{{item.id}}-{{index}}"
+                                          : "如 已完成"
+                                }
+                              />
+                              {row.sourceType === "variable" && variableOptions.length > 0 ? (
+                                <div className="flex flex-wrap gap-2">
+                                  {variableOptions.slice(0, 8).map((option) => (
+                                    <button
+                                      key={option.value}
+                                      type="button"
+                                      onClick={() =>
+                                        updateSaveDataMapping(row.id, (current) => ({
+                                          ...current,
+                                          value: option.value,
+                                        }))
+                                      }
+                                      className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[11px] text-zinc-300 transition-colors hover:border-sky-400/30 hover:text-sky-200"
+                                    >
+                                      {option.label}
+                                    </button>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full gap-2 rounded-2xl"
+                        onClick={addSaveDataMapping}
+                      >
+                        <Plus className="h-4 w-4" />
+                        添加字段映射
+                      </Button>
+
+                      <div className="rounded-xl border border-white/[0.05] bg-black/10 px-3 py-3 text-xs leading-6 text-zinc-500">
+                        当前会自动保存成兼容 JSON：
+                        <pre className="mt-2 overflow-auto rounded-lg bg-black/30 p-3 font-mono text-[11px] leading-5 text-zinc-300">
+                          {serializeSaveDataMappings(saveDataMappings) || "{ }"}
+                        </pre>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <textarea
+                        value={saveDataMappingsRaw}
+                        onChange={(event) => {
+                          const nextRaw = event.target.value;
+                          setSaveDataMappingsRaw(nextRaw);
+                          commitNodeData({
+                            ...localData,
+                            fieldMappings: nextRaw,
+                          });
+                        }}
+                        placeholder={field.placeholder}
+                        spellCheck={false}
+                        className="min-h-[220px] w-full rounded-2xl border border-white/[0.08] bg-black/20 px-3 py-3 text-sm leading-6 text-zinc-100 outline-none transition-colors placeholder:text-zinc-600 focus:border-sky-400/40 focus:bg-black/30"
+                      />
+                      <div className="flex items-center justify-between gap-3 rounded-xl border border-amber-500/10 bg-amber-500/5 px-3 py-3 text-xs leading-5 text-amber-100">
+                        <div>
+                          高级模式保留给复杂历史映射。若这里是简单对象，可以随时切回可视化继续编辑。
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            const parsedMappings = parseSaveDataMappings(saveDataMappingsRaw);
+                            if (parsedMappings.hasUnsupportedEntries) {
+                              return;
+                            }
+
+                            setSaveDataMappings(
+                              parsedMappings.rows.length > 0
+                                ? parsedMappings.rows
+                                : [createSaveDataMappingRow()],
+                            );
+                            setSaveDataMappingsMode("visual");
+                          }}
+                        >
+                          尝试转为可视化
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            }
 
             return (
               <div

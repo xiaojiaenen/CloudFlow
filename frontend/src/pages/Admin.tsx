@@ -559,11 +559,11 @@ export default function Admin() {
 
               <TabsContent value="system" className="space-y-6 xl:max-h-[calc(100vh-14rem)] xl:overflow-y-auto xl:pr-1">
                 <Card>
-                  <CardHeader><CardTitle>系统参数</CardTitle><CardDescription>平台级参数会影响截图频率、监控分页和通知行为。</CardDescription></CardHeader>
+                  <CardHeader><CardTitle>系统参数</CardTitle><CardDescription>平台级参数会影响历史截图落盘、监控分页和通知行为。实时画面已改为自适应频率。</CardDescription></CardHeader>
                   <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <Input value={config.platformName} onChange={(event) => setConfig((current) => ({ ...current, platformName: event.target.value }))} placeholder="平台名称" />
                     <Input value={config.supportEmail ?? ""} onChange={(event) => setConfig((current) => ({ ...current, supportEmail: event.target.value }))} placeholder="支持邮箱" />
-                    <Input value={String(config.screenshotIntervalMs)} onChange={(event) => setConfig((current) => ({ ...current, screenshotIntervalMs: Number(event.target.value) || 500 }))} placeholder="截图间隔毫秒" />
+                    <Input value={String(config.screenshotIntervalMs)} onChange={(event) => setConfig((current) => ({ ...current, screenshotIntervalMs: Number(event.target.value) || 500 }))} placeholder="截图间隔毫秒（兼容保留）" />
                     <Input value={String(config.screenshotPersistIntervalMs)} onChange={(event) => setConfig((current) => ({ ...current, screenshotPersistIntervalMs: Number(event.target.value) || 3000 }))} placeholder="历史截图落盘间隔毫秒" />
                     <Input value={String(config.taskRetentionDays)} onChange={(event) => setConfig((current) => ({ ...current, taskRetentionDays: Number(event.target.value) || 30 }))} placeholder="任务保留天数" />
                     <Input value={String(config.monitorPageSize)} onChange={(event) => setConfig((current) => ({ ...current, monitorPageSize: Number(event.target.value) || 10 }))} placeholder="监控中心分页大小" />

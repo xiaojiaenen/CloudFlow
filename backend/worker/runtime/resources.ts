@@ -6,6 +6,11 @@ import { Page } from 'playwright';
 import { TaskScreenshotPayload } from '../../src/common/types/execution-event.types';
 
 const RESOURCE_MONITOR_INTERVAL_MS = 2_000;
+const ACTIVE_SCREENSHOT_INTERVAL_MS = 300;
+const IDLE_SCREENSHOT_INTERVAL_MS = 800;
+const SCREENSHOT_ACTIVITY_WINDOW_MS = 1_500;
+const SCREENSHOT_DIFF_SAMPLE_COUNT = 48;
+const SCREENSHOT_DIFF_THRESHOLD = 0.12;
 const cpuCoreCount =
   typeof os.availableParallelism === 'function'
     ? Math.max(1, os.availableParallelism())
@@ -82,7 +87,7 @@ export function createTaskResourceManager(prisma: PrismaClient, taskRuntimeBaseD
   function startScreenshotStream(
     taskId: string,
     page: Page,
-    intervalMs: number,
+    _intervalMs: number,
     tempDir: string,
     publishScreenshot: (
       taskId: string,
@@ -90,9 +95,23 @@ export function createTaskResourceManager(prisma: PrismaClient, taskRuntimeBaseD
     ) => Promise<unknown>,
   ) {
     let capturing = false;
+    let stopped = false;
+    let timer: NodeJS.Timeout | null = null;
+    let previousBuffer: Buffer | null = null;
+    let lastActivityAt = 0;
 
-    const interval = setInterval(async () => {
-      if (capturing || page.isClosed()) {
+    const scheduleNextCapture = (delayMs: number) => {
+      if (stopped) {
+        return;
+      }
+
+      timer = setTimeout(() => {
+        void capture();
+      }, Math.max(0, delayMs));
+    };
+
+    const capture = async () => {
+      if (stopped || capturing || page.isClosed()) {
         return;
       }
 
@@ -103,6 +122,15 @@ export function createTaskResourceManager(prisma: PrismaClient, taskRuntimeBaseD
           type: 'jpeg',
           quality: 60,
         });
+        const isActive =
+          !previousBuffer || estimateScreenshotDiff(previousBuffer, buffer) >= SCREENSHOT_DIFF_THRESHOLD;
+
+        previousBuffer = buffer;
+
+        if (isActive) {
+          lastActivityAt = Date.now();
+        }
+
         await writeFile(path.join(tempDir, 'latest-stream.jpg'), buffer).catch(() => undefined);
 
         await publishScreenshot(taskId, {
@@ -115,10 +143,28 @@ export function createTaskResourceManager(prisma: PrismaClient, taskRuntimeBaseD
         // Ignore transient screenshot failures when pages are navigating.
       } finally {
         capturing = false;
-      }
-    }, Math.max(100, intervalMs));
 
-    return () => clearInterval(interval);
+        if (stopped || page.isClosed()) {
+          return;
+        }
+
+        const nextDelayMs =
+          Date.now() - lastActivityAt <= SCREENSHOT_ACTIVITY_WINDOW_MS
+            ? ACTIVE_SCREENSHOT_INTERVAL_MS
+            : IDLE_SCREENSHOT_INTERVAL_MS;
+
+        scheduleNextCapture(nextDelayMs);
+      }
+    };
+
+    scheduleNextCapture(0);
+
+    return () => {
+      stopped = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
   }
 
   return {
@@ -130,6 +176,30 @@ export function createTaskResourceManager(prisma: PrismaClient, taskRuntimeBaseD
 
 function toMb(bytes: number) {
   return Number((bytes / 1024 / 1024).toFixed(2));
+}
+
+function estimateScreenshotDiff(previousBuffer: Buffer, currentBuffer: Buffer) {
+  const previousLength = previousBuffer.length;
+  const currentLength = currentBuffer.length;
+  const maxLength = Math.max(previousLength, currentLength, 1);
+  const minLength = Math.min(previousLength, currentLength);
+  const lengthDiffRatio = Math.abs(previousLength - currentLength) / maxLength;
+
+  if (minLength === 0) {
+    return 1;
+  }
+
+  const sampleCount = Math.min(SCREENSHOT_DIFF_SAMPLE_COUNT, minLength);
+  let sampledDiff = 0;
+
+  for (let index = 0; index < sampleCount; index += 1) {
+    const offset =
+      sampleCount === 1 ? 0 : Math.floor((index * (minLength - 1)) / (sampleCount - 1));
+    sampledDiff += Math.abs(previousBuffer[offset] - currentBuffer[offset]) / 255;
+  }
+
+  const sampledDiffRatio = sampledDiff / sampleCount;
+  return Math.max(lengthDiffRatio, sampledDiffRatio);
 }
 
 function createResourceSnapshot(
