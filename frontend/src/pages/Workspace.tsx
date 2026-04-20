@@ -1317,19 +1317,21 @@ export default function Workspace() {
                   setFlowEdges(sanitizedEdges);
                 }}
                 onNodeSelect={(id) => {
-                  if (!isRunning) {
-                    setSelectedNodeId(id);
-                  }
+                  setSelectedNodeId(id);
                 }}
               />
             </div>
 
             <div className="h-full z-10 flex border-l border-white/[0.05]">
-              {selectedNodeId && !isRunning ? (
+              {selectedNodeId ? (
                 <NodeConfigPanel
                   nodeId={selectedNodeId}
                   inputSchema={inputSchema}
                   credentialRequirements={credentialRequirements}
+                  taskId={taskId}
+                  isTaskRunning={isRunning}
+                  screenshot={screenshot}
+                  pageUrl={pageUrl}
                   onClose={() => setSelectedNodeId(null)}
                 />
               ) : (

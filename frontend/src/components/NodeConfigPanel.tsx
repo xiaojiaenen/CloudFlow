@@ -1,10 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
+import { type MouseEvent, useEffect, useMemo, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
-import { ArrowRight, KeyRound, Plus, Trash2, Wand2, X } from "lucide-react";
+import { ArrowRight, KeyRound, MousePointerClick, Plus, Trash2, Wand2, X } from "lucide-react";
 import { Button } from "@/src/components/ui/Button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/src/components/ui/Dialog";
 import { Input } from "@/src/components/ui/Input";
 import { Select } from "@/src/components/ui/Select";
-import { WorkflowCredentialRequirement, WorkflowInputField } from "@/src/lib/cloudflow";
+import {
+  pickTaskElement,
+  TaskElementPickerResult,
+  WorkflowCredentialRequirement,
+  WorkflowInputField,
+} from "@/src/lib/cloudflow";
 import {
   formatNodeParams,
   sanitizeNodeFieldValues,
@@ -17,6 +30,10 @@ interface NodeConfigPanelProps {
   nodeId: string;
   inputSchema: WorkflowInputField[];
   credentialRequirements: WorkflowCredentialRequirement[];
+  taskId?: string | null;
+  isTaskRunning?: boolean;
+  screenshot?: string | null;
+  pageUrl?: string;
   onClose: () => void;
 }
 
@@ -66,6 +83,22 @@ function appendTemplate(currentValue: string, template: string) {
 
 function supportsTemplateReference(fieldType: "text" | "number" | "select" | "textarea") {
   return fieldType === "text" || fieldType === "number" || fieldType === "textarea";
+}
+
+function normalizeScreenshotSrc(screenshot?: string | null) {
+  if (!screenshot) {
+    return null;
+  }
+
+  if (
+    screenshot.startsWith("data:") ||
+    screenshot.startsWith("blob:") ||
+    screenshot.startsWith("http")
+  ) {
+    return screenshot;
+  }
+
+  return `data:image/jpeg;base64,${screenshot}`;
 }
 
 function mergeTemplateValue(
@@ -298,6 +331,10 @@ export function NodeConfigPanel({
   nodeId,
   inputSchema,
   credentialRequirements,
+  taskId,
+  isTaskRunning = false,
+  screenshot,
+  pageUrl,
   onClose,
 }: NodeConfigPanelProps) {
   const { getNode, getNodes, updateNodeData } = useReactFlow();
@@ -308,6 +345,13 @@ export function NodeConfigPanel({
   const [saveDataMappings, setSaveDataMappings] = useState<SaveDataMappingRow[]>([]);
   const [saveDataMappingsMode, setSaveDataMappingsMode] = useState<"visual" | "raw">("visual");
   const [saveDataMappingsRaw, setSaveDataMappingsRaw] = useState("");
+  const [pickerDialogOpen, setPickerDialogOpen] = useState(false);
+  const [pickerFieldName, setPickerFieldName] = useState<string | null>(null);
+  const [pickerError, setPickerError] = useState("");
+  const [isPickingElement, setIsPickingElement] = useState(false);
+  const [pickedSelectorResults, setPickedSelectorResults] = useState<
+    Record<string, TaskElementPickerResult>
+  >({});
 
   useEffect(() => {
     if (node) {
@@ -320,6 +364,7 @@ export function NodeConfigPanel({
       );
       setInputSelections({});
       setCredentialSelections({});
+      setPickerError("");
 
       if (node.data.type === "save_data") {
         const rawMappings = String(sanitized.fieldMappings ?? "");
@@ -332,11 +377,14 @@ export function NodeConfigPanel({
         setSaveDataMappingsRaw("");
         setSaveDataMappingsMode("visual");
       }
+
+      setPickedSelectorResults({});
     }
   }, [node, nodeId]);
 
   const nodeType = node?.data.type as string | undefined;
   const definition = useMemo(() => getNodeDefinition(nodeType ?? ""), [nodeType]);
+  const screenshotSrc = useMemo(() => normalizeScreenshotSrc(screenshot), [screenshot]);
 
   const credentialVariableOptions = useMemo(
     () =>
@@ -418,6 +466,55 @@ export function NodeConfigPanel({
       ...localData,
       [key]: value,
     });
+  };
+
+  const applyPickedSelector = (fieldName: string, result: TaskElementPickerResult, selector: string) => {
+    setPickedSelectorResults((current) => ({
+      ...current,
+      [fieldName]: {
+        ...result,
+        selector,
+      },
+    }));
+    handleChange(fieldName, selector);
+  };
+
+  const openSelectorPicker = (fieldName: string) => {
+    setPickerFieldName(fieldName);
+    setPickerError("");
+    setPickerDialogOpen(true);
+  };
+
+  const handlePickerImageClick = async (
+    event: MouseEvent<HTMLImageElement>,
+  ) => {
+    if (!pickerFieldName || !taskId || !isTaskRunning) {
+      return;
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const xRatio = (event.clientX - rect.left) / rect.width;
+    const yRatio = (event.clientY - rect.top) / rect.height;
+
+    if (!Number.isFinite(xRatio) || !Number.isFinite(yRatio)) {
+      return;
+    }
+
+    try {
+      setIsPickingElement(true);
+      setPickerError("");
+      const result = await pickTaskElement(taskId, {
+        xRatio: Math.max(0, Math.min(1, xRatio)),
+        yRatio: Math.max(0, Math.min(1, yRatio)),
+      });
+
+      applyPickedSelector(pickerFieldName, result, result.selector);
+      setPickerDialogOpen(false);
+    } catch (error) {
+      setPickerError(error instanceof Error ? error.message : "当前页面元素选取失败，请稍后重试。");
+    } finally {
+      setIsPickingElement(false);
+    }
   };
 
   const commitSaveDataMappings = (nextRows: SaveDataMappingRow[]) => {
@@ -894,6 +991,114 @@ export function NodeConfigPanel({
                     spellCheck={false}
                     className="min-h-[132px] w-full rounded-2xl border border-white/[0.08] bg-black/20 px-3 py-3 text-sm leading-6 text-zinc-100 outline-none transition-colors placeholder:text-zinc-600 focus:border-sky-400/40 focus:bg-black/30"
                   />
+                ) : field.name === "selector" && field.type === "text" ? (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-[1fr_auto] gap-2">
+                      <Input
+                        type="text"
+                        value={currentValue}
+                        onChange={(event) => handleChange(field.name, event.target.value)}
+                        placeholder={field.placeholder}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="gap-2 px-3"
+                        disabled={!taskId || !isTaskRunning || !screenshotSrc}
+                        onClick={() => openSelectorPicker(field.name)}
+                        title={
+                          !taskId || !isTaskRunning || !screenshotSrc
+                            ? "请先运行工作流并停在目标页面，再从当前页面选取元素"
+                            : "从当前运行页面选取元素"
+                        }
+                      >
+                        <MousePointerClick className="h-4 w-4" />
+                        选取
+                      </Button>
+                    </div>
+
+                    {!taskId || !isTaskRunning || !screenshotSrc ? (
+                      <div className="rounded-xl border border-dashed border-white/[0.08] bg-white/[0.02] px-3 py-3 text-xs leading-5 text-zinc-500">
+                        先运行工作流并停在目标页面，再点击“选取”。系统会根据当前页面截图点击位置自动识别元素并回填推荐定位方式。
+                      </div>
+                    ) : null}
+
+                    {pickedSelectorResults[field.name] ? (
+                      <div className="space-y-3 rounded-2xl border border-sky-500/10 bg-sky-500/5 p-4">
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-sky-100">
+                          <span className="rounded-full border border-sky-400/20 bg-sky-500/10 px-2.5 py-1">
+                            {pickedSelectorResults[field.name]?.tagName || "element"}
+                          </span>
+                          {pickedSelectorResults[field.name]?.textPreview ? (
+                            <span className="truncate rounded-full border border-white/10 bg-black/20 px-2.5 py-1 text-zinc-300">
+                              {pickedSelectorResults[field.name]?.textPreview}
+                            </span>
+                          ) : null}
+                        </div>
+
+                        <div className="rounded-xl border border-white/[0.06] bg-black/20 px-3 py-3">
+                          <div className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">
+                            推荐定位
+                          </div>
+                          <div className="mt-2 break-all font-mono text-xs leading-6 text-zinc-100">
+                            {pickedSelectorResults[field.name]?.selector}
+                          </div>
+                        </div>
+
+                        {pickedSelectorResults[field.name]?.candidates?.length ? (
+                          <div className="space-y-2">
+                            <div className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">
+                              其他候选
+                            </div>
+                            <div className="space-y-2">
+                              {pickedSelectorResults[field.name]?.candidates?.map((candidate) => {
+                                const active = candidate.selector === String(localData[field.name] ?? "");
+
+                                return (
+                                  <button
+                                    key={`${field.name}-${candidate.selector}`}
+                                    type="button"
+                                    onClick={() =>
+                                      applyPickedSelector(
+                                        field.name,
+                                        pickedSelectorResults[field.name] as TaskElementPickerResult,
+                                        candidate.selector,
+                                      )
+                                    }
+                                    className={cn(
+                                      "w-full rounded-xl border px-3 py-3 text-left transition-colors",
+                                      active
+                                        ? "border-sky-400/30 bg-sky-500/12"
+                                        : "border-white/[0.06] bg-black/20 hover:border-white/[0.14] hover:bg-white/[0.03]",
+                                    )}
+                                  >
+                                    <div className="flex items-center justify-between gap-3">
+                                      <div className="text-xs font-medium text-zinc-100">
+                                        {candidate.label}
+                                      </div>
+                                      <div
+                                        className={cn(
+                                          "rounded-full px-2 py-0.5 text-[10px]",
+                                          candidate.isUnique
+                                            ? "bg-emerald-500/15 text-emerald-200"
+                                            : "bg-amber-500/15 text-amber-100",
+                                        )}
+                                      >
+                                        {candidate.isUnique ? "唯一匹配" : "可能多项"}
+                                      </div>
+                                    </div>
+                                    <div className="mt-2 break-all font-mono text-[11px] leading-5 text-zinc-400">
+                                      {candidate.selector}
+                                    </div>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
                 ) : (
                   <Input
                     type="text"
@@ -979,6 +1184,66 @@ export function NodeConfigPanel({
           ) : null}
         </div>
       </div>
+
+      <Dialog open={pickerDialogOpen} onOpenChange={setPickerDialogOpen} className="max-w-5xl">
+        <DialogHeader>
+          <DialogTitle>从当前页面选取元素</DialogTitle>
+          <DialogDescription>
+            {pageUrl?.trim()
+              ? `当前页面：${pageUrl}`
+              : "请直接在下方当前页面截图中点击目标元素，系统会自动生成推荐定位方式。"}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogContent className="space-y-4">
+          <div className="rounded-2xl border border-white/[0.06] bg-black/30 p-4">
+            <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+              <span className="rounded-full border border-sky-400/20 bg-sky-500/10 px-2.5 py-1 text-sky-100">
+                第一步：把目标元素展示在当前运行页面中
+              </span>
+              <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1">
+                第二步：直接点击元素位置
+              </span>
+              <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1">
+                第三步：系统自动回填选择器
+              </span>
+            </div>
+
+            {screenshotSrc ? (
+              <div className="overflow-auto rounded-2xl border border-white/[0.08] bg-[#050505] p-2">
+                <img
+                  src={screenshotSrc}
+                  alt="当前运行页面截图"
+                  onClick={handlePickerImageClick}
+                  className={cn(
+                    "mx-auto max-h-[70vh] cursor-crosshair rounded-xl object-contain",
+                    isPickingElement ? "pointer-events-none opacity-70" : "hover:ring-2 hover:ring-sky-400/40",
+                  )}
+                />
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed border-white/[0.08] bg-white/[0.02] px-4 py-10 text-center text-sm text-zinc-500">
+                当前还没有可用页面截图，请先运行工作流并停在目标页面。
+              </div>
+            )}
+
+            {pickerError ? (
+              <div className="mt-4 rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-3 text-sm text-red-100">
+                {pickerError}
+              </div>
+            ) : null}
+          </div>
+        </DialogContent>
+        <DialogFooter>
+          <div className="mr-auto text-xs text-zinc-500">
+            {isPickingElement
+              ? "正在识别当前点击位置对应的页面元素..."
+              : "如果识别结果不理想，可以换一个更明确的元素区域重新点一次。"}
+          </div>
+          <Button variant="ghost" onClick={() => setPickerDialogOpen(false)} disabled={isPickingElement}>
+            关闭
+          </Button>
+        </DialogFooter>
+      </Dialog>
     </div>
   );
 }

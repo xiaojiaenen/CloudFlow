@@ -1,6 +1,26 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+  OnModuleDestroy,
+  RequestTimeoutException,
+} from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { ConfigService } from '@nestjs/config';
 import { Prisma, TaskStatus, TaskTriggerSource } from '@prisma/client';
+import {
+  TASK_ELEMENT_PICK_CHANNEL,
+  TASK_ELEMENT_PICK_RESPONSE_KEY_PREFIX,
+} from 'src/common/constants/redis.constants';
+import {
+  createRedisConnection,
+  resolveRedisConfig,
+  type RedisConnection,
+} from 'src/common/utils/redis-connection';
+import {
+  TaskElementPickerRequest,
+  TaskElementPickerResult,
+} from 'src/common/types/task-picker.types';
 import {
   buildWorkflowExecutionSnapshot,
   resolveWorkflowCredentialBindings,
@@ -13,16 +33,30 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { QueueService } from 'src/queue/queue.service';
 import { AuthenticatedUser } from '../auth/auth.types';
 import { TaskArtifactStorageService } from '../storage/task-artifact-storage.service';
+import { PickTaskElementDto } from './dto/pick-task-element.dto';
 import { RunTaskDto } from './dto/run-task.dto';
 
 @Injectable()
-export class TaskService {
+export class TaskService implements OnModuleDestroy {
+  private readonly redisConnection: RedisConnection;
+
   constructor(
     private readonly prismaService: PrismaService,
     private readonly queueService: QueueService,
     private readonly storageService: TaskArtifactStorageService,
     private readonly configService: ConfigService,
-  ) {}
+  ) {
+    const redisConfig = resolveRedisConfig(this.configService);
+    this.redisConnection = createRedisConnection(redisConfig, {
+      maxRetriesPerRequest: null,
+      enableReadyCheck: false,
+      connectionName: 'cloudflow-task-service',
+    });
+  }
+
+  async onModuleDestroy() {
+    await this.redisConnection.quit();
+  }
 
   async run(runTaskDto: RunTaskDto, currentUser: AuthenticatedUser) {
     const workflow = await this.prismaService.workflow.findFirst({
@@ -406,6 +440,41 @@ export class TaskService {
     };
   }
 
+  async pickElement(
+    taskId: string,
+    payload: PickTaskElementDto,
+    currentUser: AuthenticatedUser,
+  ) {
+    const task = await this.getTaskOrThrow(taskId, currentUser);
+
+    if (task.status !== 'running') {
+      throw new BadRequestException(
+        '只有运行中的任务才能从当前页面选取元素。',
+      );
+    }
+
+    const requestId = randomUUID();
+    const requestPayload: TaskElementPickerRequest = {
+      requestId,
+      taskId,
+      xRatio: payload.xRatio,
+      yRatio: payload.yRatio,
+    };
+
+    await this.redisConnection.publish(
+      TASK_ELEMENT_PICK_CHANNEL,
+      JSON.stringify(requestPayload),
+    );
+
+    const result = await this.waitForElementPickResult(requestId);
+
+    if (result.error) {
+      throw new BadRequestException(result.error);
+    }
+
+    return result;
+  }
+
   private async getTaskOrThrow(
     id: string,
     currentUser?: AuthenticatedUser,
@@ -512,4 +581,31 @@ export class TaskService {
       ownerId: currentUser.id,
     };
   }
+
+  private async waitForElementPickResult(
+    requestId: string,
+    timeoutMs = 6_000,
+  ) {
+    const responseKey = `${TASK_ELEMENT_PICK_RESPONSE_KEY_PREFIX}${requestId}`;
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      const raw = await this.redisConnection.get(responseKey);
+
+      if (raw?.trim()) {
+        await this.redisConnection.del(responseKey).catch(() => undefined);
+        return JSON.parse(raw) as TaskElementPickerResult;
+      }
+
+      await sleep(120);
+    }
+
+    throw new RequestTimeoutException('当前页面暂时无法完成元素选取，请稍后重试。');
+  }
+}
+
+function sleep(durationMs: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, durationMs);
+  });
 }

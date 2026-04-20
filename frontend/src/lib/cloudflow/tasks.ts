@@ -2,6 +2,7 @@ import { buildAuthHeaders, requestJson } from "./core";
 import type {
   AlertRecord,
   PaginatedResponse,
+  TaskElementPickerResult,
   TaskRecord,
   TaskSummaryRecord,
 } from "./types";
@@ -156,5 +157,26 @@ export async function retryTask(taskId: string) {
       headers: buildAuthHeaders(),
     },
     "重试任务失败。",
+  );
+}
+
+export async function pickTaskElement(
+  taskId: string,
+  payload: {
+    xRatio: number;
+    yRatio: number;
+  },
+) {
+  return requestJson<TaskElementPickerResult>(
+    `/tasks/${taskId}/pick-element`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...buildAuthHeaders(),
+      },
+      body: JSON.stringify(payload),
+    },
+    "从当前页面选取元素失败。",
   );
 }

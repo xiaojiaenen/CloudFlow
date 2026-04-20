@@ -281,6 +281,32 @@ export interface ResetUserPasswordResult {
   emailSent?: boolean;
 }
 
+export interface TaskElementPickerCandidate {
+  selector: string;
+  strategy: string;
+  label: string;
+  isUnique: boolean;
+}
+
+export interface TaskElementPickerResult {
+  requestId: string;
+  taskId: string;
+  selector: string;
+  error?: string;
+  tagName?: string;
+  textPreview?: string;
+  attributes?: Record<string, string>;
+  candidates?: TaskElementPickerCandidate[];
+  viewport?: {
+    width: number;
+    height: number;
+  };
+  point?: {
+    x: number;
+    y: number;
+  };
+}
+
 export interface CreatedUserResult extends UserRecord {
   temporaryPassword?: string;
   welcomeEmailSent?: boolean;

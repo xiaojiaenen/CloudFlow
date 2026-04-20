@@ -1,4 +1,4 @@
-import { BrowserContext } from 'playwright';
+import { BrowserContext, Page } from 'playwright';
 import { TASK_CANCEL_KEY_PREFIX } from '../../src/common/constants/redis.constants';
 
 type TaskCancellationStore = {
@@ -9,6 +9,7 @@ type TaskCancellationStore = {
 type TaskController = {
   cancelRequested: boolean;
   context?: BrowserContext;
+  page?: Page;
 };
 
 export class TaskCancelledError extends Error {
@@ -35,6 +36,7 @@ export function createTaskCancellationManager(store: TaskCancellationStore) {
     const controller: TaskController = {
       cancelRequested: false,
       context: undefined,
+      page: undefined,
     };
 
     taskControllers.set(taskId, controller);

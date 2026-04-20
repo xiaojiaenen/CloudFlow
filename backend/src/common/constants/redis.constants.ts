@@ -5,3 +5,6 @@ export const WORKFLOW_SCHEDULE_JOB_NAME = 'schedule-workflow-run';
 export const TASK_EVENTS_CHANNEL = 'cloudflow:task-events';
 export const TASK_CANCEL_CHANNEL = 'cloudflow:task-cancel';
 export const TASK_CANCEL_KEY_PREFIX = 'cloudflow:task-cancel:';
+export const TASK_ELEMENT_PICK_CHANNEL = 'cloudflow:task-element-pick';
+export const TASK_ELEMENT_PICK_RESPONSE_KEY_PREFIX =
+  'cloudflow:task-element-pick-response:';

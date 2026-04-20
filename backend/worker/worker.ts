@@ -10,10 +10,16 @@ import {
 } from '../src/common/constants/task-execution.constants';
 import {
   TASK_CANCEL_CHANNEL,
+  TASK_ELEMENT_PICK_CHANNEL,
+  TASK_ELEMENT_PICK_RESPONSE_KEY_PREFIX,
   TASK_EXECUTION_JOB_NAME,
   TASK_QUEUE_NAME,
 } from '../src/common/constants/redis.constants';
 import { TaskQueuePayload } from '../src/common/types/execution-event.types';
+import {
+  TaskElementPickerRequest,
+  TaskElementPickerResult,
+} from '../src/common/types/task-picker.types';
 import {
   WorkflowCanvasEdge,
   WorkflowDefinition,
@@ -311,6 +317,330 @@ async function releaseGlobalExecutionSlot(taskId: string) {
     taskId,
     String(GLOBAL_RUNNING_SLOT_TTL_MS),
   );
+}
+
+async function handleTaskElementPickRequest(payload: TaskElementPickerRequest) {
+  const responseKey = `${TASK_ELEMENT_PICK_RESPONSE_KEY_PREFIX}${payload.requestId}`;
+  const result = await resolveTaskElementPick(payload);
+
+  await publisher.set(responseKey, JSON.stringify(result), 'PX', 30_000);
+}
+
+async function resolveTaskElementPick(
+  payload: TaskElementPickerRequest,
+): Promise<TaskElementPickerResult> {
+  const controller = getTaskController(payload.taskId);
+  const page = controller.page;
+
+  if (!page || page.isClosed()) {
+    return {
+      requestId: payload.requestId,
+      taskId: payload.taskId,
+      error: '当前运行页面不可用，请先重新运行到目标页面。',
+    };
+  }
+
+  try {
+    return await page.evaluate(
+      ({ requestId, taskId, xRatio, yRatio }) => {
+        type Candidate = {
+          selector: string;
+          strategy: string;
+          label: string;
+          isUnique: boolean;
+        };
+
+        const viewportWidth =
+          window.innerWidth || document.documentElement.clientWidth || 1;
+        const viewportHeight =
+          window.innerHeight || document.documentElement.clientHeight || 1;
+        const clamp = (value: number, min: number, max: number) =>
+          Math.min(max, Math.max(min, value));
+        const x = clamp(
+          Math.round(viewportWidth * xRatio),
+          0,
+          Math.max(0, viewportWidth - 1),
+        );
+        const y = clamp(
+          Math.round(viewportHeight * yRatio),
+          0,
+          Math.max(0, viewportHeight - 1),
+        );
+
+        const escapeCss = (value: string) => {
+          if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+            return CSS.escape(value);
+          }
+
+          return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+        };
+
+        const escapeAttrValue = (value: string) =>
+          value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+        const normalizeText = (value: string) =>
+          value.replace(/\s+/g, ' ').trim();
+
+        const textPreview = (value: string) => {
+          const normalized = normalizeText(value);
+
+          if (!normalized) {
+            return '';
+          }
+
+          return normalized.length > 72
+            ? `${normalized.slice(0, 72)}...`
+            : normalized;
+        };
+
+        const isClassTokenStable = (token: string) => {
+          if (!token || token.length > 40) {
+            return false;
+          }
+
+          if (/^\d/.test(token)) {
+            return false;
+          }
+
+          if (
+            /(active|selected|focus|hover|open|close|show|hide|hidden|disabled|loading|current|visited|checked|expanded)/i.test(
+              token,
+            )
+          ) {
+            return false;
+          }
+
+          if (/[A-Z0-9]{6,}/.test(token)) {
+            return false;
+          }
+
+          return true;
+        };
+
+        const getCandidateCount = (selector: string) => {
+          try {
+            return document.querySelectorAll(selector).length;
+          } catch {
+            return 0;
+          }
+        };
+
+        const addCandidate = (
+          candidates: Candidate[],
+          selector: string,
+          strategy: string,
+          label: string,
+        ) => {
+          if (!selector || candidates.some((item) => item.selector === selector)) {
+            return;
+          }
+
+          const count = getCandidateCount(selector);
+          candidates.push({
+            selector,
+            strategy,
+            label,
+            isUnique: count === 1,
+          });
+        };
+
+        const buildCssPath = (element: HTMLElement) => {
+          if (element.id?.trim()) {
+            return `#${escapeCss(element.id.trim())}`;
+          }
+
+          const segments: string[] = [];
+          let current: HTMLElement | null = element;
+
+          while (current && current !== document.body && current !== document.documentElement) {
+            const tagName = current.tagName.toLowerCase();
+            let segment = tagName;
+            const stableClasses = Array.from(current.classList)
+              .map((token) => token.trim())
+              .filter(isClassTokenStable)
+              .slice(0, 2);
+
+            if (stableClasses.length > 0) {
+              const classSelector = stableClasses
+                .map((token) => `.${escapeCss(token)}`)
+                .join('');
+
+              if (getCandidateCount(`${tagName}${classSelector}`) === 1) {
+                return `${tagName}${classSelector}`;
+              }
+
+              segment += classSelector;
+            }
+
+            const parent: HTMLElement | null = current.parentElement;
+            if (parent) {
+              const sameTagSiblings = Array.from(parent.children).filter((child) => {
+                const sibling = child as HTMLElement;
+                return sibling.tagName === current?.tagName;
+              }) as HTMLElement[];
+
+              if (sameTagSiblings.length > 1) {
+                segment += `:nth-of-type(${sameTagSiblings.indexOf(current) + 1})`;
+              }
+            }
+
+            segments.unshift(segment);
+            const selector = segments.join(' > ');
+
+            if (getCandidateCount(selector) === 1) {
+              return selector;
+            }
+
+            current = parent;
+          }
+
+          return segments.join(' > ');
+        };
+
+        const rawElement = document.elementFromPoint(x, y);
+
+        if (!(rawElement instanceof HTMLElement)) {
+          return {
+            requestId,
+            taskId,
+            error: '当前点击位置没有识别到可操作元素。',
+          };
+        }
+
+        const target = (
+          rawElement.closest(
+            'button, a, input, textarea, select, label, [role="button"], [data-testid], [id], [name]',
+          ) ?? rawElement
+        ) as HTMLElement;
+        const tagName = target.tagName.toLowerCase();
+        const candidates: Candidate[] = [];
+        const attributeNames = [
+          'data-testid',
+          'data-test-id',
+          'data-qa',
+          'data-cy',
+          'id',
+          'name',
+          'placeholder',
+          'aria-label',
+          'role',
+          'type',
+        ] as const;
+        const attributes = attributeNames.reduce<Record<string, string>>(
+          (acc, attributeName) => {
+            const value = target.getAttribute(attributeName);
+
+            if (value?.trim()) {
+              acc[attributeName] = value.trim();
+            }
+
+            return acc;
+          },
+          {},
+        );
+        const primaryDataAttribute = (
+          ['data-testid', 'data-test-id', 'data-qa', 'data-cy'] as const
+        ).find((attributeName) => attributes[attributeName]);
+
+        if (primaryDataAttribute) {
+          addCandidate(
+            candidates,
+            `[${primaryDataAttribute}="${escapeAttrValue(attributes[primaryDataAttribute])}"]`,
+            'data-attr',
+            primaryDataAttribute,
+          );
+        }
+
+        if (attributes.id) {
+          addCandidate(
+            candidates,
+            `#${escapeCss(attributes.id)}`,
+            'id',
+            `id="${attributes.id}"`,
+          );
+        }
+
+        if (attributes.name) {
+          addCandidate(
+            candidates,
+            `${tagName}[name="${escapeAttrValue(attributes.name)}"]`,
+            'name',
+            `name="${attributes.name}"`,
+          );
+        }
+
+        if (attributes['aria-label']) {
+          addCandidate(
+            candidates,
+            `${tagName}[aria-label="${escapeAttrValue(attributes['aria-label'])}"]`,
+            'aria-label',
+            `aria-label="${attributes['aria-label']}"`,
+          );
+        }
+
+        if (attributes.placeholder) {
+          addCandidate(
+            candidates,
+            `${tagName}[placeholder="${escapeAttrValue(attributes.placeholder)}"]`,
+            'placeholder',
+            `placeholder="${attributes.placeholder}"`,
+          );
+        }
+
+        if (attributes.role) {
+          addCandidate(
+            candidates,
+            `[role="${escapeAttrValue(attributes.role)}"]`,
+            'role',
+            `role="${attributes.role}"`,
+          );
+        }
+
+        const cssPath = buildCssPath(target);
+        if (cssPath) {
+          addCandidate(candidates, cssPath, 'css-path', '结构化 CSS');
+        }
+
+        const selector =
+          candidates.find((candidate) => candidate.isUnique)?.selector ??
+          candidates[0]?.selector ??
+          '';
+
+        if (!selector) {
+          return {
+            requestId,
+            taskId,
+            error: '当前元素暂时无法生成可用定位方式，请换一个更明确的元素重试。',
+          };
+        }
+
+        return {
+          requestId,
+          taskId,
+          selector,
+          tagName,
+          textPreview: textPreview(target.innerText || target.textContent || ''),
+          attributes,
+          candidates: candidates.slice(0, 6),
+          viewport: {
+            width: viewportWidth,
+            height: viewportHeight,
+          },
+          point: { x, y },
+        };
+      },
+      payload,
+    );
+  } catch (error) {
+    return {
+      requestId: payload.requestId,
+      taskId: payload.taskId,
+      error:
+        error instanceof Error
+          ? error.message
+          : '当前页面暂时无法完成元素识别，请稍后重试。',
+    };
+  }
 }
 
 function resolveTemplateValue(
@@ -1600,6 +1930,7 @@ async function runTask(job: Job<TaskQueuePayload>, runtimeOptions: TaskRuntimeOp
   controller.context = context;
 
   const page = await context.newPage();
+  controller.page = page;
   const executionContext: ExecutionContext = {
     page,
     activeFrame: null,
@@ -1785,21 +2116,29 @@ async function bootstrap() {
 }
 
 cancellationSubscriber.on('message', (channel, message) => {
-  if (channel !== TASK_CANCEL_CHANNEL) {
-    return;
-  }
-
   try {
-    const payload = JSON.parse(message) as { taskId?: string };
-    if (payload.taskId) {
-      requestTaskCancellation(payload.taskId);
+    if (channel === TASK_CANCEL_CHANNEL) {
+      const payload = JSON.parse(message) as { taskId?: string };
+      if (payload.taskId) {
+        requestTaskCancellation(payload.taskId);
+      }
+      return;
+    }
+
+    if (channel === TASK_ELEMENT_PICK_CHANNEL) {
+      const payload = JSON.parse(message) as TaskElementPickerRequest;
+      if (payload.taskId && payload.requestId) {
+        void handleTaskElementPickRequest(payload).catch((error) => {
+          console.error('[worker] Failed to handle element pick request', error);
+        });
+      }
     }
   } catch (error) {
-    console.error('[worker] Failed to parse cancellation payload', error);
+    console.error('[worker] Failed to parse worker control payload', error);
   }
 });
 
-void cancellationSubscriber.subscribe(TASK_CANCEL_CHANNEL);
+void cancellationSubscriber.subscribe(TASK_CANCEL_CHANNEL, TASK_ELEMENT_PICK_CHANNEL);
 
 async function shutdown(code = 0) {
   if (workerInstance) {

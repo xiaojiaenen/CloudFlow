@@ -12,6 +12,7 @@ import {
 import type { Response } from 'express';
 import { AuthGuard } from '../auth/auth.guard';
 import { AuthenticatedRequest } from '../auth/auth.types';
+import { PickTaskElementDto } from './dto/pick-task-element.dto';
 import { RunTaskDto } from './dto/run-task.dto';
 import { TaskService } from './task.service';
 
@@ -89,6 +90,15 @@ export class TaskController {
     response.setHeader('Content-Type', asset.mimeType);
     response.setHeader('Cache-Control', 'private, max-age=60');
     response.send(asset.buffer);
+  }
+
+  @Post(':id/pick-element')
+  pickElement(
+    @Param('id') id: string,
+    @Body() payload: PickTaskElementDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.taskService.pickElement(id, payload, request.user);
   }
 
   @Post(':id/cancel')
