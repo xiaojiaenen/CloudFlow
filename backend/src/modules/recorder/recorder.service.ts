@@ -155,10 +155,112 @@ export class RecorderService implements OnModuleDestroy {
     });
   }
 
+  async updateAction(
+    sessionId: string,
+    actionId: string,
+    payload: {
+      label?: string;
+      selector?: string;
+      value?: string;
+      url?: string;
+      key?: string;
+      direction?: 'up' | 'down' | 'top' | 'bottom';
+      distance?: number;
+      parameterKey?: string;
+      parameterLabel?: string;
+      parameterDescription?: string;
+      useRuntimeInput?: boolean;
+    },
+    currentUser: AuthenticatedUser,
+  ) {
+    await this.ensureSessionAccess(sessionId, currentUser);
+    return this.dispatchCommand({
+      requestId: randomUUID(),
+      sessionId,
+      type: 'update_action',
+      actionId,
+      ...payload,
+    });
+  }
+
+  async moveAction(
+    sessionId: string,
+    actionId: string,
+    payload: {
+      direction: 'up' | 'down';
+    },
+    currentUser: AuthenticatedUser,
+  ) {
+    await this.ensureSessionAccess(sessionId, currentUser);
+    return this.dispatchCommand({
+      requestId: randomUUID(),
+      sessionId,
+      type: 'move_action',
+      actionId,
+      moveDirection: payload.direction,
+    });
+  }
+
+  async deleteAction(
+    sessionId: string,
+    actionId: string,
+    currentUser: AuthenticatedUser,
+  ) {
+    await this.ensureSessionAccess(sessionId, currentUser);
+    return this.dispatchCommand({
+      requestId: randomUUID(),
+      sessionId,
+      type: 'delete_action',
+      actionId,
+    });
+  }
+
+  async clearActions(sessionId: string, currentUser: AuthenticatedUser) {
+    await this.ensureSessionAccess(sessionId, currentUser);
+    return this.dispatchCommand({
+      requestId: randomUUID(),
+      sessionId,
+      type: 'clear_actions',
+    });
+  }
+
+  async resumeFromAction(
+    sessionId: string,
+    actionId: string,
+    currentUser: AuthenticatedUser,
+  ) {
+    await this.ensureSessionAccess(sessionId, currentUser);
+    return this.dispatchCommand({
+      requestId: randomUUID(),
+      sessionId,
+      type: 'resume_from_action',
+      actionId,
+    }, 30_000);
+  }
+
+  async analyze(sessionId: string, currentUser: AuthenticatedUser) {
+    await this.ensureSessionAccess(sessionId, currentUser);
+    return this.dispatchCommand({
+      requestId: randomUUID(),
+      sessionId,
+      type: 'analyze',
+    });
+  }
+
+  async precheck(sessionId: string, currentUser: AuthenticatedUser) {
+    await this.ensureSessionAccess(sessionId, currentUser);
+    return this.dispatchCommand({
+      requestId: randomUUID(),
+      sessionId,
+      type: 'precheck',
+    });
+  }
+
   async finish(
     sessionId: string,
     payload: {
       name?: string;
+      mode?: 'workflow' | 'template';
     },
     currentUser: AuthenticatedUser,
   ) {
@@ -168,6 +270,7 @@ export class RecorderService implements OnModuleDestroy {
       sessionId,
       type: 'finish',
       name: payload.name,
+      mode: payload.mode,
     });
   }
 

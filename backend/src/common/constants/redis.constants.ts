@@ -11,3 +11,4 @@ export const TASK_ELEMENT_PICK_RESPONSE_KEY_PREFIX =
 export const RECORDER_CONTROL_CHANNEL = 'cloudflow:recorder-control';
 export const RECORDER_RESPONSE_KEY_PREFIX = 'cloudflow:recorder-response:';
 export const RECORDER_SNAPSHOT_KEY_PREFIX = 'cloudflow:recorder-snapshot:';
+export const RECORDER_EVENTS_CHANNEL = 'cloudflow:recorder-events';

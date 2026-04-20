@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  Patch,
   Post,
   Req,
   UseGuards,
@@ -14,9 +15,11 @@ import { CreateRecorderSessionDto } from './dto/create-recorder-session.dto';
 import { FinishRecorderSessionDto } from './dto/finish-recorder-session.dto';
 import { RecorderClickDto } from './dto/recorder-click.dto';
 import { RecorderInputDto } from './dto/recorder-input.dto';
+import { RecorderMoveActionDto } from './dto/recorder-move-action.dto';
 import { RecorderNavigateDto } from './dto/recorder-navigate.dto';
 import { RecorderPressKeyDto } from './dto/recorder-press-key.dto';
 import { RecorderScrollDto } from './dto/recorder-scroll.dto';
+import { UpdateRecorderActionDto } from './dto/update-recorder-action.dto';
 import { RecorderService } from './recorder.service';
 
 @UseGuards(AuthGuard)
@@ -83,6 +86,68 @@ export class RecorderController {
     @Req() request: AuthenticatedRequest,
   ) {
     return this.recorderService.scroll(id, payload, request.user);
+  }
+
+  @Patch('sessions/:id/actions/:actionId')
+  updateAction(
+    @Param('id') id: string,
+    @Param('actionId') actionId: string,
+    @Body() payload: UpdateRecorderActionDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.recorderService.updateAction(id, actionId, payload, request.user);
+  }
+
+  @Post('sessions/:id/actions/:actionId/move')
+  moveAction(
+    @Param('id') id: string,
+    @Param('actionId') actionId: string,
+    @Body() payload: RecorderMoveActionDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.recorderService.moveAction(id, actionId, payload, request.user);
+  }
+
+  @Delete('sessions/:id/actions/:actionId')
+  deleteAction(
+    @Param('id') id: string,
+    @Param('actionId') actionId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.recorderService.deleteAction(id, actionId, request.user);
+  }
+
+  @Delete('sessions/:id/actions')
+  clearActions(
+    @Param('id') id: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.recorderService.clearActions(id, request.user);
+  }
+
+  @Post('sessions/:id/actions/:actionId/resume')
+  resumeFromAction(
+    @Param('id') id: string,
+    @Param('actionId') actionId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.recorderService.resumeFromAction(id, actionId, request.user);
+  }
+
+  @Post('sessions/:id/analyze')
+  analyze(
+    @Param('id') id: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.recorderService.analyze(id, request.user);
+  }
+
+  @Post('sessions/:id/precheck')
+  precheck(
+    @Param('id') id: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.recorderService.precheck(id, request.user);
   }
 
   @Post('sessions/:id/finish')
