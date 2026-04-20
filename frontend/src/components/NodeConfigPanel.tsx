@@ -39,14 +39,14 @@ function appendTemplate(currentValue: string, template: string) {
   return `${currentValue}${currentValue.endsWith(" ") ? "" : " "}${template}`;
 }
 
-function supportsTemplateReference(fieldType: "text" | "number" | "select") {
-  return fieldType === "text" || fieldType === "number";
+function supportsTemplateReference(fieldType: "text" | "number" | "select" | "textarea") {
+  return fieldType === "text" || fieldType === "number" || fieldType === "textarea";
 }
 
 function mergeTemplateValue(
   currentValue: string,
   template: string,
-  fieldType: "text" | "number" | "select",
+  fieldType: "text" | "number" | "select" | "textarea",
 ) {
   if (fieldType === "number") {
     return template;
@@ -64,6 +64,27 @@ function getExtractSaveTargetDescription(value: string) {
     default:
       return "既写入变量，也保存在任务快照里，兼顾复用和复盘。";
   }
+}
+
+function getSaveDataFieldOptionDescription(fieldName: string, value: string) {
+  if (fieldName === "recordMode") {
+    return value === "array"
+      ? "把来源变量中的 JSON 数组拆成多条记录写入，适合批量提取结果入库。"
+      : "只写入一条记录，适合保存当前对象、汇总结果或单次计算输出。";
+  }
+
+  if (fieldName === "writeMode") {
+    switch (value) {
+      case "insert":
+        return "只新增，不覆盖旧记录；如果记录键重复，会记为失败。";
+      case "skip_duplicates":
+        return "遇到重复记录键时直接跳过，常用于增量采集去重。";
+      default:
+        return "推荐默认方案：存在则更新，不存在则新增，最适合持续同步数据。";
+    }
+  }
+
+  return "";
 }
 
 export function NodeConfigPanel({
@@ -131,7 +152,10 @@ export function NodeConfigPanel({
     });
   };
 
-  const insertInputTemplate = (fieldName: string, fieldType: "text" | "number" | "select") => {
+  const insertInputTemplate = (
+    fieldName: string,
+    fieldType: "text" | "number" | "select" | "textarea",
+  ) => {
     const selectedKey = inputSelections[fieldName];
     if (!selectedKey) {
       return;
@@ -149,7 +173,7 @@ export function NodeConfigPanel({
 
   const insertCredentialTemplate = (
     fieldName: string,
-    fieldType: "text" | "number" | "select",
+    fieldType: "text" | "number" | "select" | "textarea",
   ) => {
     const template = credentialSelections[fieldName];
     if (!template) {
@@ -225,7 +249,10 @@ export function NodeConfigPanel({
                   ) : null}
                 </div>
 
-                {field.type === "select" && nodeType === "extract" && field.name === "saveTarget" ? (
+                {field.type === "select" &&
+                ((nodeType === "extract" && field.name === "saveTarget") ||
+                  (nodeType === "save_data" &&
+                    (field.name === "recordMode" || field.name === "writeMode"))) ? (
                   <div className="grid gap-3 md:grid-cols-3">
                     {(field.options ?? []).map((option) => {
                       const active = currentValue === option.value;
@@ -254,7 +281,9 @@ export function NodeConfigPanel({
                             />
                           </div>
                           <div className="mt-2 text-xs leading-5 text-zinc-400">
-                            {getExtractSaveTargetDescription(option.value)}
+                            {nodeType === "extract"
+                              ? getExtractSaveTargetDescription(option.value)
+                              : getSaveDataFieldOptionDescription(field.name, option.value)}
                           </div>
                         </button>
                       );
@@ -268,6 +297,14 @@ export function NodeConfigPanel({
                       value: option.value,
                       label: option.label,
                     }))}
+                  />
+                ) : field.type === "textarea" ? (
+                  <textarea
+                    value={currentValue}
+                    onChange={(event) => handleChange(field.name, event.target.value)}
+                    placeholder={field.placeholder}
+                    spellCheck={false}
+                    className="min-h-[132px] w-full rounded-2xl border border-white/[0.08] bg-black/20 px-3 py-3 text-sm leading-6 text-zinc-100 outline-none transition-colors placeholder:text-zinc-600 focus:border-sky-400/40 focus:bg-black/30"
                   />
                 ) : (
                   <Input

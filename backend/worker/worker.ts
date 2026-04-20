@@ -28,6 +28,7 @@ import {
   createTaskCancellationManager,
 } from './runtime/cancellation';
 import { closeBrowser, getBrowser } from './runtime/browser';
+import { executeSaveDataNode } from './runtime/data';
 import { createTaskEventPublisher } from './runtime/events';
 import { createTaskResourceManager } from './runtime/resources';
 
@@ -61,9 +62,12 @@ let workerInstance: Worker<TaskQueuePayload> | null = null;
 interface ExecutionContext {
   page: Page;
   activeFrame: Frame | null;
+  runtimeInputs: Record<string, string>;
   variables: Record<string, string>;
   credentials: Record<string, Record<string, string>>;
   tempDir: string;
+  workflowId: string;
+  ownerId: string;
 }
 
 interface ExecutionResult {
@@ -88,6 +92,7 @@ const {
   publishStatus,
   publishScreenshot,
   publishExtract,
+  publishDataWrite,
 } = createTaskEventPublisher(publisher);
 
 const {
@@ -214,10 +219,11 @@ function resolveTemplateValue(
   runtimeInputs: Record<string, string>,
   variables: Record<string, string>,
   credentials: Record<string, Record<string, string>>,
+  preserveUnknown = false,
 ) {
   return value.replace(
     /\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g,
-    (_, expression: string) => {
+    (match, expression: string) => {
       const [scope, key, ...rest] = expression.split('.');
 
       if (scope === 'inputs' && key) {
@@ -232,7 +238,7 @@ function resolveTemplateValue(
         return credentials[key]?.[rest.join('.')] ?? '';
       }
 
-      return '';
+      return preserveUnknown ? match : '';
     },
   );
 }
@@ -627,6 +633,60 @@ function resolveNode(
         ) as 'viewport' | 'full' | 'element',
         selector: resolveTemplateValue(
           String(node.selector ?? ''),
+          runtimeInputs,
+          variables,
+          credentials,
+        ),
+      };
+    case 'save_data':
+      return {
+        ...node,
+        collectionKey: resolveTemplateValue(
+          String(node.collectionKey ?? ''),
+          runtimeInputs,
+          variables,
+          credentials,
+        ),
+        collectionName: resolveTemplateValue(
+          String(node.collectionName ?? ''),
+          runtimeInputs,
+          variables,
+          credentials,
+        ),
+        recordMode: resolveTemplateValue(
+          String(node.recordMode ?? 'single'),
+          runtimeInputs,
+          variables,
+          credentials,
+        ) as 'single' | 'array',
+        sourceVariable: resolveTemplateValue(
+          String(node.sourceVariable ?? ''),
+          runtimeInputs,
+          variables,
+          credentials,
+        ),
+        writeMode: resolveTemplateValue(
+          String(node.writeMode ?? 'upsert'),
+          runtimeInputs,
+          variables,
+          credentials,
+        ) as 'insert' | 'upsert' | 'skip_duplicates',
+        recordKeyTemplate: resolveTemplateValue(
+          String(node.recordKeyTemplate ?? ''),
+          runtimeInputs,
+          variables,
+          credentials,
+          true,
+        ),
+        fieldMappings: resolveTemplateValue(
+          String(node.fieldMappings ?? ''),
+          runtimeInputs,
+          variables,
+          credentials,
+          true,
+        ),
+        resultVariable: resolveTemplateValue(
+          String(node.resultVariable ?? ''),
           runtimeInputs,
           variables,
           credentials,
@@ -1189,6 +1249,20 @@ async function executeNode(
       );
       return;
     }
+    case 'save_data': {
+      await executeSaveDataNode(node, {
+        prisma,
+        taskId,
+        workflowId: executionContext.workflowId,
+        ownerId: executionContext.ownerId,
+        runtimeInputs: executionContext.runtimeInputs,
+        variables: executionContext.variables,
+        credentials: executionContext.credentials,
+        publishLog,
+        publishDataWrite,
+      });
+      return;
+    }
     case 'screenshot': {
       const scope = node.scope ?? 'viewport';
       await publishLog(
@@ -1405,6 +1479,18 @@ async function runTask(job: Job<TaskQueuePayload>, runtimeOptions: TaskRuntimeOp
   const { taskId, workflow } = job.data;
   const runtimeInputs = job.data.inputs ?? workflow.runtime?.inputs ?? {};
   const runtimeCredentials = job.data.credentials ?? {};
+  const taskIdentity = await prisma.task.findUnique({
+    where: { id: taskId },
+    select: {
+      workflowId: true,
+      ownerId: true,
+    },
+  });
+
+  if (!taskIdentity) {
+    throw new Error(`Task ${taskId} not found`);
+  }
+
   const browser = await getBrowser();
   const controller = getTaskController(taskId);
   const context = await browser.newContext({
@@ -1418,9 +1504,12 @@ async function runTask(job: Job<TaskQueuePayload>, runtimeOptions: TaskRuntimeOp
   const executionContext: ExecutionContext = {
     page,
     activeFrame: null,
+    runtimeInputs,
     variables: {},
     credentials: runtimeCredentials,
     tempDir: runtimeOptions.tempDir,
+    workflowId: taskIdentity.workflowId,
+    ownerId: taskIdentity.ownerId,
   };
   const stopScreenshotStream = startScreenshotStream(
     taskId,

@@ -1,7 +1,12 @@
 import { WorkflowDefinition } from './workflow.types';
 
 export type TaskLogLevel = 'info' | 'warn' | 'error' | 'success';
-export type ExecutionEventType = 'log' | 'screenshot' | 'status' | 'extract';
+export type ExecutionEventType =
+  | 'log'
+  | 'screenshot'
+  | 'status'
+  | 'extract'
+  | 'data_write';
 export type TaskExecutionStatus = 'pending' | 'running' | 'success' | 'failed' | 'cancelled';
 
 export interface TaskLogPayload {
@@ -38,6 +43,22 @@ export interface TaskExtractPayload {
   timestamp: string;
 }
 
+export interface TaskDataWritePayload {
+  batchId: string;
+  collectionId: string;
+  collectionKey: string;
+  collectionName: string;
+  nodeId?: string;
+  writeMode: 'insert' | 'upsert' | 'skip_duplicates';
+  recordMode: 'single' | 'array';
+  totalCount: number;
+  insertedCount: number;
+  updatedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  timestamp: string;
+}
+
 export interface TaskExecutionEvent {
   taskId: string;
   type: ExecutionEventType;
@@ -45,7 +66,8 @@ export interface TaskExecutionEvent {
     | TaskLogPayload
     | TaskScreenshotPayload
     | TaskStatusPayload
-    | TaskExtractPayload;
+    | TaskExtractPayload
+    | TaskDataWritePayload;
 }
 
 export interface TaskQueuePayload {

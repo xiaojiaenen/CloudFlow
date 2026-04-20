@@ -10,6 +10,7 @@ import { OverlayDialogProvider } from "./context/OverlayDialogContext";
 const Login = lazy(() => import("./pages/Login"));
 const Workspace = lazy(() => import("./pages/Workspace"));
 const Credentials = lazy(() => import("./pages/Credentials"));
+const DataCenter = lazy(() => import("./pages/DataCenter"));
 const Store = lazy(() => import("./pages/Store"));
 const Admin = lazy(() => import("./pages/Admin"));
 const Settings = lazy(() => import("./pages/Settings"));
@@ -50,6 +51,14 @@ export default function App() {
                   element={
                     <ProtectedRoute>
                       <Credentials />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/data"
+                  element={
+                    <ProtectedRoute>
+                      <DataCenter />
                     </ProtectedRoute>
                   }
                 />

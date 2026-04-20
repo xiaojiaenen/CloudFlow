@@ -4,6 +4,7 @@ import {
   Camera,
   CheckSquare,
   Clock,
+  Database,
   Frame,
   Globe,
   Keyboard,
@@ -19,7 +20,7 @@ import {
 export interface NodeField {
   name: string;
   label: string;
-  type: "text" | "number" | "select";
+  type: "text" | "number" | "select" | "textarea";
   placeholder?: string;
   defaultValue?: string;
   description?: string;
@@ -512,6 +513,81 @@ export const nodeRegistry: NodeDefinition[] = [
         type: "text",
         placeholder: ".result-card",
         description: "当截图范围为“指定元素”时需要填写。",
+      },
+    ],
+  },
+  {
+    type: "save_data",
+    label: "保存数据",
+    description: "把变量中的结构化结果写入内置数据库，便于在监控中心和数据中心统一查看、导出与复盘。",
+    category: "数据存储",
+    icon: Database,
+    color: "text-cyan-300 bg-cyan-300/10 border-cyan-300/20",
+    bgGradient: "from-cyan-400/10",
+    fields: [
+      {
+        name: "collectionKey",
+        label: "数据集标识",
+        type: "text",
+        placeholder: "orders_daily",
+        description: "同一个数据集标识会持续写入同一张逻辑表，建议使用稳定英文 key。",
+      },
+      {
+        name: "collectionName",
+        label: "数据集名称",
+        type: "text",
+        placeholder: "每日订单",
+        description: "用于页面展示，留空时默认和数据集标识一致。",
+      },
+      {
+        name: "recordMode",
+        label: "写入模式",
+        type: "select",
+        defaultValue: "single",
+        options: [
+          { label: "单条记录", value: "single" },
+          { label: "数组拆分多条", value: "array" },
+        ],
+      },
+      {
+        name: "sourceVariable",
+        label: "来源变量 / JSON",
+        type: "text",
+        placeholder: "{{variables.orders}}",
+        description: "支持直接引用变量；数组模式下要求内容是 JSON 数组字符串。",
+      },
+      {
+        name: "writeMode",
+        label: "重复键处理",
+        type: "select",
+        defaultValue: "upsert",
+        options: [
+          { label: "存在则更新，不存在则新增", value: "upsert" },
+          { label: "只新增，重复视为失败", value: "insert" },
+          { label: "跳过重复记录", value: "skip_duplicates" },
+        ],
+      },
+      {
+        name: "recordKeyTemplate",
+        label: "记录键模板",
+        type: "text",
+        placeholder: "{{item.id}}",
+        description: "建议显式填写；可用 {{item.xxx}}、{{index}}，用于去重、更新和追踪单条记录。",
+      },
+      {
+        name: "fieldMappings",
+        label: "字段映射 JSON",
+        type: "textarea",
+        placeholder:
+          '{\n  "orderNo": "{{item.orderNo}}",\n  "amount": "{{item.amount}}",\n  "status": "new"\n}',
+        description: "留空时会直接保存来源对象；支持对象 JSON，值里可使用 {{item.xxx}} / {{index}} 模板。",
+      },
+      {
+        name: "resultVariable",
+        label: "结果变量",
+        type: "text",
+        placeholder: "saveSummary",
+        description: "可选，写入后把批次摘要保存为变量，供后续节点继续引用。",
       },
     ],
   },

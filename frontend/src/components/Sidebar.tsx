@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  Database,
   KeyRound,
   LayoutGrid,
   MoreHorizontal,
@@ -74,9 +75,27 @@ function filterWorkflows(workflows: WorkflowRecord[], keyword: string, status: "
 
     return (
       workflow.name.toLowerCase().includes(normalizedKeyword) ||
-      (workflow.description ?? "").toLowerCase().includes(normalizedKeyword)
+      (workflow.description ?? "").toLowerCase().includes(normalizedKeyword) ||
+      (workflow.owner?.name ?? "").toLowerCase().includes(normalizedKeyword) ||
+      (workflow.owner?.email ?? "").toLowerCase().includes(normalizedKeyword)
     );
   });
+}
+
+function getWorkflowOwnerLabel(workflow: WorkflowRecord) {
+  if (workflow.owner?.name?.trim()) {
+    return workflow.owner.name.trim();
+  }
+
+  if (workflow.owner?.email?.trim()) {
+    return workflow.owner.email.trim();
+  }
+
+  return "";
+}
+
+function isWorkflowOwnedByCurrentUser(workflow: WorkflowRecord, userId?: string) {
+  return Boolean(userId && workflow.owner?.id && workflow.owner.id === userId);
 }
 
 export function Sidebar() {
@@ -139,7 +158,7 @@ export function Sidebar() {
 
   const visibleNavItems = useMemo(
     () =>
-      navItems
+      [...navItems, { path: "/data", icon: Database, label: "数据中心" }]
         .map((item) =>
           item.path === "/settings" ? { ...item, label: "个人中心" } : item,
         )
@@ -398,6 +417,9 @@ export function Sidebar() {
   const renderWorkflowItem = (workflow: WorkflowRecord, mode: "active" | "archived") => {
     const active = currentWorkflowId === workflow.id && isWorkspacePage;
     const isBusy = actionWorkflowId === workflow.id;
+    const ownerLabel = getWorkflowOwnerLabel(workflow);
+    const shouldShowOwner = user?.role === "admin" && Boolean(ownerLabel);
+    const isOwnWorkflow = isWorkflowOwnedByCurrentUser(workflow, user?.id);
 
     return (
       <div
@@ -428,6 +450,21 @@ export function Sidebar() {
               <div className="max-w-[180px] truncate text-[13px] font-medium leading-5" title={workflow.name}>
                 {workflow.name}
               </div>
+              {shouldShowOwner ? (
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px]">
+                  <span
+                    className={cn(
+                      "rounded-full border px-1.5 py-0.5",
+                      isOwnWorkflow
+                        ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
+                        : "border-sky-500/20 bg-sky-500/10 text-sky-300",
+                    )}
+                  >
+                    {isOwnWorkflow ? "我的" : "他人"}
+                  </span>
+                  <span className="text-sky-200/80">归属：{ownerLabel}</span>
+                </div>
+              ) : null}
               <div className="mt-1 flex flex-wrap items-center gap-2">
                 {workflow.status === "draft" ? (
                   <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-300">

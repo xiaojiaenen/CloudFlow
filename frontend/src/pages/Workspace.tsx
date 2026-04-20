@@ -20,6 +20,7 @@ import { Button } from "@/src/components/ui/Button";
 import { Input } from "@/src/components/ui/Input";
 import { Select } from "@/src/components/ui/Select";
 import { useAuth } from "@/src/context/AuthContext";
+import { cn } from "@/src/lib/utils";
 import {
   buildWorkflowDefinition,
   cancelTask,
@@ -53,6 +54,7 @@ import {
   WorkflowTemplateRecord,
   WorkflowRuntimeContext,
   WorkflowStatus,
+  WorkflowOwnerSummary,
   WORKFLOW_OPEN_BLANK_EVENT,
   WORKFLOW_SAVED_EVENT,
 } from "@/src/lib/cloudflow";
@@ -234,6 +236,22 @@ function buildWorkflowDraftSnapshot(params: {
   });
 }
 
+function formatWorkflowOwner(owner?: WorkflowOwnerSummary | null) {
+  if (!owner) {
+    return "";
+  }
+
+  if (owner.name?.trim()) {
+    return owner.name.trim();
+  }
+
+  return owner.email?.trim() ?? "";
+}
+
+function isWorkflowOwnedByCurrentUser(owner?: WorkflowOwnerSummary | null, userId?: string) {
+  return Boolean(userId && owner?.id && owner.id === userId);
+}
+
 export default function Workspace() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -256,6 +274,7 @@ export default function Workspace() {
   const [workflowName, setWorkflowName] = useState("未命名工作流");
   const [workflowDescription, setWorkflowDescription] = useState("由前端画布编辑的工作流");
   const [workflowStatus, setWorkflowStatus] = useState<WorkflowStatus>("draft");
+  const [workflowOwner, setWorkflowOwner] = useState<WorkflowOwnerSummary | null>(null);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleCron, setScheduleCron] = useState("0 0 * * *");
   const [scheduleTimezone, setScheduleTimezone] = useState("Asia/Shanghai");
@@ -318,6 +337,11 @@ export default function Workspace() {
 
     return "已发布";
   }, [workflowStatus]);
+  const workflowOwnerLabel = useMemo(() => formatWorkflowOwner(workflowOwner), [workflowOwner]);
+  const isOwnWorkflowForAdmin = useMemo(
+    () => isWorkflowOwnedByCurrentUser(workflowOwner, user?.id),
+    [workflowOwner, user?.id],
+  );
   const canManagePublishedTemplate = useMemo(
     () =>
       !publishedTemplate ||
@@ -384,6 +408,7 @@ export default function Workspace() {
     setWorkflowName(workflow?.name ?? "未命名工作流");
     setWorkflowDescription(workflow?.description ?? "由前端画布编辑的工作流");
     setWorkflowStatus(workflow?.status ?? "draft");
+    setWorkflowOwner(workflow?.owner ?? null);
     setScheduleEnabled(workflow?.scheduleEnabled ?? false);
     setScheduleCron(workflow?.scheduleCron ?? "0 0 * * *");
     setScheduleTimezone(workflow?.scheduleTimezone ?? "Asia/Shanghai");
@@ -1144,6 +1169,35 @@ export default function Workspace() {
             {isLoadingWorkflow ? "正在加载工作流..." : `${workflowDescription} · 状态：${workflowStatusLabel} · ${parameterSummary} · ${scheduleSummary} · ${alertSummary}`}
           </div>
         </div>
+        {user?.role === "admin" && workflowId && workflowOwnerLabel ? (
+          <div
+            className={cn(
+              "px-6 py-2 border-b text-xs z-10",
+              isOwnWorkflowForAdmin
+                ? "border-emerald-500/10 bg-emerald-500/5 text-emerald-100"
+                : "border-sky-500/10 bg-sky-500/5 text-sky-100",
+            )}
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className={cn(
+                  "rounded-full border px-1.5 py-0.5 text-[11px]",
+                  isOwnWorkflowForAdmin
+                    ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
+                    : "border-sky-500/20 bg-sky-500/10 text-sky-300",
+                )}
+              >
+                {isOwnWorkflowForAdmin ? "我的工作流" : "他人工作流"}
+              </span>
+              <span>
+                当前查看的是 <span className="font-medium">{workflowOwnerLabel}</span> 的工作流
+              </span>
+              {workflowOwner?.email && workflowOwner.email !== workflowOwnerLabel ? (
+                <span className="opacity-80">{workflowOwner.email}</span>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
 
         <div className="flex-1 flex overflow-hidden relative">
           <ReactFlowProvider>

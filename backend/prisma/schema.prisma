@@ -25,6 +25,25 @@ enum TaskExecutionEventType {
   screenshot
   status
   extract
+  data_write
+}
+
+enum DataWriteMode {
+  insert
+  upsert
+  skip_duplicates
+}
+
+enum DataRecordMode {
+  single
+  array
+}
+
+enum DataWriteOperation {
+  insert
+  update
+  skip
+  error
 }
 
 enum WorkflowLifecycleStatus {
@@ -44,26 +63,29 @@ enum UserStatus {
 }
 
 model Workflow {
-  id               String   @id @default(cuid())
-  ownerId          String
-  owner            User     @relation("UserWorkflows", fields: [ownerId], references: [id])
+  id                      String                  @id @default(cuid())
+  ownerId                 String
+  owner                   User                    @relation("UserWorkflows", fields: [ownerId], references: [id])
   installedFromTemplateId String?
-  installedFromTemplate WorkflowTemplate? @relation("InstalledTemplateWorkflows", fields: [installedFromTemplateId], references: [id])
-  name             String
-  description      String?
-  definition       Json
-  status           WorkflowLifecycleStatus @default(active)
-  scheduleEnabled  Boolean  @default(false)
-  scheduleCron     String?
-  scheduleTimezone String?
-  alertEmail       String?
-  alertOnSuccess   Boolean  @default(false)
-  alertOnFailure   Boolean  @default(false)
-  tasks            Task[]
-  publishedTemplates WorkflowTemplate[] @relation("WorkflowPublishedTemplates")
-  deletedAt        DateTime?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  installedFromTemplate   WorkflowTemplate?       @relation("InstalledTemplateWorkflows", fields: [installedFromTemplateId], references: [id])
+  name                    String
+  description             String?
+  definition              Json
+  status                  WorkflowLifecycleStatus @default(active)
+  scheduleEnabled         Boolean                 @default(false)
+  scheduleCron            String?
+  scheduleTimezone        String?
+  alertEmail              String?
+  alertOnSuccess          Boolean                 @default(false)
+  alertOnFailure          Boolean                 @default(false)
+  tasks                   Task[]
+  dataWriteBatches        DataWriteBatch[]
+  publishedTemplates      WorkflowTemplate[]      @relation("WorkflowPublishedTemplates")
+  deletedAt               DateTime?
+  createdAt               DateTime                @default(now())
+  updatedAt               DateTime                @updatedAt
+  DataRecord              DataRecord[]
+  DataWriteBatchRow       DataWriteBatchRow[]
 
   @@index([ownerId])
   @@index([installedFromTemplateId])
@@ -73,31 +95,34 @@ model Workflow {
 }
 
 model Task {
-  id                String               @id @default(cuid())
-  workflowId        String
-  workflow          Workflow             @relation(fields: [workflowId], references: [id])
-  ownerId           String
-  owner             User                 @relation("UserTasks", fields: [ownerId], references: [id])
-  status            TaskStatus           @default(pending)
-  triggerSource     TaskTriggerSource    @default(manual)
-  queuePriority     Int                  @default(1)
-  workflowSnapshot  Json
-  errorMessage      String?
-  cancelRequestedAt DateTime?
-  tempDir           String?
-  workerPid         Int?
+  id                  String               @id @default(cuid())
+  workflowId          String
+  workflow            Workflow             @relation(fields: [workflowId], references: [id])
+  ownerId             String
+  owner               User                 @relation("UserTasks", fields: [ownerId], references: [id])
+  status              TaskStatus           @default(pending)
+  triggerSource       TaskTriggerSource    @default(manual)
+  queuePriority       Int                  @default(1)
+  workflowSnapshot    Json
+  errorMessage        String?
+  cancelRequestedAt   DateTime?
+  tempDir             String?
+  workerPid           Int?
   resourceHeartbeatAt DateTime?
-  memoryRssMb       Float?
-  peakMemoryRssMb   Float?
-  heapUsedMb        Float?
-  peakHeapUsedMb    Float?
-  cpuPercent        Float?
-  peakCpuPercent    Float?
-  executionEvents   TaskExecutionEvent[]
-  createdAt         DateTime             @default(now())
-  updatedAt         DateTime             @updatedAt
-  startedAt         DateTime?
-  completedAt       DateTime?
+  memoryRssMb         Float?
+  peakMemoryRssMb     Float?
+  heapUsedMb          Float?
+  peakHeapUsedMb      Float?
+  cpuPercent          Float?
+  peakCpuPercent      Float?
+  executionEvents     TaskExecutionEvent[]
+  dataWriteBatches    DataWriteBatch[]
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  startedAt           DateTime?
+  completedAt         DateTime?
+  DataRecord          DataRecord[]
+  DataWriteBatchRow   DataWriteBatchRow[]
 
   @@index([ownerId])
   @@index([workflowId])
@@ -105,23 +130,23 @@ model Task {
 }
 
 model TaskExecutionEvent {
-  id          String                 @id @default(cuid())
-  taskId       String
-  task         Task                   @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  type         TaskExecutionEventType
-  sequence     Int
-  level        String?
-  nodeId       String?
-  message      String?                @db.Text
-  status       TaskStatus?
-  mimeType     String?
-  imageBase64  String?                @db.LongText
+  id              String                 @id @default(cuid())
+  taskId          String
+  task            Task                   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  type            TaskExecutionEventType
+  sequence        Int
+  level           String?
+  nodeId          String?
+  message         String?                @db.Text
+  status          TaskStatus?
+  mimeType        String?
+  imageBase64     String?                @db.LongText
   storageProvider String?
-  storageBucket String?
-  storageKey   String?
-  sizeBytes    Int?
-  payload      Json?
-  createdAt    DateTime               @default(now())
+  storageBucket   String?
+  storageKey      String?
+  sizeBytes       Int?
+  payload         Json?
+  createdAt       DateTime               @default(now())
 
   @@index([taskId, createdAt])
   @@index([taskId, sequence])
@@ -129,26 +154,26 @@ model TaskExecutionEvent {
 }
 
 model WorkflowTemplate {
-  id               String    @id @default(cuid())
-  slug             String    @unique
-  sourceWorkflowId String?
-  sourceWorkflow   Workflow? @relation("WorkflowPublishedTemplates", fields: [sourceWorkflowId], references: [id])
+  id                 String     @id @default(cuid())
+  slug               String     @unique
+  sourceWorkflowId   String?
+  sourceWorkflow     Workflow?  @relation("WorkflowPublishedTemplates", fields: [sourceWorkflowId], references: [id])
   installedWorkflows Workflow[] @relation("InstalledTemplateWorkflows")
-  publisherId      String?
-  publisher        User?     @relation("PublishedTemplates", fields: [publisherId], references: [id])
-  title            String
-  description      String    @db.Text
-  category         String
-  tags             Json
-  definition       Json
-  authorName       String    @default("CloudFlow")
-  published        Boolean   @default(false)
-  featured         Boolean   @default(false)
-  installCount     Int       @default(0)
-  rating           Float     @default(4.8)
-  deletedAt        DateTime?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  publisherId        String?
+  publisher          User?      @relation("PublishedTemplates", fields: [publisherId], references: [id])
+  title              String
+  description        String     @db.Text
+  category           String
+  tags               Json
+  definition         Json
+  authorName         String     @default("CloudFlow")
+  published          Boolean    @default(false)
+  featured           Boolean    @default(false)
+  installCount       Int        @default(0)
+  rating             Float      @default(4.8)
+  deletedAt          DateTime?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
 
   @@index([sourceWorkflowId])
   @@index([publisherId])
@@ -157,83 +182,183 @@ model WorkflowTemplate {
 }
 
 model SystemConfig {
-  id                   String   @id @default(cuid())
-  platformName         String   @default("CloudFlow")
-  supportEmail         String?
-  smtpHost             String?
-  smtpPort             Int      @default(587)
-  smtpUser             String?
-  smtpPass             String?
-  smtpSecure           Boolean  @default(false)
-  smtpIgnoreTlsCertificate Boolean @default(false)
-  smtpFrom             String?
-  minioEndpoint        String?
-  minioPort            Int      @default(9000)
-  minioUseSSL          Boolean  @default(false)
-  minioAccessKey       String?
-  minioSecretKey       String?
-  minioBucket          String?  @default("cloudflow-task-artifacts")
-  screenshotIntervalMs Int      @default(500)
-  screenshotPersistIntervalMs Int @default(3000)
-  taskRetentionDays    Int      @default(30)
-  monitorPageSize      Int      @default(10)
-  globalTaskConcurrency Int     @default(2)
-  perUserTaskConcurrency Int    @default(1)
-  manualTaskPriority   Int      @default(1)
-  scheduledTaskPriority Int     @default(10)
-  audits               SystemConfigAudit[]
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  id                          String              @id @default(cuid())
+  platformName                String              @default("CloudFlow")
+  supportEmail                String?
+  smtpHost                    String?
+  smtpPort                    Int                 @default(587)
+  smtpUser                    String?
+  smtpPass                    String?
+  smtpSecure                  Boolean             @default(false)
+  smtpIgnoreTlsCertificate    Boolean             @default(false)
+  smtpFrom                    String?
+  minioEndpoint               String?
+  minioPort                   Int                 @default(9000)
+  minioUseSSL                 Boolean             @default(false)
+  minioAccessKey              String?
+  minioSecretKey              String?
+  minioBucket                 String?             @default("cloudflow-task-artifacts")
+  screenshotIntervalMs        Int                 @default(500)
+  screenshotPersistIntervalMs Int                 @default(3000)
+  taskRetentionDays           Int                 @default(30)
+  monitorPageSize             Int                 @default(10)
+  globalTaskConcurrency       Int                 @default(2)
+  perUserTaskConcurrency      Int                 @default(1)
+  manualTaskPriority          Int                 @default(1)
+  scheduledTaskPriority       Int                 @default(10)
+  audits                      SystemConfigAudit[]
+  createdAt                   DateTime            @default(now())
+  updatedAt                   DateTime            @updatedAt
 }
 
 model SystemConfigAudit {
-  id             String   @id @default(cuid())
+  id             String       @id @default(cuid())
   systemConfigId String
   systemConfig   SystemConfig @relation(fields: [systemConfigId], references: [id], onDelete: Cascade)
   actorId        String?
-  actor          User?    @relation("UserSystemConfigAudits", fields: [actorId], references: [id], onDelete: SetNull)
+  actor          User?        @relation("UserSystemConfigAudits", fields: [actorId], references: [id], onDelete: SetNull)
   changedFields  Json
   beforeSnapshot Json
   afterSnapshot  Json
-  createdAt      DateTime @default(now())
+  createdAt      DateTime     @default(now())
 
   @@index([systemConfigId, createdAt])
   @@index([actorId, createdAt])
 }
 
 model Credential {
-  id          String   @id @default(cuid())
-  ownerId     String
-  owner       User     @relation("UserCredentials", fields: [ownerId], references: [id], onDelete: Cascade)
-  name        String
-  key         String
-  type        String
-  provider    String?
-  description String?
-  payload     Json
-  payloadCiphertext String? @db.LongText
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                String   @id @default(cuid())
+  ownerId           String
+  owner             User     @relation("UserCredentials", fields: [ownerId], references: [id], onDelete: Cascade)
+  name              String
+  key               String
+  type              String
+  provider          String?
+  description       String?
+  payload           Json
+  payloadCiphertext String?  @db.LongText
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
-  @@index([ownerId])
   @@unique([ownerId, key])
+  @@index([ownerId])
   @@index([type])
 }
 
+model DataCollection {
+  id          String              @id @default(cuid())
+  ownerId     String
+  owner       User                @relation("UserDataCollections", fields: [ownerId], references: [id], onDelete: Cascade)
+  key         String
+  name        String
+  description String?
+  schemaJson  Json?
+  records     DataRecord[]
+  batches     DataWriteBatch[]
+  batchRows   DataWriteBatchRow[]
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  @@unique([ownerId, key])
+  @@index([ownerId, createdAt])
+  @@index([name])
+}
+
+model DataRecord {
+  id               String          @id @default(cuid())
+  collectionId     String
+  collection       DataCollection  @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  ownerId          String
+  owner            User            @relation("UserDataRecords", fields: [ownerId], references: [id], onDelete: Cascade)
+  recordKey        String
+  dataJson         Json
+  sourceWorkflowId String?
+  sourceWorkflow   Workflow?       @relation(fields: [sourceWorkflowId], references: [id], onDelete: SetNull)
+  lastTaskId       String?
+  lastTask         Task?           @relation(fields: [lastTaskId], references: [id], onDelete: SetNull)
+  lastBatchId      String?
+  lastBatch        DataWriteBatch? @relation("BatchLastWrittenRecords", fields: [lastBatchId], references: [id], onDelete: SetNull)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  @@unique([collectionId, recordKey])
+  @@index([collectionId, createdAt])
+  @@index([ownerId, updatedAt])
+  @@index([sourceWorkflowId])
+  @@index([lastTaskId])
+  @@index([lastBatchId])
+}
+
+model DataWriteBatch {
+  id            String              @id @default(cuid())
+  collectionId  String
+  collection    DataCollection      @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  taskId        String
+  task          Task                @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  workflowId    String
+  workflow      Workflow            @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  ownerId       String
+  owner         User                @relation("UserDataWriteBatches", fields: [ownerId], references: [id], onDelete: Cascade)
+  nodeId        String?
+  writeMode     DataWriteMode
+  recordMode    DataRecordMode
+  insertedCount Int                 @default(0)
+  updatedCount  Int                 @default(0)
+  skippedCount  Int                 @default(0)
+  failedCount   Int                 @default(0)
+  rows          DataWriteBatchRow[]
+  records       DataRecord[]        @relation("BatchLastWrittenRecords")
+  createdAt     DateTime            @default(now())
+
+  @@index([taskId, createdAt])
+  @@index([collectionId, createdAt])
+  @@index([workflowId, createdAt])
+  @@index([ownerId, createdAt])
+}
+
+model DataWriteBatchRow {
+  id           String             @id @default(cuid())
+  batchId      String
+  batch        DataWriteBatch     @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  collectionId String
+  collection   DataCollection     @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  taskId       String
+  task         Task               @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  workflowId   String
+  workflow     Workflow           @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  ownerId      String
+  owner        User               @relation("UserDataWriteBatchRows", fields: [ownerId], references: [id], onDelete: Cascade)
+  recordKey    String?
+  operation    DataWriteOperation
+  dataJson     Json?
+  errorMessage String?            @db.Text
+  createdAt    DateTime           @default(now())
+
+  @@index([batchId, createdAt])
+  @@index([collectionId, createdAt])
+  @@index([taskId, createdAt])
+  @@index([workflowId, createdAt])
+  @@index([ownerId, createdAt])
+}
+
 model User {
-  id                 String             @id @default(cuid())
-  email              String             @unique
+  id                 String              @id @default(cuid())
+  email              String              @unique
   name               String
   passwordHash       String
-  role               UserRole           @default(user)
-  status             UserStatus         @default(active)
-  workflows          Workflow[]         @relation("UserWorkflows")
-  tasks              Task[]             @relation("UserTasks")
-  credentials        Credential[]       @relation("UserCredentials")
-  publishedTemplates WorkflowTemplate[] @relation("PublishedTemplates")
+  role               UserRole            @default(user)
+  status             UserStatus          @default(active)
+  workflows          Workflow[]          @relation("UserWorkflows")
+  tasks              Task[]              @relation("UserTasks")
+  credentials        Credential[]        @relation("UserCredentials")
+  dataCollections    DataCollection[]    @relation("UserDataCollections")
+  dataRecords        DataRecord[]        @relation("UserDataRecords")
+  dataWriteBatches   DataWriteBatch[]    @relation("UserDataWriteBatches")
+  dataWriteBatchRows DataWriteBatchRow[] @relation("UserDataWriteBatchRows")
+  publishedTemplates WorkflowTemplate[]  @relation("PublishedTemplates")
   systemConfigAudits SystemConfigAudit[] @relation("UserSystemConfigAudits")
-  createdAt          DateTime           @default(now())
-  updatedAt          DateTime           @updatedAt
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
 
   @@index([role, status])
 }

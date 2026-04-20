@@ -105,6 +105,12 @@ export interface WorkflowApiDefinition {
   runtime?: WorkflowRuntimeContext;
 }
 
+export interface WorkflowOwnerSummary {
+  id: string;
+  name: string;
+  email: string;
+}
+
 export interface WorkflowRecord {
   id: string;
   name: string;
@@ -120,6 +126,7 @@ export interface WorkflowRecord {
   alertOnFailure?: boolean;
   createdAt: string;
   updatedAt: string;
+  owner?: WorkflowOwnerSummary | null;
   publishedTemplate?: WorkflowTemplateRecord | null;
 }
 
@@ -348,7 +355,7 @@ export interface HealthRecord {
 
 export interface TaskEvent {
   taskId: string;
-  type: "log" | "screenshot" | "status" | "extract";
+  type: "log" | "screenshot" | "status" | "extract" | "data_write";
   data:
     | {
         message: string;
@@ -374,13 +381,28 @@ export interface TaskEvent {
         preview: string;
         nodeId?: string;
         timestamp: string;
+      }
+    | {
+        batchId: string;
+        collectionId: string;
+        collectionKey: string;
+        collectionName: string;
+        nodeId?: string;
+        writeMode: "insert" | "upsert" | "skip_duplicates";
+        recordMode: "single" | "array";
+        totalCount: number;
+        insertedCount: number;
+        updatedCount: number;
+        skippedCount: number;
+        failedCount: number;
+        timestamp: string;
       };
 }
 
 export interface TaskExecutionRecord {
   id: string;
   taskId: string;
-  type: "log" | "screenshot" | "status" | "extract";
+  type: "log" | "screenshot" | "status" | "extract" | "data_write";
   sequence: number;
   level?: "info" | "warn" | "error" | "success" | null;
   nodeId?: string | null;
@@ -394,4 +416,87 @@ export interface TaskExecutionRecord {
   sizeBytes?: number | null;
   payload?: Record<string, unknown> | null;
   createdAt: string;
+}
+
+export interface DataCollectionRecord {
+  id: string;
+  ownerId: string;
+  key: string;
+  name: string;
+  description?: string | null;
+  schemaJson?: Record<string, unknown> | null;
+  schemaFields: string[];
+  recordCount: number;
+  batchCount: number;
+  createdAt: string;
+  updatedAt: string;
+  owner?: WorkflowOwnerSummary | null;
+}
+
+export interface DataRecordRow {
+  id: string;
+  collectionId: string;
+  ownerId: string;
+  recordKey: string;
+  dataJson: Record<string, unknown>;
+  sourceWorkflowId?: string | null;
+  lastTaskId?: string | null;
+  lastBatchId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DataWriteBatchRecord {
+  id: string;
+  collectionId: string;
+  taskId: string;
+  workflowId: string;
+  ownerId: string;
+  nodeId?: string | null;
+  writeMode: "insert" | "upsert" | "skip_duplicates";
+  recordMode: "single" | "array";
+  insertedCount: number;
+  updatedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  totalCount: number;
+  createdAt: string;
+  collection?: {
+    id: string;
+    key: string;
+    name: string;
+  };
+  owner?: WorkflowOwnerSummary | null;
+}
+
+export interface DataWriteBatchRowRecord {
+  id: string;
+  batchId: string;
+  collectionId: string;
+  taskId: string;
+  workflowId: string;
+  ownerId: string;
+  recordKey?: string | null;
+  operation: "insert" | "update" | "skip" | "error";
+  dataJson?: Record<string, unknown> | null;
+  errorMessage?: string | null;
+  createdAt: string;
+}
+
+export interface DataCollectionRecordsResponse extends PaginatedResponse<DataRecordRow> {
+  collection: DataCollectionRecord;
+  columns: string[];
+}
+
+export interface DataBatchRowsResponse extends PaginatedResponse<DataWriteBatchRowRecord> {
+  batch: DataWriteBatchRecord & {
+    collection?: {
+      id: string;
+      key: string;
+      name: string;
+      schemaJson?: Record<string, unknown> | null;
+      schemaFields: string[];
+    };
+  };
+  columns: string[];
 }

@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { TASK_EVENTS_CHANNEL } from 'src/common/constants/redis.constants';
 import {
+  TaskDataWritePayload,
   TaskExecutionEvent,
   TaskExtractPayload,
   TaskLogPayload,
@@ -186,6 +187,19 @@ export class ExecutionEventsService implements OnModuleInit, OnModuleDestroy {
         sequence,
         nodeId: payload.nodeId,
         message: payload.preview,
+        payload: payload as unknown as Prisma.InputJsonValue,
+        createdAt: new Date(payload.timestamp),
+      };
+    }
+
+    if (event.type === 'data_write') {
+      const payload = event.data as TaskDataWritePayload;
+      return {
+        taskId: event.taskId,
+        type: event.type,
+        sequence,
+        nodeId: payload.nodeId,
+        message: `${payload.collectionName} · 新增 ${payload.insertedCount} / 更新 ${payload.updatedCount} / 跳过 ${payload.skippedCount} / 失败 ${payload.failedCount}`,
         payload: payload as unknown as Prisma.InputJsonValue,
         createdAt: new Date(payload.timestamp),
       };

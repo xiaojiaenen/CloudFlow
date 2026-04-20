@@ -26,6 +26,12 @@ type ScheduleListItem = {
   updatedAt: Date;
 };
 
+const workflowOwnerSelect = {
+  id: true,
+  name: true,
+  email: true,
+} satisfies Prisma.UserSelect;
+
 @Injectable()
 export class WorkflowService {
   constructor(
@@ -81,7 +87,7 @@ export class WorkflowService {
     });
 
     await this.queueService.syncWorkflowSchedule(workflow);
-    return workflow;
+    return this.findOne(workflow.id, currentUser);
   }
 
   async findAll(
@@ -125,6 +131,11 @@ export class WorkflowService {
     return this.prismaService.workflow.findMany({
       where,
       orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+      include: {
+        owner: {
+          select: workflowOwnerSelect,
+        },
+      },
     });
   }
 
@@ -264,6 +275,9 @@ export class WorkflowService {
         ...this.buildWorkflowAccessWhere(currentUser),
       },
       include: {
+        owner: {
+          select: workflowOwnerSelect,
+        },
         publishedTemplates: {
           where: {
             deletedAt: null,
@@ -310,7 +324,7 @@ export class WorkflowService {
     });
 
     await this.queueService.syncWorkflowSchedule(duplicatedWorkflow);
-    return duplicatedWorkflow;
+    return this.findOne(duplicatedWorkflow.id, currentUser);
   }
 
   async update(id: string, updateWorkflowDto: UpdateWorkflowDto, currentUser: AuthenticatedUser) {
@@ -386,7 +400,7 @@ export class WorkflowService {
     });
 
     await this.queueService.syncWorkflowSchedule(workflow);
-    return workflow;
+    return this.findOne(workflow.id, currentUser);
   }
 
   async remove(id: string, currentUser: AuthenticatedUser) {

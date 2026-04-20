@@ -13,6 +13,7 @@ import {
   ChevronRight,
   Clock3,
   Cpu,
+  Database,
   Download,
   FileSearch,
   LoaderCircle,
@@ -36,8 +37,12 @@ import { useDebouncedValue } from "@/src/hooks/useDebouncedValue";
 import {
   AlertRecord,
   cancelTask,
+  DataBatchRowsResponse,
+  DataWriteBatchRecord,
   getTask,
   getTaskExecutionScreenshotSrc,
+  listDataBatchRows,
+  listTaskDataBatches,
   getTaskSummary,
   listAlerts,
   listTasks,
@@ -217,6 +222,55 @@ function downloadJsonFile(filename: string, payload: unknown) {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+function downloadTextFile(filename: string, content: string, mimeType: string) {
+  const blob = new Blob([content], {
+    type: mimeType,
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function stringifyTableCellValue(value: unknown) {
+  if (value === null || value === undefined || value === "") {
+    return "--";
+  }
+
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  return JSON.stringify(value);
+}
+
+function escapeCsv(value: unknown) {
+  const text = stringifyTableCellValue(value).replaceAll('"', '""');
+  return /[",\n]/.test(text) ? `"${text}"` : text;
+}
+
+function buildBatchRowsCsv(data: DataBatchRowsResponse) {
+  const header = ["recordKey", "operation", ...data.columns, "errorMessage", "createdAt"];
+  const lines = [
+    header.join(","),
+    ...data.items.map((row) =>
+      [
+        escapeCsv(row.recordKey),
+        escapeCsv(row.operation),
+        ...data.columns.map((column) => escapeCsv(row.dataJson?.[column])),
+        escapeCsv(row.errorMessage),
+        escapeCsv(row.createdAt),
+      ].join(","),
+    ),
+  ];
+
+  return lines.join("\n");
+}
+
 function getExecutionEventMeta(event: TaskExecutionRecord) {
   if (event.type === "status") {
     const statusMeta = getStatusMeta((event.status ?? "pending") as TaskRecord["status"]);
@@ -232,6 +286,14 @@ function getExecutionEventMeta(event: TaskExecutionRecord) {
       label: "提取结果",
       className: "bg-violet-500/10 text-violet-300 border border-violet-500/20",
       icon: FileSearch,
+    };
+  }
+
+  if (event.type === "data_write") {
+    return {
+      label: "数据写入",
+      className: "bg-cyan-500/10 text-cyan-300 border border-cyan-500/20",
+      icon: Database,
     };
   }
 
@@ -360,6 +422,10 @@ export function MonitorCenter() {
   const [alertTotalPages, setAlertTotalPages] = useState(1);
   const [isLoadingAlerts, setIsLoadingAlerts] = useState(false);
   const [alertError, setAlertError] = useState<string | null>(null);
+  const [taskDataBatches, setTaskDataBatches] = useState<DataWriteBatchRecord[]>([]);
+  const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
+  const [batchRowsResponse, setBatchRowsResponse] = useState<DataBatchRowsResponse | null>(null);
+  const [isLoadingTaskData, setIsLoadingTaskData] = useState(false);
   const debouncedSearch = useDebouncedValue(search, 350);
 
   const loadTasks = useCallback(async () => {
@@ -421,6 +487,51 @@ export function MonitorCenter() {
       setIsLoadingDetail(false);
     }
   }, []);
+
+  const loadTaskDataBatches = useCallback(async (taskId: string) => {
+    try {
+      setIsLoadingTaskData(true);
+      const data = await listTaskDataBatches(taskId);
+      setTaskDataBatches(data);
+      setSelectedBatchId((current) => {
+        if (current && data.some((item) => item.id === current)) {
+          return current;
+        }
+        return data[0]?.id ?? null;
+      });
+    } catch (error) {
+      setTaskDataBatches([]);
+      setSelectedBatchId(null);
+      setBatchRowsResponse(null);
+      notify({
+        tone: "error",
+        title: "加载任务数据输出失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
+    } finally {
+      setIsLoadingTaskData(false);
+    }
+  }, [notify]);
+
+  const loadBatchRows = useCallback(async (batchId: string) => {
+    try {
+      setIsLoadingTaskData(true);
+      const data = await listDataBatchRows(batchId, {
+        page: 1,
+        pageSize: 200,
+      });
+      setBatchRowsResponse(data);
+    } catch (error) {
+      setBatchRowsResponse(null);
+      notify({
+        tone: "error",
+        title: "加载批次明细失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
+    } finally {
+      setIsLoadingTaskData(false);
+    }
+  }, [notify]);
 
   const loadAlerts = useCallback(async () => {
     try {
@@ -536,6 +647,38 @@ export function MonitorCenter() {
     return () => window.clearInterval(interval);
   }, [loadTaskDetail, selectedTaskId, setSearchParams]);
 
+  useEffect(() => {
+    if (!selectedTaskId) {
+      setTaskDataBatches([]);
+      setSelectedBatchId(null);
+      setBatchRowsResponse(null);
+      return;
+    }
+
+    void loadTaskDataBatches(selectedTaskId);
+
+    const interval = window.setInterval(() => {
+      void loadTaskDataBatches(selectedTaskId);
+    }, 5000);
+
+    return () => window.clearInterval(interval);
+  }, [loadTaskDataBatches, selectedTaskId]);
+
+  useEffect(() => {
+    if (!selectedBatchId) {
+      setBatchRowsResponse(null);
+      return;
+    }
+
+    void loadBatchRows(selectedBatchId);
+
+    const interval = window.setInterval(() => {
+      void loadBatchRows(selectedBatchId);
+    }, 5000);
+
+    return () => window.clearInterval(interval);
+  }, [loadBatchRows, selectedBatchId]);
+
   const metrics = useMemo(() => ({
     total: summary?.total ?? 0,
     pending: summary?.byStatus.pending ?? 0,
@@ -549,6 +692,10 @@ export function MonitorCenter() {
   const activityEvents = useMemo(() => executionEvents.filter((event) => event.type !== "screenshot"), [executionEvents]);
   const screenshotEvents = useMemo(() => executionEvents.filter((event) => event.type === "screenshot"), [executionEvents]);
   const extractEvents = useMemo(() => executionEvents.filter((event) => event.type === "extract"), [executionEvents]);
+  const selectedBatch = useMemo(
+    () => taskDataBatches.find((item) => item.id === selectedBatchId) ?? null,
+    [selectedBatchId, taskDataBatches],
+  );
   const activeScreenshot = useMemo(() => {
     if (screenshotEvents.length === 0) {
       return null;
@@ -656,6 +803,88 @@ export function MonitorCenter() {
       tone: "success",
     });
   }, [extractEvents, notify, selectedTask?.id]);
+
+  const copyBatchRows = useCallback(async () => {
+    if (!batchRowsResponse) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(
+        JSON.stringify(
+          {
+            batch: batchRowsResponse.batch,
+            columns: batchRowsResponse.columns,
+            items: batchRowsResponse.items,
+          },
+          null,
+          2,
+        ),
+      );
+      notify({
+        tone: "success",
+        title: "数据输出已复制",
+        description: `已复制 ${batchRowsResponse.items.length} 条批次明细。`,
+      });
+    } catch (error) {
+      notify({
+        tone: "error",
+        title: "复制失败",
+        description: error instanceof Error ? error.message : "当前环境暂时无法访问剪贴板。",
+      });
+    }
+  }, [batchRowsResponse, notify]);
+
+  const exportBatchRowsJson = useCallback(() => {
+    if (!selectedBatch) {
+      return;
+    }
+    void (async () => {
+      const data = await listDataBatchRows(selectedBatch.id, { page: 1, pageSize: 1000 });
+      downloadJsonFile(`task-data-${selectedBatch.id}.json`, {
+        batch: data.batch,
+        columns: data.columns,
+        items: data.items,
+      });
+      notify({
+        tone: "success",
+        title: "数据输出已导出",
+        description: `已导出 ${data.items.length} 条批次明细 JSON。`,
+      });
+    })().catch((error) => {
+      notify({
+        tone: "error",
+        title: "导出失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
+    });
+  }, [notify, selectedBatch]);
+
+  const exportBatchRowsCsv = useCallback(() => {
+    if (!selectedBatch) {
+      return;
+    }
+
+    void (async () => {
+      const data = await listDataBatchRows(selectedBatch.id, { page: 1, pageSize: 1000 });
+      downloadTextFile(
+        `task-data-${selectedBatch.id}.csv`,
+        buildBatchRowsCsv(data),
+        "text/csv;charset=utf-8",
+      );
+      notify({
+        tone: "success",
+        title: "数据输出已导出",
+        description: `已导出 ${data.items.length} 条批次明细 CSV。`,
+      });
+    })().catch((error) => {
+      notify({
+        tone: "error",
+        title: "导出失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+      });
+    });
+  }, [notify, selectedBatch]);
 
   useEffect(() => {
     if (!isScreenshotDialogOpen && detailTab !== "screenshots") {
@@ -1208,12 +1437,13 @@ export function MonitorCenter() {
                         </div>
                       </div>
 
-                      <Tabs defaultValue="charts" className="flex min-h-0 flex-1 flex-col">
+                      <Tabs value={detailTab} onValueChange={setDetailTab} className="flex min-h-0 flex-1 flex-col">
                         <div className="sticky top-0 z-10 -mx-1 border-b border-white/[0.05] bg-zinc-950/90 px-1 pb-4 backdrop-blur-md">
-                          <TabsList className="grid h-auto w-full grid-cols-4 bg-zinc-900/70">
+                          <TabsList className="grid h-auto w-full grid-cols-5 bg-zinc-900/70">
                             <TabsTrigger value="charts" className="py-2">图表</TabsTrigger>
                             <TabsTrigger value="logs" className="py-2">日志</TabsTrigger>
                             <TabsTrigger value="screenshots" className="py-2">截图</TabsTrigger>
+                            <TabsTrigger value="data" className="py-2">数据输出</TabsTrigger>
                             <TabsTrigger value="snapshot" className="py-2">快照</TabsTrigger>
                           </TabsList>
                         </div>
@@ -1324,6 +1554,116 @@ export function MonitorCenter() {
                               </div>
                             ) : (
                               <EmptyBlock text="这个任务还没有持久化截图。" />
+                            )}
+                          </div>
+                        </TabsContent>
+
+                        <TabsContent value="data" className="mt-0 min-h-0 flex-1 overflow-y-auto pr-1 pt-4">
+                          <div className="space-y-6">
+                            <div className="flex items-center justify-between gap-3">
+                              <SectionTitle icon={<Database className="w-4 h-4 text-cyan-300" />} title="数据输出" />
+                              {batchRowsResponse ? (
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Button variant="outline" size="sm" className="gap-2" onClick={() => void copyBatchRows()}>
+                                    <Copy className="h-4 w-4" />
+                                    复制结果
+                                  </Button>
+                                  <Button variant="outline" size="sm" className="gap-2" onClick={exportBatchRowsJson}>
+                                    <Download className="h-4 w-4" />
+                                    导出 JSON
+                                  </Button>
+                                  <Button variant="outline" size="sm" className="gap-2" onClick={exportBatchRowsCsv}>
+                                    <Download className="h-4 w-4" />
+                                    导出 CSV
+                                  </Button>
+                                </div>
+                              ) : null}
+                            </div>
+
+                            {taskDataBatches.length === 0 ? (
+                              <EmptyBlock text={isLoadingTaskData ? "正在加载任务数据输出..." : "这个任务还没有保存数据节点的写入结果。"} />
+                            ) : (
+                              <>
+                                <div className="flex flex-wrap gap-3">
+                                  {taskDataBatches.map((batch) => (
+                                    <button
+                                      key={batch.id}
+                                      type="button"
+                                      onClick={() => setSelectedBatchId(batch.id)}
+                                      className={cn(
+                                        "rounded-2xl border px-4 py-3 text-left transition-colors",
+                                        selectedBatchId === batch.id
+                                          ? "border-cyan-400/40 bg-cyan-500/10"
+                                          : "border-white/[0.06] bg-white/[0.02] hover:border-white/[0.14] hover:bg-white/[0.04]",
+                                      )}
+                                    >
+                                      <div className="text-sm font-medium text-zinc-100">{batch.collection?.name ?? batch.collectionId}</div>
+                                      <div className="mt-1 text-[11px] text-zinc-500">{batch.collection?.key ?? batch.collectionId}</div>
+                                      <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-zinc-400">
+                                        <span>新增 {batch.insertedCount}</span>
+                                        <span>更新 {batch.updatedCount}</span>
+                                        <span>跳过 {batch.skippedCount}</span>
+                                        <span>失败 {batch.failedCount}</span>
+                                      </div>
+                                    </button>
+                                  ))}
+                                </div>
+
+                                {selectedBatch ? (
+                                  <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+                                    <CompactMetric label="总条数" value={selectedBatch.totalCount} />
+                                    <CompactMetric label="新增" value={selectedBatch.insertedCount} colorClass="text-emerald-300" />
+                                    <CompactMetric label="更新" value={selectedBatch.updatedCount} colorClass="text-sky-300" />
+                                    <CompactMetric label="跳过" value={selectedBatch.skippedCount} colorClass="text-amber-300" />
+                                    <CompactMetric label="失败" value={selectedBatch.failedCount} colorClass="text-red-300" />
+                                  </div>
+                                ) : null}
+
+                                <div className="rounded-xl border border-white/[0.05] bg-white/[0.02]">
+                                  <Table>
+                                    <TableHeader>
+                                      <TableRow>
+                                        <TableHead>记录键</TableHead>
+                                        <TableHead>操作</TableHead>
+                                        {(batchRowsResponse?.columns ?? []).map((column) => (
+                                          <TableHead key={column}>{column}</TableHead>
+                                        ))}
+                                        <TableHead>错误</TableHead>
+                                        <TableHead>时间</TableHead>
+                                      </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                      {(batchRowsResponse?.items.length ?? 0) === 0 ? (
+                                        <TableRow>
+                                          <TableCell colSpan={(batchRowsResponse?.columns.length ?? 0) + 4} className="py-12 text-center text-zinc-500">
+                                            {isLoadingTaskData ? "正在加载批次明细..." : "当前批次没有可展示的数据行。"}
+                                          </TableCell>
+                                        </TableRow>
+                                      ) : null}
+
+                                      {batchRowsResponse?.items.map((row) => (
+                                        <TableRow key={row.id}>
+                                          <TableCell className="font-mono text-xs text-zinc-200">{row.recordKey ?? "--"}</TableCell>
+                                          <TableCell>{row.operation}</TableCell>
+                                          {batchRowsResponse.columns.map((column) => (
+                                            <TableCell key={`${row.id}-${column}`} className="max-w-[240px]">
+                                              <div className="truncate" title={stringifyTableCellValue(row.dataJson?.[column])}>
+                                                {stringifyTableCellValue(row.dataJson?.[column])}
+                                              </div>
+                                            </TableCell>
+                                          ))}
+                                          <TableCell className="max-w-[240px] text-xs text-red-300">
+                                            <div className="truncate" title={row.errorMessage ?? ""}>
+                                              {row.errorMessage ?? "--"}
+                                            </div>
+                                          </TableCell>
+                                          <TableCell className="text-xs text-zinc-500">{formatDateTime(row.createdAt)}</TableCell>
+                                        </TableRow>
+                                      ))}
+                                    </TableBody>
+                                  </Table>
+                                </div>
+                              </>
                             )}
                           </div>
                         </TabsContent>

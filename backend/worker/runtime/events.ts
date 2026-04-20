@@ -1,6 +1,7 @@
 import { TASK_EVENTS_CHANNEL } from '../../src/common/constants/redis.constants';
 import {
   TaskExecutionEvent,
+  TaskDataWritePayload,
   TaskExecutionStatus,
   TaskExtractPayload,
   TaskLogLevel,
@@ -66,11 +67,20 @@ export function createTaskEventPublisher(publisher: TaskEventPublisher) {
     });
   }
 
+  async function publishDataWrite(taskId: string, payload: TaskDataWritePayload) {
+    await publishEvent({
+      taskId,
+      type: 'data_write',
+      data: payload,
+    });
+  }
+
   return {
     publishEvent,
     publishLog,
     publishStatus,
     publishScreenshot,
     publishExtract,
+    publishDataWrite,
   };
 }

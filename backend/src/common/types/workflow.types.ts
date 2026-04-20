@@ -18,7 +18,8 @@ export type SupportedWorkflowNodeType =
   | 'switch_main_frame'
   | 'scroll'
   | 'extract'
-  | 'screenshot';
+  | 'screenshot'
+  | 'save_data';
 
 export type WorkflowInputFieldType =
   | 'text'
@@ -236,6 +237,18 @@ export interface ScreenshotNode extends BaseWorkflowNode {
   selector?: string;
 }
 
+export interface SaveDataNode extends BaseWorkflowNode {
+  type: 'save_data';
+  collectionKey: string;
+  collectionName?: string;
+  recordMode?: 'single' | 'array';
+  sourceVariable: string;
+  writeMode?: 'insert' | 'upsert' | 'skip_duplicates';
+  recordKeyTemplate?: string;
+  fieldMappings?: string;
+  resultVariable?: string;
+}
+
 export type WorkflowNode =
   | OpenPageNode
   | ClickNode
@@ -256,7 +269,8 @@ export type WorkflowNode =
   | SwitchMainFrameNode
   | ScrollNode
   | ExtractNode
-  | ScreenshotNode;
+  | ScreenshotNode
+  | SaveDataNode;
 
 export interface WorkflowDefinition {
   nodes: WorkflowNode[];
