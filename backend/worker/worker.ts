@@ -3,12 +3,15 @@ import { mkdir, writeFile } from 'fs/promises';
 import path from 'path';
 import { PrismaClient } from '@prisma/client';
 import { DelayedError, Job, Worker } from 'bullmq';
-import { Frame, Locator, Page } from 'playwright';
+import { BrowserContext, Frame, Locator, Page } from 'playwright';
 import {
   DEFAULT_TASK_EXECUTION_POLICY,
   TaskExecutionPolicySnapshot,
 } from '../src/common/constants/task-execution.constants';
 import {
+  RECORDER_CONTROL_CHANNEL,
+  RECORDER_RESPONSE_KEY_PREFIX,
+  RECORDER_SNAPSHOT_KEY_PREFIX,
   TASK_CANCEL_CHANNEL,
   TASK_ELEMENT_PICK_CHANNEL,
   TASK_ELEMENT_PICK_RESPONSE_KEY_PREFIX,
@@ -16,6 +19,12 @@ import {
   TASK_QUEUE_NAME,
 } from '../src/common/constants/redis.constants';
 import { TaskQueuePayload } from '../src/common/types/execution-event.types';
+import {
+  RecorderActionSummary,
+  RecorderCommandPayload,
+  RecorderCommandResult,
+  RecorderSessionSnapshot,
+} from '../src/common/types/recorder.types';
 import {
   TaskElementPickerRequest,
   TaskElementPickerResult,
@@ -66,8 +75,64 @@ const USER_RUNNING_SLOT_RETRY_DELAY_MS = 3_000;
 const GLOBAL_RUNNING_SLOT_RETRY_DELAY_MS = 3_000;
 const USER_RUNNING_SLOT_RENEW_INTERVAL_MS = 30_000;
 const GLOBAL_RUNNING_SLOT_RENEW_INTERVAL_MS = 30_000;
+const RECORDER_SCREENSHOT_INTERVAL_MS = 700;
+const RECORDER_SNAPSHOT_TTL_MS = 60_000;
 
 let workerInstance: Worker<TaskQueuePayload> | null = null;
+const recorderSessions = new Map<string, RecorderSession>();
+
+type RecorderActionRecord =
+  | {
+      id: string;
+      type: 'open_page';
+      label: string;
+      url: string;
+    }
+  | {
+      id: string;
+      type: 'click';
+      label: string;
+      selector: string;
+    }
+  | {
+      id: string;
+      type: 'input';
+      label: string;
+      selector: string;
+      value: string;
+    }
+  | {
+      id: string;
+      type: 'press_key';
+      label: string;
+      key: string;
+    }
+  | {
+      id: string;
+      type: 'scroll';
+      label: string;
+      direction: 'up' | 'down' | 'top' | 'bottom';
+      distance?: number;
+    }
+  | {
+      id: string;
+      type: 'wait_for_url';
+      label: string;
+      url: string;
+    };
+
+interface RecorderSession {
+  id: string;
+  ownerId: string;
+  name: string;
+  context: BrowserContext;
+  page: Page;
+  actions: RecorderActionRecord[];
+  latestScreenshotBase64: string;
+  latestMimeType: string;
+  latestUpdatedAt: string;
+  stopScreenshotLoop: () => void;
+}
 
 interface ExecutionContext {
   page: Page;
@@ -641,6 +706,957 @@ async function resolveTaskElementPick(
           : '当前页面暂时无法完成元素识别，请稍后重试。',
     };
   }
+}
+
+function createRecorderActionId() {
+  return `rec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function toRecorderActionSummary(
+  action: RecorderActionRecord,
+): RecorderActionSummary {
+  if (action.type === 'open_page') {
+    return {
+      id: action.id,
+      type: action.type,
+      label: action.label,
+      url: action.url,
+    };
+  }
+
+  if (action.type === 'click') {
+    return {
+      id: action.id,
+      type: action.type,
+      label: action.label,
+      selector: action.selector,
+    };
+  }
+
+  if (action.type === 'input') {
+    return {
+      id: action.id,
+      type: action.type,
+      label: action.label,
+      selector: action.selector,
+      value: action.value,
+    };
+  }
+
+  if (action.type === 'press_key') {
+    return {
+      id: action.id,
+      type: action.type,
+      label: action.label,
+      value: action.key,
+    };
+  }
+
+  if (action.type === 'scroll') {
+    return {
+      id: action.id,
+      type: action.type,
+      label: action.label,
+      direction: action.direction,
+      distance: action.distance,
+    };
+  }
+
+  return {
+    id: action.id,
+    type: action.type,
+    label: action.label,
+    url: action.url,
+  };
+}
+
+function getRecorderResponseKey(requestId: string) {
+  return `${RECORDER_RESPONSE_KEY_PREFIX}${requestId}`;
+}
+
+function getRecorderSnapshotKey(sessionId: string) {
+  return `${RECORDER_SNAPSHOT_KEY_PREFIX}${sessionId}`;
+}
+
+async function publishRecorderResponse(
+  requestId: string,
+  result: RecorderCommandResult,
+) {
+  await publisher.set(
+    getRecorderResponseKey(requestId),
+    JSON.stringify(result),
+    'PX',
+    RECORDER_SNAPSHOT_TTL_MS,
+  );
+}
+
+async function resolveRecorderElementAtPoint(
+  page: Page,
+  xRatio: number,
+  yRatio: number,
+) {
+  return page.evaluate(
+    ({ xRatio, yRatio }) => {
+      type Candidate = {
+        selector: string;
+        strategy: string;
+        label: string;
+        isUnique: boolean;
+      };
+
+      const viewportWidth =
+        window.innerWidth || document.documentElement.clientWidth || 1;
+      const viewportHeight =
+        window.innerHeight || document.documentElement.clientHeight || 1;
+      const clamp = (value: number, min: number, max: number) =>
+        Math.min(max, Math.max(min, value));
+      const x = clamp(
+        Math.round(viewportWidth * xRatio),
+        0,
+        Math.max(0, viewportWidth - 1),
+      );
+      const y = clamp(
+        Math.round(viewportHeight * yRatio),
+        0,
+        Math.max(0, viewportHeight - 1),
+      );
+
+      const escapeCss = (value: string) => {
+        if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+          return CSS.escape(value);
+        }
+
+        return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+      };
+
+      const escapeAttrValue = (value: string) =>
+        value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+      const normalizeText = (value: string) =>
+        value.replace(/\s+/g, ' ').trim();
+
+      const textPreview = (value: string) => {
+        const normalized = normalizeText(value);
+
+        if (!normalized) {
+          return '';
+        }
+
+        return normalized.length > 72
+          ? `${normalized.slice(0, 72)}...`
+          : normalized;
+      };
+
+      const isClassTokenStable = (token: string) => {
+        if (!token || token.length > 40) {
+          return false;
+        }
+
+        if (/^\d/.test(token)) {
+          return false;
+        }
+
+        if (
+          /(active|selected|focus|hover|open|close|show|hide|hidden|disabled|loading|current|visited|checked|expanded)/i.test(
+            token,
+          )
+        ) {
+          return false;
+        }
+
+        if (/[A-Z0-9]{6,}/.test(token)) {
+          return false;
+        }
+
+        return true;
+      };
+
+      const getCandidateCount = (selector: string) => {
+        try {
+          return document.querySelectorAll(selector).length;
+        } catch {
+          return 0;
+        }
+      };
+
+      const addCandidate = (
+        candidates: Candidate[],
+        selector: string,
+        strategy: string,
+        label: string,
+      ) => {
+        if (!selector || candidates.some((item) => item.selector === selector)) {
+          return;
+        }
+
+        const count = getCandidateCount(selector);
+        candidates.push({
+          selector,
+          strategy,
+          label,
+          isUnique: count === 1,
+        });
+      };
+
+      const buildCssPath = (element: HTMLElement) => {
+        if (element.id?.trim()) {
+          return `#${escapeCss(element.id.trim())}`;
+        }
+
+        const segments: string[] = [];
+        let current: HTMLElement | null = element;
+
+        while (
+          current &&
+          current !== document.body &&
+          current !== document.documentElement
+        ) {
+          const tagName = current.tagName.toLowerCase();
+          let segment = tagName;
+          const stableClasses = Array.from(current.classList)
+            .map((token) => token.trim())
+            .filter(isClassTokenStable)
+            .slice(0, 2);
+
+          if (stableClasses.length > 0) {
+            const classSelector = stableClasses
+              .map((token) => `.${escapeCss(token)}`)
+              .join('');
+
+            if (getCandidateCount(`${tagName}${classSelector}`) === 1) {
+              return `${tagName}${classSelector}`;
+            }
+
+            segment += classSelector;
+          }
+
+          const parent: HTMLElement | null = current.parentElement;
+          if (parent) {
+            const sameTagSiblings = Array.from(parent.children).filter((child) => {
+              const sibling = child as HTMLElement;
+              return sibling.tagName === current?.tagName;
+            }) as HTMLElement[];
+
+            if (sameTagSiblings.length > 1) {
+              segment += `:nth-of-type(${sameTagSiblings.indexOf(current) + 1})`;
+            }
+          }
+
+          segments.unshift(segment);
+          const selector = segments.join(' > ');
+
+          if (getCandidateCount(selector) === 1) {
+            return selector;
+          }
+
+          current = parent;
+        }
+
+        return segments.join(' > ');
+      };
+
+      const rawElement = document.elementFromPoint(x, y);
+
+      if (!(rawElement instanceof HTMLElement)) {
+        return {
+          error: '当前点击位置没有识别到可操作元素。',
+        };
+      }
+
+      const target = (
+        rawElement.closest(
+          'button, a, input, textarea, select, label, [role="button"], [data-testid], [id], [name]',
+        ) ?? rawElement
+      ) as HTMLElement;
+      const tagName = target.tagName.toLowerCase();
+      const candidates: Candidate[] = [];
+      const attributes = [
+        'data-testid',
+        'data-test-id',
+        'data-qa',
+        'data-cy',
+        'id',
+        'name',
+        'placeholder',
+        'aria-label',
+        'role',
+        'type',
+      ].reduce<Record<string, string>>((acc, attributeName) => {
+        const value = target.getAttribute(attributeName);
+
+        if (value?.trim()) {
+          acc[attributeName] = value.trim();
+        }
+
+        return acc;
+      }, {});
+      const primaryDataAttribute = (
+        ['data-testid', 'data-test-id', 'data-qa', 'data-cy'] as const
+      ).find((attributeName) => attributes[attributeName]);
+
+      if (primaryDataAttribute) {
+        addCandidate(
+          candidates,
+          `[${primaryDataAttribute}="${escapeAttrValue(attributes[primaryDataAttribute])}"]`,
+          'data-attr',
+          primaryDataAttribute,
+        );
+      }
+
+      if (attributes.id) {
+        addCandidate(
+          candidates,
+          `#${escapeCss(attributes.id)}`,
+          'id',
+          `id="${attributes.id}"`,
+        );
+      }
+
+      if (attributes.name) {
+        addCandidate(
+          candidates,
+          `${tagName}[name="${escapeAttrValue(attributes.name)}"]`,
+          'name',
+          `name="${attributes.name}"`,
+        );
+      }
+
+      if (attributes['aria-label']) {
+        addCandidate(
+          candidates,
+          `${tagName}[aria-label="${escapeAttrValue(attributes['aria-label'])}"]`,
+          'aria-label',
+          `aria-label="${attributes['aria-label']}"`,
+        );
+      }
+
+      if (attributes.placeholder) {
+        addCandidate(
+          candidates,
+          `${tagName}[placeholder="${escapeAttrValue(attributes.placeholder)}"]`,
+          'placeholder',
+          `placeholder="${attributes.placeholder}"`,
+        );
+      }
+
+      if (attributes.role) {
+        addCandidate(
+          candidates,
+          `[role="${escapeAttrValue(attributes.role)}"]`,
+          'role',
+          `role="${attributes.role}"`,
+        );
+      }
+
+      const cssPath = buildCssPath(target);
+      if (cssPath) {
+        addCandidate(candidates, cssPath, 'css-path', '结构化 CSS');
+      }
+
+      const selector =
+        candidates.find((candidate) => candidate.isUnique)?.selector ??
+        candidates[0]?.selector ??
+        '';
+
+      if (!selector) {
+        return {
+          error: '当前元素暂时无法生成可用定位方式，请换一个更明确的元素重试。',
+        };
+      }
+
+      return {
+        selector,
+        tagName,
+        textPreview: textPreview(target.innerText || target.textContent || ''),
+        attributes,
+        candidates: candidates.slice(0, 6),
+        point: { x, y },
+      };
+    },
+    { xRatio, yRatio },
+  );
+}
+
+async function captureRecorderSnapshot(session: RecorderSession) {
+  if (session.page.isClosed()) {
+    return null;
+  }
+
+  const buffer = await session.page.screenshot({
+    type: 'jpeg',
+    quality: 65,
+  });
+  const viewportSize = session.page.viewportSize() ?? {
+    width: 1440,
+    height: 900,
+  };
+  const snapshot: RecorderSessionSnapshot = {
+    sessionId: session.id,
+    ownerId: session.ownerId,
+    pageUrl: session.page.url(),
+    imageBase64: buffer.toString('base64'),
+    mimeType: 'image/jpeg',
+    updatedAt: new Date().toISOString(),
+    viewport: viewportSize,
+    actionCount: session.actions.length,
+    actions: session.actions.map(toRecorderActionSummary),
+  };
+
+  session.latestScreenshotBase64 = snapshot.imageBase64;
+  session.latestMimeType = snapshot.mimeType;
+  session.latestUpdatedAt = snapshot.updatedAt;
+
+  await publisher.set(
+    getRecorderSnapshotKey(session.id),
+    JSON.stringify(snapshot),
+    'PX',
+    RECORDER_SNAPSHOT_TTL_MS,
+  );
+
+  return snapshot;
+}
+
+function startRecorderScreenshotLoop(session: RecorderSession) {
+  let stopped = false;
+  let timer: NodeJS.Timeout | null = null;
+
+  const schedule = () => {
+    if (stopped) {
+      return;
+    }
+
+    timer = setTimeout(() => {
+      void captureRecorderSnapshot(session)
+        .catch(() => undefined)
+        .finally(schedule);
+    }, RECORDER_SCREENSHOT_INTERVAL_MS);
+  };
+
+  schedule();
+
+  return () => {
+    stopped = true;
+    if (timer) {
+      clearTimeout(timer);
+    }
+  };
+}
+
+function maybeCreateWaitForUrlAction(
+  previousUrl: string,
+  nextUrl: string,
+): RecorderActionRecord | null {
+  if (!previousUrl || !nextUrl || previousUrl === nextUrl) {
+    return null;
+  }
+
+  try {
+    const nextParsed = new URL(nextUrl);
+    const previousParsed = new URL(previousUrl);
+    const significantTarget =
+      nextParsed.pathname + nextParsed.search !==
+      previousParsed.pathname + previousParsed.search
+        ? `${nextParsed.pathname}${nextParsed.search}`
+        : nextUrl;
+
+    return {
+      id: createRecorderActionId(),
+      type: 'wait_for_url',
+      label: '等待页面跳转',
+      url: significantTarget || nextUrl,
+    };
+  } catch {
+    return {
+      id: createRecorderActionId(),
+      type: 'wait_for_url',
+      label: '等待页面跳转',
+      url: nextUrl,
+    };
+  }
+}
+
+function buildRecordedWorkflowDefinition(
+  actions: RecorderActionRecord[],
+): WorkflowDefinition {
+  return {
+    nodes: actions.map((action, index) => {
+      const clientNodeId = `recorded-node-${index + 1}`;
+
+      if (action.type === 'open_page') {
+        return {
+          clientNodeId,
+          type: 'open_page',
+          url: action.url,
+        };
+      }
+
+      if (action.type === 'click') {
+        return {
+          clientNodeId,
+          type: 'click',
+          selector: action.selector,
+        };
+      }
+
+      if (action.type === 'input') {
+        return {
+          clientNodeId,
+          type: 'input',
+          selector: action.selector,
+          value: action.value,
+        };
+      }
+
+      if (action.type === 'press_key') {
+        return {
+          clientNodeId,
+          type: 'press_key',
+          key: action.key,
+        };
+      }
+
+      if (action.type === 'scroll') {
+        return {
+          clientNodeId,
+          type: 'scroll',
+          direction: action.direction,
+          distance: action.distance ?? 500,
+        };
+      }
+
+      return {
+        clientNodeId,
+        type: 'wait_for_url',
+        urlIncludes: action.url,
+        waitUntil: 'load',
+        timeout: 10000,
+      };
+    }),
+  };
+}
+
+async function createRecorderSession(
+  payload: RecorderCommandPayload,
+): Promise<RecorderCommandResult> {
+  if (!payload.ownerId) {
+    return {
+      ok: false,
+      sessionId: payload.sessionId,
+      error: '录制会话缺少用户信息。',
+    };
+  }
+
+  const browser = await getBrowser();
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    acceptDownloads: false,
+  });
+
+  try {
+    const page = await context.newPage();
+    const initialUrl = payload.url?.trim() || 'about:blank';
+
+    await page.goto(initialUrl, {
+      waitUntil: 'load',
+      timeout: 30_000,
+    }).catch(async () => {
+      await page.goto(initialUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: 30_000,
+      });
+    });
+
+    const session: RecorderSession = {
+      id: payload.sessionId,
+      ownerId: payload.ownerId,
+      name: payload.name?.trim() || '录制工作流',
+      context,
+      page,
+      actions:
+        initialUrl === 'about:blank'
+          ? []
+          : [
+              {
+                id: createRecorderActionId(),
+                type: 'open_page',
+                label: '打开页面',
+                url: initialUrl,
+              },
+            ],
+      latestScreenshotBase64: '',
+      latestMimeType: 'image/jpeg',
+      latestUpdatedAt: new Date().toISOString(),
+      stopScreenshotLoop: () => undefined,
+    };
+
+    session.stopScreenshotLoop = startRecorderScreenshotLoop(session);
+    recorderSessions.set(session.id, session);
+    const snapshot = await captureRecorderSnapshot(session);
+
+    return {
+      ok: true,
+      sessionId: session.id,
+      pageUrl: session.page.url(),
+      snapshot: snapshot ?? undefined,
+    };
+  } catch (error) {
+    await context.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+function getRecorderSession(sessionId: string) {
+  return recorderSessions.get(sessionId) ?? null;
+}
+
+async function navigateRecorderSession(
+  session: RecorderSession,
+  payload: RecorderCommandPayload,
+): Promise<RecorderCommandResult> {
+  const url = payload.url?.trim();
+
+  if (!url) {
+    return {
+      ok: false,
+      sessionId: session.id,
+      error: '目标地址不能为空。',
+    };
+  }
+
+  await session.page.goto(url, {
+    waitUntil: 'load',
+    timeout: 30_000,
+  }).catch(async () => {
+    await session.page.goto(url, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30_000,
+    });
+  });
+
+  const action: RecorderActionRecord = {
+    id: createRecorderActionId(),
+    type: 'open_page',
+    label: '打开页面',
+    url,
+  };
+  session.actions.push(action);
+  const snapshot = await captureRecorderSnapshot(session);
+
+  return {
+    ok: true,
+    sessionId: session.id,
+    pageUrl: session.page.url(),
+    action: toRecorderActionSummary(action),
+    snapshot: snapshot ?? undefined,
+  };
+}
+
+async function clickRecorderSession(
+  session: RecorderSession,
+  payload: RecorderCommandPayload,
+): Promise<RecorderCommandResult> {
+  const resolved = await resolveRecorderElementAtPoint(
+    session.page,
+    Number(payload.xRatio ?? 0),
+    Number(payload.yRatio ?? 0),
+  );
+
+  if ('error' in resolved && resolved.error) {
+    return {
+      ok: false,
+      sessionId: session.id,
+      error: resolved.error,
+    };
+  }
+
+  const previousUrl = session.page.url();
+  const resolvedPoint = resolved.point ?? { x: 0, y: 0 };
+  const resolvedSelector = resolved.selector ?? '';
+  const resolvedTextPreview = resolved.textPreview ?? '';
+  await session.page.mouse.click(resolvedPoint.x, resolvedPoint.y);
+  await session.page.waitForLoadState('domcontentloaded', { timeout: 2_000 }).catch(() => undefined);
+  await session.page.waitForTimeout(250).catch(() => undefined);
+
+  const action: RecorderActionRecord = {
+    id: createRecorderActionId(),
+    type: 'click',
+    label: resolved.textPreview
+      ? `点击：${resolved.textPreview}`
+      : '点击元素',
+    selector: resolvedSelector,
+  };
+  session.actions.push(action);
+  const waitAction = maybeCreateWaitForUrlAction(previousUrl, session.page.url());
+  if (waitAction) {
+    session.actions.push(waitAction);
+  }
+  const snapshot = await captureRecorderSnapshot(session);
+
+  return {
+    ok: true,
+    sessionId: session.id,
+    pageUrl: session.page.url(),
+    action: toRecorderActionSummary(action),
+    snapshot: snapshot ?? undefined,
+  };
+}
+
+async function inputRecorderSession(
+  session: RecorderSession,
+  payload: RecorderCommandPayload,
+): Promise<RecorderCommandResult> {
+  const value = payload.value ?? '';
+  const resolved = await resolveRecorderElementAtPoint(
+    session.page,
+    Number(payload.xRatio ?? 0),
+    Number(payload.yRatio ?? 0),
+  );
+
+  if ('error' in resolved && resolved.error) {
+    return {
+      ok: false,
+      sessionId: session.id,
+      error: resolved.error,
+    };
+  }
+
+  let filled = false;
+  const resolvedPoint = resolved.point ?? { x: 0, y: 0 };
+  const resolvedSelector = resolved.selector ?? '';
+  const resolvedTextPreview = resolved.textPreview ?? '';
+
+  try {
+    await session.page.locator(resolvedSelector).first().fill(value, {
+      timeout: 3_000,
+    });
+    filled = true;
+  } catch {
+    filled = false;
+  }
+
+  if (!filled) {
+    await session.page.mouse.click(resolvedPoint.x, resolvedPoint.y);
+    await session.page.keyboard.press('Control+A').catch(() => undefined);
+    await session.page.keyboard.type(value);
+  }
+
+  const action: RecorderActionRecord = {
+    id: createRecorderActionId(),
+    type: 'input',
+    label: resolved.textPreview
+      ? `输入：${resolved.textPreview}`
+      : '输入内容',
+    selector: resolvedSelector,
+    value,
+  };
+  session.actions.push(action);
+  const snapshot = await captureRecorderSnapshot(session);
+
+  return {
+    ok: true,
+    sessionId: session.id,
+    pageUrl: session.page.url(),
+    action: toRecorderActionSummary(action),
+    snapshot: snapshot ?? undefined,
+  };
+}
+
+async function pressKeyRecorderSession(
+  session: RecorderSession,
+  payload: RecorderCommandPayload,
+): Promise<RecorderCommandResult> {
+  const key = String(payload.key ?? '').trim();
+
+  if (!key) {
+    return {
+      ok: false,
+      sessionId: session.id,
+      error: '按键不能为空。',
+    };
+  }
+
+  const previousUrl = session.page.url();
+  await session.page.keyboard.press(key);
+  await session.page.waitForLoadState('domcontentloaded', { timeout: 2_000 }).catch(() => undefined);
+  await session.page.waitForTimeout(200).catch(() => undefined);
+
+  const action: RecorderActionRecord = {
+    id: createRecorderActionId(),
+    type: 'press_key',
+    label: `按下按键：${key}`,
+    key,
+  };
+  session.actions.push(action);
+  const waitAction = maybeCreateWaitForUrlAction(previousUrl, session.page.url());
+  if (waitAction) {
+    session.actions.push(waitAction);
+  }
+  const snapshot = await captureRecorderSnapshot(session);
+
+  return {
+    ok: true,
+    sessionId: session.id,
+    pageUrl: session.page.url(),
+    action: toRecorderActionSummary(action),
+    snapshot: snapshot ?? undefined,
+  };
+}
+
+async function scrollRecorderSession(
+  session: RecorderSession,
+  payload: RecorderCommandPayload,
+): Promise<RecorderCommandResult> {
+  const direction = payload.direction ?? 'down';
+  const distance = Math.max(100, Number(payload.distance ?? 500));
+
+  if (direction === 'top' || direction === 'bottom') {
+    await session.page.evaluate((nextDirection) => {
+      window.scrollTo({
+        top: nextDirection === 'top' ? 0 : document.body.scrollHeight,
+        behavior: 'instant',
+      });
+    }, direction);
+  } else {
+    await session.page.mouse.wheel(0, direction === 'down' ? distance : -distance);
+  }
+
+  const action: RecorderActionRecord = {
+    id: createRecorderActionId(),
+    type: 'scroll',
+    label:
+      direction === 'top'
+        ? '滚动到顶部'
+        : direction === 'bottom'
+          ? '滚动到底部'
+          : direction === 'down'
+            ? '向下滚动'
+            : '向上滚动',
+    direction,
+    distance,
+  };
+  session.actions.push(action);
+  const snapshot = await captureRecorderSnapshot(session);
+
+  return {
+    ok: true,
+    sessionId: session.id,
+    pageUrl: session.page.url(),
+    action: toRecorderActionSummary(action),
+    snapshot: snapshot ?? undefined,
+  };
+}
+
+async function finishRecorderSession(
+  session: RecorderSession,
+  payload: RecorderCommandPayload,
+): Promise<RecorderCommandResult> {
+  if (session.actions.length === 0) {
+    return {
+      ok: false,
+      sessionId: session.id,
+      error: '当前还没有录制到有效动作，请至少完成一步操作后再生成工作流。',
+    };
+  }
+
+  const recommendedName =
+    payload.name?.trim() || session.name || '录制工作流';
+  const definition = buildRecordedWorkflowDefinition(session.actions);
+
+  await closeRecorderSession(session);
+
+  return {
+    ok: true,
+    sessionId: session.id,
+    definition,
+    recommendedName,
+  };
+}
+
+async function closeRecorderSession(
+  session: RecorderSession,
+): Promise<RecorderCommandResult> {
+  recorderSessions.delete(session.id);
+  session.stopScreenshotLoop();
+  await session.context.close().catch(() => undefined);
+  await publisher.del(getRecorderSnapshotKey(session.id)).catch(() => undefined);
+
+  return {
+    ok: true,
+    sessionId: session.id,
+  };
+}
+
+async function handleRecorderCommand(payload: RecorderCommandPayload) {
+  let result: RecorderCommandResult;
+
+  try {
+    if (payload.type === 'create') {
+      result = await createRecorderSession(payload);
+      await publishRecorderResponse(payload.requestId, result);
+      return;
+    }
+
+    const session = getRecorderSession(payload.sessionId);
+
+    if (!session) {
+      await publishRecorderResponse(payload.requestId, {
+        ok: false,
+        sessionId: payload.sessionId,
+        error: '录制会话不存在或已结束。',
+      });
+      return;
+    }
+
+    switch (payload.type) {
+      case 'navigate':
+        result = await navigateRecorderSession(session, payload);
+        break;
+      case 'click':
+        result = await clickRecorderSession(session, payload);
+        break;
+      case 'input':
+        result = await inputRecorderSession(session, payload);
+        break;
+      case 'press_key':
+        result = await pressKeyRecorderSession(session, payload);
+        break;
+      case 'scroll':
+        result = await scrollRecorderSession(session, payload);
+        break;
+      case 'snapshot':
+        result = {
+          ok: true,
+          sessionId: session.id,
+          pageUrl: session.page.url(),
+          snapshot: (await captureRecorderSnapshot(session)) ?? undefined,
+        };
+        break;
+      case 'finish':
+        result = await finishRecorderSession(session, payload);
+        break;
+      case 'close':
+        result = await closeRecorderSession(session);
+        break;
+      default:
+        result = {
+          ok: false,
+          sessionId: payload.sessionId,
+          error: '不支持的录制器命令。',
+        };
+        break;
+    }
+  } catch (error) {
+    result = {
+      ok: false,
+      sessionId: payload.sessionId,
+      error:
+        error instanceof Error
+          ? error.message
+          : '录制器执行失败，请稍后重试。',
+    };
+  }
+
+  await publishRecorderResponse(payload.requestId, result);
 }
 
 function resolveTemplateValue(
@@ -2132,15 +3148,36 @@ cancellationSubscriber.on('message', (channel, message) => {
           console.error('[worker] Failed to handle element pick request', error);
         });
       }
+      return;
+    }
+
+    if (channel === RECORDER_CONTROL_CHANNEL) {
+      const payload = JSON.parse(message) as RecorderCommandPayload;
+      if (payload.sessionId && payload.requestId) {
+        void handleRecorderCommand(payload).catch((error) => {
+          console.error('[worker] Failed to handle recorder command', error);
+        });
+      }
     }
   } catch (error) {
     console.error('[worker] Failed to parse worker control payload', error);
   }
 });
 
-void cancellationSubscriber.subscribe(TASK_CANCEL_CHANNEL, TASK_ELEMENT_PICK_CHANNEL);
+void cancellationSubscriber.subscribe(
+  TASK_CANCEL_CHANNEL,
+  TASK_ELEMENT_PICK_CHANNEL,
+  RECORDER_CONTROL_CHANNEL,
+);
 
 async function shutdown(code = 0) {
+  for (const session of recorderSessions.values()) {
+    session.stopScreenshotLoop();
+    await session.context.close().catch(() => undefined);
+    await publisher.del(getRecorderSnapshotKey(session.id)).catch(() => undefined);
+  }
+  recorderSessions.clear();
+
   if (workerInstance) {
     await workerInstance.close();
   }

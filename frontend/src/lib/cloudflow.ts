@@ -6,5 +6,6 @@ export * from "./cloudflow/tasks";
 export * from "./cloudflow/workflows";
 export * from "./cloudflow/admin";
 export * from "./cloudflow/data";
+export * from "./cloudflow/recorder";
 export * from "./cloudflow/canvas";
 export * from "./cloudflow/schemaValidation";

@@ -307,6 +307,40 @@ export interface TaskElementPickerResult {
   };
 }
 
+export interface RecorderActionSummary {
+  id: string;
+  type: "open_page" | "click" | "input" | "press_key" | "scroll" | "wait_for_url";
+  label: string;
+  selector?: string;
+  value?: string;
+  url?: string;
+  direction?: "up" | "down" | "top" | "bottom";
+  distance?: number;
+}
+
+export interface RecorderSessionSnapshot {
+  sessionId: string;
+  ownerId: string;
+  pageUrl: string;
+  imageBase64: string;
+  mimeType: string;
+  updatedAt: string;
+  viewport: {
+    width: number;
+    height: number;
+  };
+  actionCount: number;
+  actions: RecorderActionSummary[];
+}
+
+export interface RecorderFinishResult {
+  ok: boolean;
+  sessionId: string;
+  recommendedName?: string;
+  definition?: WorkflowApiDefinition;
+  error?: string;
+}
+
 export interface CreatedUserResult extends UserRecord {
   temporaryPassword?: string;
   welcomeEmailSent?: boolean;

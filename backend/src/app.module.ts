@@ -7,6 +7,7 @@ import { CredentialModule } from './modules/credential/credential.module';
 import { DataModule } from './modules/data/data.module';
 import { ExecutionModule } from './modules/execution/execution.module';
 import { NotificationModule } from './modules/notification/notification.module';
+import { RecorderModule } from './modules/recorder/recorder.module';
 import { StorageModule } from './modules/storage/storage.module';
 import { StoreModule } from './modules/store/store.module';
 import { TaskModule } from './modules/task/task.module';
@@ -28,6 +29,7 @@ import { WsModule } from './ws/ws.module';
     AdminModule,
     AlertModule,
     NotificationModule,
+    RecorderModule,
     StorageModule,
     QueueModule,
     WsModule,

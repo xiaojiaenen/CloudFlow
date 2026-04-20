@@ -2,7 +2,7 @@
 import type { Edge, Node } from "@xyflow/react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { io, Socket } from "socket.io-client";
-import { ArrowRight, Save, Settings, UploadCloud } from "lucide-react";
+import { ArrowRight, Save, Settings, UploadCloud, Video } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Sidebar } from "@/src/components/Sidebar";
 import { Header } from "@/src/components/Header";
@@ -11,6 +11,7 @@ import { ExecutionPanel } from "@/src/components/ExecutionPanel";
 import { LogEntry } from "@/src/components/LogPanel";
 import { NodeConfigPanel } from "@/src/components/NodeConfigPanel";
 import { NodePalette } from "@/src/components/NodePalette";
+import { RecorderDialog } from "@/src/components/RecorderDialog";
 import { RunWorkflowDialog } from "@/src/components/RunWorkflowDialog";
 import { WorkflowInputsDesigner } from "@/src/components/WorkflowInputsDesigner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/src/components/ui/Dialog";
@@ -328,6 +329,7 @@ export default function Workspace() {
   const [publishDialogOpen, setPublishDialogOpen] = useState(false);
   const [isPublishingTemplate, setIsPublishingTemplate] = useState(false);
   const [publishedTemplate, setPublishedTemplate] = useState<WorkflowTemplateRecord | null>(null);
+  const [recorderDialogOpen, setRecorderDialogOpen] = useState(false);
   const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [isStartingRun, setIsStartingRun] = useState(false);
   const [pendingRunWorkflowId, setPendingRunWorkflowId] = useState<string | null>(null);
@@ -1243,6 +1245,15 @@ export default function Workspace() {
                     {publishedTemplate ? (canManagePublishedTemplate ? "更新" : "无权") : "发布"}
                   </Button>
                 )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setRecorderDialogOpen(true)}
+                  className="h-8 gap-2"
+                >
+                  <Video className="w-3.5 h-3.5" />
+                  录制
+                </Button>
                 <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)} className="h-8 gap-2">
                   <Settings className="w-3.5 h-3.5" />
                   设置
@@ -1369,6 +1380,14 @@ export default function Workspace() {
         onValuesChange={setRunFormValues}
         onCredentialBindingsChange={setRunCredentialBindings}
         onSubmit={() => void handleConfirmRun()}
+      />
+
+      <RecorderDialog
+        open={recorderDialogOpen}
+        onOpenChange={setRecorderDialogOpen}
+        onWorkflowCreated={(workflow) => {
+          navigate(`/?workflowId=${workflow.id}`);
+        }}
       />
 
       <Dialog open={publishDialogOpen} onOpenChange={setPublishDialogOpen}>
