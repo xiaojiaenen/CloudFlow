@@ -334,6 +334,120 @@ export class AdminService {
     };
   }
 
+  async deleteUser(id: string, currentUser: AuthenticatedUser) {
+    const user = await this.userModel.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException(`User ${id} not found`);
+    }
+
+    if (user.id === currentUser.id) {
+      throw new BadRequestException('不能删除当前登录中的管理员账号。');
+    }
+
+    if (this.isSuperAdminEmail(user.email)) {
+      throw new BadRequestException('超级管理员账号不允许删除。');
+    }
+
+    const [
+      workflowCount,
+      taskCount,
+      credentialCount,
+      dataCollectionCount,
+      dataRecordCount,
+      dataWriteBatchCount,
+      dataWriteBatchRowCount,
+      publishedTemplateCount,
+      systemConfigAuditCount,
+    ] = await Promise.all([
+      this.prismaService.workflow.count({
+        where: {
+          ownerId: user.id,
+          deletedAt: null,
+        },
+      }),
+      this.prismaService.task.count({
+        where: {
+          ownerId: user.id,
+        },
+      }),
+      this.prismaService.credential.count({
+        where: {
+          ownerId: user.id,
+        },
+      }),
+      this.prismaService.dataCollection.count({
+        where: {
+          ownerId: user.id,
+        },
+      }),
+      this.prismaService.dataRecord.count({
+        where: {
+          ownerId: user.id,
+        },
+      }),
+      this.prismaService.dataWriteBatch.count({
+        where: {
+          ownerId: user.id,
+        },
+      }),
+      this.prismaService.dataWriteBatchRow.count({
+        where: {
+          ownerId: user.id,
+        },
+      }),
+      this.prismaService.workflowTemplate.count({
+        where: {
+          publisherId: user.id,
+          deletedAt: null,
+        },
+      }),
+      this.prismaService.systemConfigAudit.count({
+        where: {
+          actorId: user.id,
+        },
+      }),
+    ]);
+
+    const blockers = [
+      { label: '工作流', count: workflowCount },
+      { label: '任务记录', count: taskCount },
+      { label: '凭据', count: credentialCount },
+      { label: '数据集', count: dataCollectionCount },
+      { label: '数据记录', count: dataRecordCount },
+      { label: '数据写入批次', count: dataWriteBatchCount },
+      { label: '数据写入明细', count: dataWriteBatchRowCount },
+      { label: '发布模板', count: publishedTemplateCount },
+      { label: '系统配置审计', count: systemConfigAuditCount },
+    ].filter((item) => item.count > 0);
+
+    if (blockers.length > 0) {
+      throw new BadRequestException(
+        `用户 ${user.name} 仍有关联资产：${blockers
+          .map((item) => `${item.label} ${item.count} 条`)
+          .join('，')}。为保证历史数据完整性，请改用停用账号。`,
+      );
+    }
+
+    await this.userModel.delete({
+      where: {
+        id: user.id,
+      },
+    });
+
+    return {
+      id: user.id,
+      deleted: true as const,
+    };
+  }
+
   async getSystemConfig() {
     const config = await this.ensureSystemConfig();
     return this.serializeSystemConfig(config);
@@ -629,6 +743,37 @@ export class AdminService {
       this.handleTemplateConflict(error);
       throw error;
     }
+  }
+
+  async deleteTemplate(id: string, currentUser: AuthenticatedUser) {
+    const existingTemplate = await this.prismaService.workflowTemplate.findUnique({
+      where: { id },
+    });
+
+    if (!existingTemplate || existingTemplate.deletedAt) {
+      throw new NotFoundException(`Template ${id} not found`);
+    }
+
+    this.assertCanEditTemplate(existingTemplate, currentUser);
+
+    const deletedTemplate = await this.prismaService.workflowTemplate.update({
+      where: { id },
+      data: {
+        deletedAt: new Date(),
+        published: false,
+        featured: false,
+      },
+      select: {
+        id: true,
+        deletedAt: true,
+      },
+    });
+
+    return {
+      id: deletedTemplate.id,
+      deletedAt:
+        deletedTemplate.deletedAt?.toISOString() ?? new Date().toISOString(),
+    };
   }
 
   private buildSystemConfigUpdateData(payload: UpdateSystemConfigDto) {

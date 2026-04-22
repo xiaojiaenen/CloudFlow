@@ -33,6 +33,10 @@ function formatDateTime(value?: string | null) {
   return new Date(value).toLocaleString("zh-CN", { hour12: false });
 }
 
+function getRecordTime(row: DataRecordRow) {
+  return row.updatedAt && row.updatedAt !== row.createdAt ? row.updatedAt : row.createdAt;
+}
+
 function stringifyCellValue(value: unknown) {
   if (value === null || value === undefined || value === "") {
     return "--";
@@ -63,14 +67,14 @@ function downloadTextFile(filename: string, content: string, mimeType: string) {
 }
 
 function buildRecordsCsv(columns: string[], rows: DataRecordRow[]) {
-  const header = ["recordKey", ...columns, "updatedAt", "lastTaskId", "sourceWorkflowId"];
+  const header = ["recordKey", ...columns, "time", "lastTaskId", "sourceWorkflowId"];
   const lines = [
     header.join(","),
     ...rows.map((row) =>
       [
         escapeCsv(row.recordKey),
         ...columns.map((column) => escapeCsv(row.dataJson?.[column])),
-        escapeCsv(row.updatedAt),
+        escapeCsv(getRecordTime(row)),
         escapeCsv(row.lastTaskId),
         escapeCsv(row.sourceWorkflowId),
       ].join(","),
@@ -347,6 +351,11 @@ export default function DataCenter() {
                             <span className="rounded-full border border-white/[0.08] px-2 py-1">
                               字段 {collection.schemaFields.length}
                             </span>
+                            {collection.primaryKeyField ? (
+                              <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 text-emerald-200">
+                                主键 {collection.primaryKeyField}
+                              </span>
+                            ) : null}
                             {collection.owner?.name ? (
                               <span className="rounded-full border border-white/[0.08] px-2 py-1">
                                 {collection.owner.name}
@@ -440,7 +449,16 @@ export default function DataCenter() {
                             <TableRow>
                               <TableHead>记录键</TableHead>
                               {columns.map((column) => (
-                                <TableHead key={column}>{column}</TableHead>
+                                <TableHead key={column}>
+                                  <div className="space-y-1">
+                                    <div>{column}</div>
+                                    {selectedCollection?.schemaFieldComments?.[column] ? (
+                                      <div className="text-[11px] font-normal text-zinc-500">
+                                        {selectedCollection.schemaFieldComments[column]}
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                </TableHead>
                               ))}
                               <TableHead>更新时间</TableHead>
                             </TableRow>
@@ -464,7 +482,9 @@ export default function DataCenter() {
                                     </div>
                                   </TableCell>
                                 ))}
-                                <TableCell className="text-xs text-zinc-500">{formatDateTime(row.updatedAt)}</TableCell>
+                                <TableCell className="text-xs text-zinc-500">
+                                  {formatDateTime(getRecordTime(row))}
+                                </TableCell>
                               </TableRow>
                             ))}
                           </TableBody>

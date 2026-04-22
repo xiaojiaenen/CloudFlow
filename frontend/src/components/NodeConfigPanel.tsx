@@ -1,4 +1,4 @@
-import { type MouseEvent, useEffect, useMemo, useState } from "react";
+import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
 import { ArrowRight, KeyRound, MousePointerClick, Plus, Trash2, Wand2, X } from "lucide-react";
 import { Button } from "@/src/components/ui/Button";
@@ -11,7 +11,8 @@ import {
   DialogTitle,
 } from "@/src/components/ui/Dialog";
 import { Input } from "@/src/components/ui/Input";
-import { Select } from "@/src/components/ui/Select";
+import { Select, type SelectOption } from "@/src/components/ui/Select";
+import { SaveDataNodeConfig } from "@/src/components/SaveDataNodeConfig";
 import {
   pickTaskElement,
   TaskElementPickerResult,
@@ -67,6 +68,16 @@ interface SaveDataMappingRow {
 interface ParsedSaveDataMappings {
   rows: SaveDataMappingRow[];
   hasUnsupportedEntries: boolean;
+}
+
+type SaveDataSourceMode = "single_object" | "array_list" | "plain_text";
+type SaveDataSourceBindingType = "variable" | "input" | "inline" | "template";
+
+interface SaveDataSourceFieldInfo {
+  options: SelectOption[];
+  recommendedRecordKeyOptions: SelectOption[];
+  canAutoInfer: boolean;
+  hint: string;
 }
 
 function appendTemplate(currentValue: string, template: string) {
@@ -327,6 +338,530 @@ function getSaveDataSourceOptions() {
   ] as const;
 }
 
+function tryParseJsonValue(raw: string) {
+  const normalized = raw.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(normalized) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function inferSaveDataSourceMode(recordModeValue: string, sourceValue: string): SaveDataSourceMode {
+  if (recordModeValue === "array") {
+    return "array_list";
+  }
+
+  const parsed = tryParseJsonValue(sourceValue);
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    return "single_object";
+  }
+
+  return "plain_text";
+}
+
+function inferSaveDataSourceBindingType(
+  sourceValue: string,
+  mode: SaveDataSourceMode,
+  knownVariableKeys: string[],
+  knownInputKeys: string[],
+): SaveDataSourceBindingType {
+  const trimmed = sourceValue.trim();
+
+  if (!trimmed) {
+    return mode === "plain_text" ? "inline" : "variable";
+  }
+
+  const directTemplate = trimmed.match(/^\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}$/);
+  if (directTemplate) {
+    const expression = directTemplate[1];
+
+    if (expression.startsWith("inputs.")) {
+      return "input";
+    }
+
+    if (expression.startsWith("variables.")) {
+      return "variable";
+    }
+
+    return "template";
+  }
+
+  if (trimmed.includes("{{") && trimmed.includes("}}")) {
+    return "template";
+  }
+
+  const parsed = tryParseJsonValue(trimmed);
+  if (parsed !== undefined && parsed !== null) {
+    return "inline";
+  }
+
+  if (knownVariableKeys.includes(trimmed)) {
+    return "variable";
+  }
+
+  if (knownInputKeys.includes(trimmed)) {
+    return "input";
+  }
+
+  return mode === "plain_text" ? "inline" : "variable";
+}
+
+function getSaveDataSourceBindingLabel(type: SaveDataSourceBindingType) {
+  switch (type) {
+    case "variable":
+      return "流程变量";
+    case "input":
+      return "运行参数";
+    case "template":
+      return "高级模板";
+    default:
+      return "直接填写";
+  }
+}
+
+function getSaveDataModeTitle(mode: SaveDataSourceMode) {
+  switch (mode) {
+    case "array_list":
+      return "数组列表";
+    case "plain_text":
+      return "普通文本";
+    default:
+      return "单条对象";
+  }
+}
+
+function getSaveDataModeDescription(mode: SaveDataSourceMode) {
+  switch (mode) {
+    case "array_list":
+      return "把一个数组拆成多条记录写入数据中心，适合表格、列表、批量提取结果。";
+    case "plain_text":
+      return "保存一段文本、编号、消息或摘要，系统会自动包装成一条结构化记录。";
+    default:
+      return "保存一条对象记录，适合详情页结果、汇总信息或单次计算输出。";
+  }
+}
+
+function getDefaultSaveDataSourceValue(
+  mode: SaveDataSourceMode,
+  bindingType: SaveDataSourceBindingType,
+) {
+  if (bindingType === "variable") {
+    return mode === "array_list" ? "{{variables.listData}}" : mode === "plain_text" ? "{{variables.textValue}}" : "{{variables.recordData}}";
+  }
+
+  if (bindingType === "input") {
+    return mode === "array_list" ? "{{inputs.items}}" : mode === "plain_text" ? "{{inputs.message}}" : "{{inputs.payload}}";
+  }
+
+  if (bindingType === "template") {
+    return mode === "array_list"
+      ? "{{variables.listData}}"
+      : mode === "plain_text"
+        ? "{{inputs.message}}"
+        : "{{variables.recordData}}";
+  }
+
+  if (mode === "array_list") {
+    return '[\n  {\n    "id": "row-1",\n    "name": "示例 1"\n  },\n  {\n    "id": "row-2",\n    "name": "示例 2"\n  }\n]';
+  }
+
+  if (mode === "single_object") {
+    return '{\n  "id": "record-1",\n  "name": "示例对象"\n}';
+  }
+
+  return "这里是一段要保存的文本";
+}
+
+function getFriendlySaveDataModeTitle(mode: SaveDataSourceMode) {
+  switch (mode) {
+    case "array_list":
+      return "数组列表";
+    case "plain_text":
+      return "普通文本";
+    default:
+      return "单条对象";
+  }
+}
+
+function getFriendlySaveDataBindingLabel(type: SaveDataSourceBindingType) {
+  switch (type) {
+    case "variable":
+      return "流程变量";
+    case "input":
+      return "运行参数";
+    case "template":
+      return "高级模板";
+    default:
+      return "直接填写";
+  }
+}
+
+function getFriendlySaveDataWriteModeTitle(writeMode: string) {
+  switch (writeMode) {
+    case "insert":
+      return "每次都新增";
+    case "skip_duplicates":
+      return "重复时跳过";
+    default:
+      return "重复时更新";
+  }
+}
+
+function getFriendlySaveDataWriteModeDescription(writeMode: string) {
+  switch (writeMode) {
+    case "insert":
+      return "不判断重复，适合每次执行都想追加新记录的场景。";
+    case "skip_duplicates":
+      return "遇到相同唯一标识时不再写入，适合增量采集去重。";
+    default:
+      return "遇到相同唯一标识时更新旧记录，没有则新增，最适合同步数据。";
+  }
+}
+
+function isFriendlySaveDataRecordKeyRequired(writeMode: string) {
+  return writeMode === "upsert" || writeMode === "skip_duplicates";
+}
+
+function getFriendlySaveDataRecordKeyHelp(writeMode: string) {
+  if (!isFriendlySaveDataRecordKeyRequired(writeMode)) {
+    return "当前是“每次都新增”，这里可以留空。系统会自动生成内部记录号。";
+  }
+
+  return "当前是“更新/去重”模式，需要告诉系统“哪一个字段代表同一条数据”。如果来源对象本身就带 id 或 key，也可以留空让系统自动识别。";
+}
+
+function collectSaveDataLeafPaths(
+  value: unknown,
+  prefix = "",
+  collector: Set<string> = new Set<string>(),
+): Set<string> {
+  if (value === null || value === undefined) {
+    return collector;
+  }
+
+  if (Array.isArray(value)) {
+    const objectItems = value.filter(
+      (item): item is Record<string, unknown> =>
+        !!item && typeof item === "object" && !Array.isArray(item),
+    );
+
+    if (objectItems.length > 0) {
+      objectItems.slice(0, 5).forEach((item) => {
+        collectSaveDataLeafPaths(item, prefix, collector);
+      });
+      return collector;
+    }
+
+    if (prefix) {
+      collector.add(prefix);
+    }
+    return collector;
+  }
+
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+
+    if (entries.length === 0) {
+      if (prefix) {
+        collector.add(prefix);
+      }
+      return collector;
+    }
+
+    entries.forEach(([key, child]) => {
+      const nextPrefix = prefix ? `${prefix}.${key}` : key;
+
+      if (child !== null && typeof child === "object") {
+        collectSaveDataLeafPaths(child, nextPrefix, collector);
+        return;
+      }
+
+      collector.add(nextPrefix);
+    });
+
+    return collector;
+  }
+
+  if (prefix) {
+    collector.add(prefix);
+  }
+
+  return collector;
+}
+
+function getSaveDataFieldLeafName(path: string) {
+  const parts = path.split(".").filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+
+function createUniqueSaveDataFieldName(baseName: string, usedNames: Set<string>) {
+  const normalized = baseName.trim() || "field";
+  if (!usedNames.has(normalized)) {
+    usedNames.add(normalized);
+    return normalized;
+  }
+
+  let index = 2;
+  let candidate = `${normalized}_${index}`;
+  while (usedNames.has(candidate)) {
+    index += 1;
+    candidate = `${normalized}_${index}`;
+  }
+
+  usedNames.add(candidate);
+  return candidate;
+}
+
+function scoreSaveDataRecordKeyPath(path: string) {
+  const normalized = getSaveDataFieldLeafName(path).toLowerCase();
+
+  if (normalized === "id" || normalized.endsWith("id")) {
+    return 100;
+  }
+
+  if (normalized === "key" || normalized.endsWith("key")) {
+    return 90;
+  }
+
+  if (normalized.includes("orderno") || normalized.includes("order_no")) {
+    return 80;
+  }
+
+  if (normalized.includes("sku") || normalized.includes("code")) {
+    return 70;
+  }
+
+  if (normalized.endsWith("no") || normalized.includes("number")) {
+    return 60;
+  }
+
+  return 0;
+}
+
+function buildSaveDataFieldOption(path: string): SelectOption {
+  return {
+    value: path,
+    label: path,
+    description: `{{item.${path}}}`,
+    keywords: [getSaveDataFieldLeafName(path)],
+  };
+}
+
+function appendCurrentFieldOption(
+  options: SelectOption[],
+  currentValue: string,
+  descriptionPrefix = "{{item.",
+) {
+  const normalized = currentValue.trim();
+  if (!normalized || options.some((option) => option.value === normalized)) {
+    return options;
+  }
+
+  return [
+    {
+      value: normalized,
+      label: normalized,
+      description: `${descriptionPrefix}${normalized}}}`,
+      group: "当前值",
+    },
+    ...options,
+  ];
+}
+
+function inferSaveDataSourceFieldInfo(
+  sourceValue: string,
+  mode: SaveDataSourceMode,
+  bindingType: SaveDataSourceBindingType,
+): SaveDataSourceFieldInfo {
+  if (mode === "plain_text") {
+    return {
+      options: [],
+      recommendedRecordKeyOptions: [],
+      canAutoInfer: false,
+      hint: "当前是普通文本模式，没有可识别的来源字段。",
+    };
+  }
+
+  if (bindingType !== "inline") {
+    return {
+      options: [],
+      recommendedRecordKeyOptions: [],
+      canAutoInfer: false,
+      hint: "当前来源是变量、参数或模板，设计器阶段拿不到真实数据结构。若想自动识别字段，请先填一段示例 JSON。",
+    };
+  }
+
+  const parsed = tryParseJsonValue(sourceValue);
+
+  if (parsed === null) {
+    return {
+      options: [],
+      recommendedRecordKeyOptions: [],
+      canAutoInfer: false,
+      hint: "请先提供一段示例 JSON，系统才能自动识别来源字段。",
+    };
+  }
+
+  if (parsed === undefined) {
+    return {
+      options: [],
+      recommendedRecordKeyOptions: [],
+      canAutoInfer: false,
+      hint: "当前内容不是合法 JSON，暂时无法识别来源字段。",
+    };
+  }
+
+  let rawPaths: string[] = [];
+
+  if (mode === "array_list") {
+    if (!Array.isArray(parsed)) {
+      return {
+        options: [],
+        recommendedRecordKeyOptions: [],
+        canAutoInfer: false,
+        hint: "数组列表模式下，来源需要是 JSON 数组，系统才能识别每一项的字段。",
+      };
+    }
+
+    rawPaths = Array.from(collectSaveDataLeafPaths(parsed)).sort((left, right) =>
+      left.localeCompare(right),
+    );
+  } else if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    rawPaths = Array.from(collectSaveDataLeafPaths(parsed)).sort((left, right) =>
+      left.localeCompare(right),
+    );
+  } else {
+    return {
+      options: [],
+      recommendedRecordKeyOptions: [],
+      canAutoInfer: false,
+      hint: "单条对象模式下，来源需要是 JSON 对象，系统才能识别字段。",
+    };
+  }
+
+  if (rawPaths.length === 0) {
+    return {
+      options: [],
+      recommendedRecordKeyOptions: [],
+      canAutoInfer: false,
+      hint: "当前示例里没有可直接映射的对象字段。",
+    };
+  }
+
+  const options = rawPaths.map(buildSaveDataFieldOption);
+  const recommendedRecordKeyOptions = [...options].sort((left, right) => {
+    const scoreDiff =
+      scoreSaveDataRecordKeyPath(right.value) - scoreSaveDataRecordKeyPath(left.value);
+    if (scoreDiff !== 0) {
+      return scoreDiff;
+    }
+
+    return left.label.localeCompare(right.label);
+  });
+
+  return {
+    options,
+    recommendedRecordKeyOptions,
+    canAutoInfer: true,
+    hint:
+      mode === "array_list"
+        ? `已根据列表示例识别出 ${options.length} 个字段，可直接下拉选择。`
+        : `已根据对象示例识别出 ${options.length} 个字段，可直接下拉选择。`,
+  };
+}
+
+function createSaveDataMappingsFromSourceFields(fieldOptions: SelectOption[]) {
+  const usedFieldNames = new Set<string>();
+
+  return fieldOptions.map((option) =>
+    createSaveDataMappingRow(
+      "item",
+      option.value,
+      createUniqueSaveDataFieldName(getSaveDataFieldLeafName(option.value), usedFieldNames),
+    ),
+  );
+}
+
+function extractExactItemTemplateField(template: string) {
+  return template.match(/^\{\{\s*item\.([a-zA-Z0-9_.-]+)\s*\}\}$/)?.[1] ?? "";
+}
+
+function normalizeSaveDataPreviewRecord(value: unknown) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value;
+  }
+
+  return {
+    value,
+  };
+}
+
+function buildSaveDataPreview(params: {
+  mode: SaveDataSourceMode;
+  bindingType: SaveDataSourceBindingType;
+  sourceValue: string;
+  fieldMappingsRaw: string;
+}) {
+  const sourceValue = params.sourceValue.trim();
+  const hasMappings = params.fieldMappingsRaw.trim().length > 0;
+
+  let preview: unknown;
+  let note = "";
+
+  if (hasMappings) {
+    const parsedMappings = tryParseJsonValue(params.fieldMappingsRaw);
+    preview = parsedMappings === undefined ? params.fieldMappingsRaw : parsedMappings;
+    note = "已配置字段映射，写入前会先按映射结果组装记录。";
+  } else if (params.mode === "plain_text") {
+    preview = {
+      value: sourceValue || "示例文本",
+    };
+    note = "普通文本模式下，未配置字段映射时会自动包装成 { value: ... }。";
+  } else if (params.mode === "array_list") {
+    if (params.bindingType === "inline") {
+      const parsed = tryParseJsonValue(sourceValue);
+      if (Array.isArray(parsed)) {
+        preview = parsed.slice(0, 2).map((item) => normalizeSaveDataPreviewRecord(item));
+        note = `会把数组中的每一项拆成独立记录，当前预览前 ${Math.min(parsed.length, 2)} 条。`;
+      } else {
+        preview = [
+          { id: "row-1", name: "示例 1" },
+          { id: "row-2", name: "示例 2" },
+        ];
+        note = "数组列表模式要求来源是 JSON 数组；当前展示的是示例写入效果。";
+      }
+    } else {
+      preview = [
+        { "...": "第 1 项会原样写入" },
+        { "...": "第 2 项会原样写入" },
+      ];
+      note = `运行时会先解析 ${getFriendlySaveDataBindingLabel(params.bindingType)}，再把数组中的每一项拆开写入。`;
+    }
+  } else if (params.bindingType === "inline") {
+    const parsed = tryParseJsonValue(sourceValue);
+    preview =
+      parsed === undefined || parsed === null
+        ? normalizeSaveDataPreviewRecord(sourceValue || "示例对象")
+        : normalizeSaveDataPreviewRecord(parsed);
+    note = "单条对象模式下，未配置字段映射时会原样保存当前对象。";
+  } else {
+    preview = {
+      "...": "运行时会把解析后的对象原样写入",
+    };
+    note = `运行时会先解析 ${getFriendlySaveDataBindingLabel(params.bindingType)}，再原样保存为一条对象记录。`;
+  }
+
+  return {
+    preview,
+    note,
+  };
+}
+
 export function NodeConfigPanel({
   nodeId,
   inputSchema,
@@ -349,6 +884,7 @@ export function NodeConfigPanel({
   const [pickerFieldName, setPickerFieldName] = useState<string | null>(null);
   const [pickerError, setPickerError] = useState("");
   const [isPickingElement, setIsPickingElement] = useState(false);
+  const skipNextNodeSyncRef = useRef<string | null>(null);
   const [pickedSelectorResults, setPickedSelectorResults] = useState<
     Record<string, TaskElementPickerResult>
   >({});
@@ -359,6 +895,11 @@ export function NodeConfigPanel({
         node.data.type as string | undefined,
         (node.data || {}) as Record<string, unknown>,
       );
+      const syncKey = `${nodeId}:${JSON.stringify(sanitized)}`;
+      if (skipNextNodeSyncRef.current === syncKey) {
+        skipNextNodeSyncRef.current = null;
+        return;
+      }
       setLocalData(
         sanitized,
       );
@@ -446,12 +987,52 @@ export function NodeConfigPanel({
       }));
   }, [getNodes, localData, nodeId]);
 
+  const saveDataSourceValue = String(localData.sourceVariable ?? "");
+  const saveDataSourceMode = useMemo(
+    () => inferSaveDataSourceMode(String(localData.recordMode ?? "single"), saveDataSourceValue),
+    [localData.recordMode, saveDataSourceValue],
+  );
+  const saveDataSourceBindingType = useMemo(
+    () =>
+      inferSaveDataSourceBindingType(
+        saveDataSourceValue,
+        saveDataSourceMode,
+        variableOptions.map((option) => option.value),
+        inputSchema.map((item) => item.key),
+      ),
+    [inputSchema, saveDataSourceMode, saveDataSourceValue, variableOptions],
+  );
+  const saveDataPreview = useMemo(
+    () =>
+      buildSaveDataPreview({
+        mode: saveDataSourceMode,
+        bindingType: saveDataSourceBindingType,
+        sourceValue: saveDataSourceValue,
+        fieldMappingsRaw: String(localData.fieldMappings ?? ""),
+      }),
+    [localData.fieldMappings, saveDataSourceBindingType, saveDataSourceMode, saveDataSourceValue],
+  );
+  const saveDataSourceFieldInfo = useMemo(
+    () =>
+      inferSaveDataSourceFieldInfo(
+        saveDataSourceValue,
+        saveDataSourceMode,
+        saveDataSourceBindingType,
+      ),
+    [saveDataSourceBindingType, saveDataSourceMode, saveDataSourceValue],
+  );
+  const saveDataGeneratedMappingRows = useMemo(
+    () => createSaveDataMappingsFromSourceFields(saveDataSourceFieldInfo.options),
+    [saveDataSourceFieldInfo.options],
+  );
+
   if (!node || !definition) {
     return null;
   }
 
   const commitNodeData = (nextData: Record<string, unknown>) => {
     const sanitizedData = sanitizeNodeFieldValues(nodeType, nextData);
+    skipNextNodeSyncRef.current = `${nodeId}:${JSON.stringify(sanitizedData)}`;
     const nextPayload = {
       ...sanitizedData,
       params: formatNodeParams(sanitizedData),
@@ -545,6 +1126,14 @@ export function NodeConfigPanel({
     commitSaveDataMappings(nextRows.length > 0 ? nextRows : [createSaveDataMappingRow()]);
   };
 
+  const replaceSaveDataMappingsFromSourceFields = () => {
+    if (saveDataGeneratedMappingRows.length === 0) {
+      return;
+    }
+
+    commitSaveDataMappings(saveDataGeneratedMappingRows);
+  };
+
   const insertInputTemplate = (
     fieldName: string,
     fieldType: "text" | "number" | "select" | "textarea",
@@ -577,6 +1166,32 @@ export function NodeConfigPanel({
       fieldName,
       mergeTemplateValue(String(localData[fieldName] ?? ""), template, fieldType),
     );
+  };
+
+  const setSaveDataSourceMode = (mode: SaveDataSourceMode) => {
+    const nextRecordMode = mode === "array_list" ? "array" : "single";
+    const nextSourceValue =
+      saveDataSourceMode === mode
+        ? saveDataSourceValue
+        : getDefaultSaveDataSourceValue(mode, saveDataSourceBindingType);
+
+    commitNodeData({
+      ...localData,
+      recordMode: nextRecordMode,
+      sourceVariable: nextSourceValue,
+    });
+  };
+
+  const setSaveDataSourceBindingType = (bindingType: SaveDataSourceBindingType) => {
+    const nextSourceValue =
+      saveDataSourceBindingType === bindingType
+        ? saveDataSourceValue
+        : getDefaultSaveDataSourceValue(saveDataSourceMode, bindingType);
+
+    commitNodeData({
+      ...localData,
+      sourceVariable: nextSourceValue,
+    });
   };
 
   return (
@@ -622,7 +1237,19 @@ export function NodeConfigPanel({
             />
           </div>
 
-          {definition.fields.map((field) => {
+          {nodeType === "save_data" ? (
+            <SaveDataNodeConfig
+              localData={localData}
+              inputSchema={inputSchema}
+              variableOptions={variableOptions}
+              onPatch={(patch) =>
+                commitNodeData({
+                  ...localData,
+                  ...patch,
+                })
+              }
+            />
+          ) : definition.fields.map((field) => {
             if (!shouldShowNodeField(nodeType, field.name, localData)) {
               return null;
             }
@@ -630,24 +1257,292 @@ export function NodeConfigPanel({
             const currentValue = String(localData[field.name] ?? field.defaultValue ?? "");
             const canUseTemplate = supportsTemplateReference(field.type);
 
-            if (nodeType === "save_data" && field.name === "fieldMappings") {
+            if (nodeType === "save_data" && field.name === "recordMode") {
+              return null;
+            }
+
+            if (nodeType === "save_data" && field.name === "sourceVariable") {
+              const modeCards: Array<{
+                value: SaveDataSourceMode;
+                title: string;
+                description: string;
+              }> = [
+                {
+                  value: "single_object",
+                  title: "单条对象",
+                  description: "适合保存详情对象、汇总结果或单次输出。",
+                },
+                {
+                  value: "array_list",
+                  title: "数组列表",
+                  description: "适合保存列表、表格或批量提取结果。",
+                },
+                {
+                  value: "plain_text",
+                  title: "普通文本",
+                  description: "适合保存消息、摘要、编号或其他文本。",
+                },
+              ];
+              const bindingCards: Array<{
+                value: SaveDataSourceBindingType;
+                title: string;
+                description: string;
+              }> = [
+                {
+                  value: "variable",
+                  title: "流程变量",
+                  description: "引用前面节点产出的变量内容。",
+                },
+                {
+                  value: "input",
+                  title: "运行参数",
+                  description: "引用启动工作流时传入的参数。",
+                },
+                {
+                  value: "inline",
+                  title: saveDataSourceMode === "plain_text" ? "直接填写文本" : "直接填写 JSON",
+                  description:
+                    saveDataSourceMode === "plain_text"
+                      ? "直接输入要保存的文本内容。"
+                      : "直接粘贴对象或数组 JSON 内容。",
+                },
+                {
+                  value: "template",
+                  title: "高级模板",
+                  description: "混合多个变量或参数时使用模板表达式。",
+                },
+              ];
+              const selectedVariableKey = saveDataSourceValue.match(/^\{\{\s*variables\.([a-zA-Z0-9_.-]+)\s*\}\}$/)?.[1]
+                ?? (variableOptions.some((option) => option.value === saveDataSourceValue) ? saveDataSourceValue : "");
+              const selectedInputKey = saveDataSourceValue.match(/^\{\{\s*inputs\.([a-zA-Z0-9_.-]+)\s*\}\}$/)?.[1]
+                ?? (inputSchema.some((item) => item.key === saveDataSourceValue) ? saveDataSourceValue : "");
+
               return (
                 <div
                   key={field.name}
                   className="space-y-4 rounded-2xl border border-white/[0.05] bg-white/[0.02] p-4"
                 >
                   <div className="space-y-1">
-                    <label className="text-sm font-medium text-zinc-200">{field.label}</label>
-                    {field.description ? (
-                      <div className="text-xs leading-5 text-zinc-500">{field.description}</div>
-                    ) : null}
+                    <label className="text-sm font-medium text-zinc-200">数据来源</label>
+                    <div className="text-xs leading-5 text-zinc-500">
+                      先选择你要保存的数据形态，再选择数据来自哪里。系统会按下面的配置写入数据中心。
+                    </div>
                   </div>
 
-                  <div className="flex items-center justify-between gap-3">
+                  <div className="space-y-3">
+                    <div className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-500">
+                      1. 选择写入形态
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-3">
+                      {modeCards.map((option) => {
+                        const active = saveDataSourceMode === option.value;
+
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => setSaveDataSourceMode(option.value)}
+                            className={cn(
+                              "rounded-2xl border p-4 text-left transition-all",
+                              active
+                                ? "border-sky-400/50 bg-sky-500/12 shadow-[0_0_0_1px_rgba(56,189,248,0.18)]"
+                                : "border-white/[0.06] bg-black/20 hover:border-white/[0.16] hover:bg-white/[0.03]",
+                            )}
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="text-sm font-medium text-zinc-100">{option.title}</div>
+                              <div
+                                className={cn(
+                                  "h-3 w-3 rounded-full border",
+                                  active
+                                    ? "border-sky-300 bg-sky-300 shadow-[0_0_14px_rgba(125,211,252,0.45)]"
+                                    : "border-white/20 bg-transparent",
+                                )}
+                              />
+                            </div>
+                            <div className="mt-2 text-xs leading-5 text-zinc-400">{option.description}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-500">
+                      2. 选择数据来自哪里
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {bindingCards.map((option) => {
+                        const active = saveDataSourceBindingType === option.value;
+
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => setSaveDataSourceBindingType(option.value)}
+                            className={cn(
+                              "rounded-2xl border p-4 text-left transition-all",
+                              active
+                                ? "border-cyan-400/50 bg-cyan-500/12 shadow-[0_0_0_1px_rgba(34,211,238,0.16)]"
+                                : "border-white/[0.06] bg-black/20 hover:border-white/[0.16] hover:bg-white/[0.03]",
+                            )}
+                          >
+                            <div className="text-sm font-medium text-zinc-100">{option.title}</div>
+                            <div className="mt-2 text-xs leading-5 text-zinc-400">{option.description}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {saveDataSourceBindingType === "variable" ? (
+                    <div className="space-y-3">
+                      <label className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-500">
+                        变量选择
+                      </label>
+                      <Select
+                        value={selectedVariableKey}
+                        onChange={(value) => handleChange("sourceVariable", `{{variables.${value}}}`)}
+                        placeholder="选择一个流程变量"
+                        searchable
+                        options={variableOptions}
+                      />
+                      <Input
+                        value={saveDataSourceValue}
+                        onChange={(event) => handleChange("sourceVariable", event.target.value)}
+                        placeholder={getDefaultSaveDataSourceValue(saveDataSourceMode, "variable")}
+                      />
+                    </div>
+                  ) : null}
+
+                  {saveDataSourceBindingType === "input" ? (
+                    <div className="space-y-3">
+                      <label className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-500">
+                        参数选择
+                      </label>
+                      <Select
+                        value={selectedInputKey}
+                        onChange={(value) => handleChange("sourceVariable", `{{inputs.${value}}}`)}
+                        placeholder="选择一个运行参数"
+                        options={inputSchema.map((item) => ({
+                          value: item.key,
+                          label: item.label || item.key,
+                          description: `{{inputs.${item.key}}}`,
+                          group: "运行参数",
+                        }))}
+                      />
+                      <Input
+                        value={saveDataSourceValue}
+                        onChange={(event) => handleChange("sourceVariable", event.target.value)}
+                        placeholder={getDefaultSaveDataSourceValue(saveDataSourceMode, "input")}
+                      />
+                    </div>
+                  ) : null}
+
+                  {saveDataSourceBindingType === "inline" ? (
+                    <div className="space-y-3">
+                      <label className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-500">
+                        {saveDataSourceMode === "plain_text" ? "直接填写文本" : "直接填写 JSON"}
+                      </label>
+                      {saveDataSourceMode === "plain_text" ? (
+                        <textarea
+                          value={saveDataSourceValue}
+                          onChange={(event) => handleChange("sourceVariable", event.target.value)}
+                          placeholder={getDefaultSaveDataSourceValue(saveDataSourceMode, "inline")}
+                          spellCheck={false}
+                          className="min-h-[120px] w-full rounded-2xl border border-white/[0.08] bg-black/20 px-3 py-3 text-sm leading-6 text-zinc-100 outline-none transition-colors placeholder:text-zinc-600 focus:border-sky-400/40 focus:bg-black/30"
+                        />
+                      ) : (
+                        <textarea
+                          value={saveDataSourceValue}
+                          onChange={(event) => handleChange("sourceVariable", event.target.value)}
+                          placeholder={getDefaultSaveDataSourceValue(saveDataSourceMode, "inline")}
+                          spellCheck={false}
+                          className="min-h-[180px] w-full rounded-2xl border border-white/[0.08] bg-black/20 px-3 py-3 font-mono text-sm leading-6 text-zinc-100 outline-none transition-colors placeholder:text-zinc-600 focus:border-sky-400/40 focus:bg-black/30"
+                        />
+                      )}
+                    </div>
+                  ) : null}
+
+                  {saveDataSourceBindingType === "template" ? (
+                    <div className="space-y-3">
+                      <label className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-500">
+                        模板表达式
+                      </label>
+                      <textarea
+                        value={saveDataSourceValue}
+                        onChange={(event) => handleChange("sourceVariable", event.target.value)}
+                        placeholder={getDefaultSaveDataSourceValue(saveDataSourceMode, "template")}
+                        spellCheck={false}
+                        className="min-h-[140px] w-full rounded-2xl border border-white/[0.08] bg-black/20 px-3 py-3 font-mono text-sm leading-6 text-zinc-100 outline-none transition-colors placeholder:text-zinc-600 focus:border-sky-400/40 focus:bg-black/30"
+                      />
+                      <div className="rounded-xl border border-white/[0.05] bg-black/10 px-3 py-3 text-xs leading-6 text-zinc-500">
+                        可用示例：
+                        <code className="mx-1 rounded bg-black/20 px-1.5 py-0.5">{`{{variables.orders}}`}</code>
+                        <code className="mr-1 rounded bg-black/20 px-1.5 py-0.5">{`{{inputs.payload}}`}</code>
+                        <code className="rounded bg-black/20 px-1.5 py-0.5">{`{{item.id}}-{{index}}`}</code>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="rounded-2xl border border-cyan-500/10 bg-cyan-500/5 p-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-[11px] text-cyan-100">
+                        当前形态：{getFriendlySaveDataModeTitle(saveDataSourceMode)}
+                      </span>
+                      <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-1 text-[11px] text-zinc-300">
+                        来源方式：{getFriendlySaveDataBindingLabel(saveDataSourceBindingType)}
+                      </span>
+                    </div>
+                    <div className="mt-3 text-xs leading-6 text-zinc-400">
+                      {getSaveDataModeDescription(saveDataSourceMode)}
+                    </div>
+                    <div className="mt-3 rounded-xl border border-white/[0.05] bg-black/20 px-3 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">
+                        实时写入预览
+                      </div>
+                      <div className="mt-2 text-xs leading-6 text-zinc-500">{saveDataPreview.note}</div>
+                      <pre className="mt-3 overflow-auto rounded-lg bg-black/30 p-3 font-mono text-[11px] leading-5 text-zinc-300">
+                        {JSON.stringify(saveDataPreview.preview, null, 2)}
+                      </pre>
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+
+            if (nodeType === "save_data" && field.name === "fieldMappings") {
+              const canAutoGenerateMappings =
+                saveDataSourceFieldInfo.canAutoInfer && saveDataGeneratedMappingRows.length > 0;
+
+              return (
+                <div
+                  key={field.name}
+                  className="space-y-4 rounded-2xl border border-white/[0.05] bg-white/[0.02] p-4"
+                >
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-zinc-200">5. 保存后的字段</label>
+                    <div className="text-xs leading-5 text-zinc-500">
+                      左边写保存到数据中心后的字段名，右边选择这个字段的值从哪里来。你要的业务字段名可以自己定义。
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
                     <div className="rounded-xl border border-cyan-500/10 bg-cyan-500/5 px-3 py-2 text-[11px] leading-5 text-cyan-100">
                       常用映射已经可视化，不需要再手写 JSON。右侧高级模式仅用于兼容复杂历史映射。
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div
+                      className={cn(
+                        "rounded-xl px-3 py-3 text-xs leading-6",
+                        saveDataSourceFieldInfo.canAutoInfer
+                          ? "border border-emerald-500/15 bg-emerald-500/10 text-emerald-100"
+                          : "border border-amber-500/15 bg-amber-500/10 text-amber-100",
+                      )}
+                    >
+                      {saveDataSourceFieldInfo.hint}
+                    </div>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
                       <Button
                         type="button"
                         variant={saveDataMappingsMode === "visual" ? "default" : "outline"}
@@ -663,6 +1558,21 @@ export function NodeConfigPanel({
                         onClick={() => setSaveDataMappingsMode("raw")}
                       >
                         高级 JSON
+                      </Button>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={!canAutoGenerateMappings}
+                        onClick={replaceSaveDataMappingsFromSourceFields}
+                        title={
+                          canAutoGenerateMappings
+                            ? "按来源字段自动生成映射"
+                            : saveDataSourceFieldInfo.hint
+                        }
+                      >
+                        一键生成映射表
                       </Button>
                     </div>
                   </div>
@@ -795,7 +1705,50 @@ export function NodeConfigPanel({
                             </div>
                           ) : null}
 
+                          {row.sourceType === "item" ? (
+                            <div className="space-y-2">
+                              <label className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-500">
+                                来源字段
+                              </label>
+                              {saveDataSourceFieldInfo.canAutoInfer ? (
+                                <Select
+                                  value={row.value}
+                                  onChange={(value) =>
+                                    updateSaveDataMapping(row.id, (current) => ({
+                                      ...current,
+                                      value,
+                                    }))
+                                  }
+                                  placeholder="选择来源字段"
+                                  searchable
+                                  options={appendCurrentFieldOption(
+                                    saveDataSourceFieldInfo.options,
+                                    row.value,
+                                  )}
+                                />
+                              ) : (
+                                <Input
+                                  type="text"
+                                  value={row.value}
+                                  onChange={(event) =>
+                                    updateSaveDataMapping(row.id, (current) => ({
+                                      ...current,
+                                      value: event.target.value,
+                                    }))
+                                  }
+                                  placeholder="如 orderNo / data.amount"
+                                />
+                              )}
+                              <div className="text-[11px] leading-5 text-zinc-500">
+                                {saveDataSourceFieldInfo.canAutoInfer
+                                  ? `最终会读取 {{item.${row.value || "字段名"}}}`
+                                  : saveDataSourceFieldInfo.hint}
+                              </div>
+                            </div>
+                          ) : null}
+
                           {row.sourceType !== "input" &&
+                          row.sourceType !== "item" &&
                           row.sourceType !== "credential" &&
                           row.sourceType !== "boolean" &&
                           row.sourceType !== "null" &&
@@ -918,6 +1871,142 @@ export function NodeConfigPanel({
                       </div>
                     </div>
                   )}
+                </div>
+              );
+            }
+
+            if (nodeType === "save_data" && field.name === "writeMode") {
+              const currentWriteMode = String(localData.writeMode ?? "upsert");
+
+              return (
+                <div
+                  key={field.name}
+                  className="space-y-4 rounded-2xl border border-white/[0.05] bg-white/[0.02] p-4"
+                >
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-zinc-200">3. 重复数据怎么处理</label>
+                    <div className="text-xs leading-5 text-zinc-500">
+                      这一项决定相同数据再次出现时，是更新旧记录、跳过，还是继续追加一条新记录。
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-3">
+                    {(field.options ?? []).map((option) => {
+                      const active = currentWriteMode === option.value;
+
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => handleChange(field.name, option.value)}
+                          className={cn(
+                            "rounded-2xl border p-4 text-left transition-all",
+                            active
+                              ? "border-sky-400/50 bg-sky-500/12 shadow-[0_0_0_1px_rgba(56,189,248,0.18)]"
+                              : "border-white/[0.06] bg-black/20 hover:border-white/[0.16] hover:bg-white/[0.03]",
+                          )}
+                        >
+                          <div className="text-sm font-medium text-zinc-100">
+                            {getFriendlySaveDataWriteModeTitle(option.value)}
+                          </div>
+                          <div className="mt-2 text-xs leading-5 text-zinc-400">
+                            {getFriendlySaveDataWriteModeDescription(option.value)}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="rounded-xl border border-sky-500/10 bg-sky-500/5 px-3 py-3 text-xs leading-6 text-sky-100">
+                    当前选择：{getFriendlySaveDataWriteModeTitle(currentWriteMode)}。{getFriendlySaveDataWriteModeDescription(currentWriteMode)}
+                  </div>
+                </div>
+              );
+            }
+
+            if (nodeType === "save_data" && field.name === "recordKeyTemplate") {
+              const currentWriteMode = String(localData.writeMode ?? "upsert");
+              const requiresRecordKey = isFriendlySaveDataRecordKeyRequired(currentWriteMode);
+              const selectedRecordKeyField = extractExactItemTemplateField(currentValue);
+              const recordKeyFieldOptions = appendCurrentFieldOption(
+                saveDataSourceFieldInfo.recommendedRecordKeyOptions,
+                selectedRecordKeyField,
+              );
+
+              return (
+                <div
+                  key={field.name}
+                  className="space-y-4 rounded-2xl border border-white/[0.05] bg-white/[0.02] p-4"
+                >
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-zinc-200">4. 唯一标识</label>
+                    <div className="text-xs leading-5 text-zinc-500">
+                      用来判断“这是不是同一条数据”。例如订单号、用户 ID、商品 SKU。只有更新/去重模式才需要它。
+                    </div>
+                  </div>
+
+                  <div
+                    className={cn(
+                      "rounded-xl px-3 py-3 text-xs leading-6",
+                      requiresRecordKey
+                        ? "border border-amber-500/15 bg-amber-500/10 text-amber-100"
+                        : "border border-emerald-500/15 bg-emerald-500/10 text-emerald-100",
+                    )}
+                  >
+                    {getFriendlySaveDataRecordKeyHelp(currentWriteMode)}
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-500">
+                      优先选择唯一标识字段
+                    </label>
+                    {saveDataSourceFieldInfo.canAutoInfer ? (
+                      <Select
+                        value={selectedRecordKeyField}
+                        onChange={(value) =>
+                          handleChange(field.name, value ? `{{item.${value}}}` : "")
+                        }
+                        placeholder="选择唯一标识字段"
+                        searchable
+                        options={recordKeyFieldOptions}
+                      />
+                    ) : (
+                      <div className="rounded-xl border border-amber-500/10 bg-amber-500/5 px-3 py-3 text-xs leading-6 text-amber-100">
+                        {saveDataSourceFieldInfo.hint}
+                      </div>
+                    )}
+                    {saveDataSourceFieldInfo.canAutoInfer ? (
+                      <div className="text-xs leading-6 text-zinc-500">
+                        推荐优先选择 `id`、`key`、`orderNo`、`sku` 这类天然唯一的字段。
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-500">
+                      唯一标识模板
+                    </label>
+                    <Input
+                      value={currentValue}
+                      onChange={(event) => handleChange(field.name, event.target.value)}
+                      placeholder={requiresRecordKey ? "{{item.id}} / {{item.orderNo}} / {{item.shopId}}-{{item.orderNo}}" : "当前模式可留空"}
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      {["{{item.id}}", "{{item.key}}", "{{index}}", "{{item.id}}-{{index}}"].map((template) => (
+                        <button
+                          key={template}
+                          type="button"
+                          onClick={() => handleChange(field.name, template)}
+                          className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[11px] text-zinc-300 transition-colors hover:border-sky-400/30 hover:text-sky-200"
+                        >
+                          {template}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="text-xs leading-6 text-zinc-500">
+                      不会写模板也没关系：如果你的来源对象里本身就有 <code className="rounded bg-black/20 px-1.5 py-0.5">id</code> 或 <code className="rounded bg-black/20 px-1.5 py-0.5">key</code> 字段，可以先留空试一下。
+                    </div>
+                  </div>
                 </div>
               );
             }

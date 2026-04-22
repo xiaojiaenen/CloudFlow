@@ -18,6 +18,8 @@ import {
   CreatedUserResult,
   createAdminTemplate,
   createAdminUser,
+  deleteAdminTemplate,
+  deleteAdminUser,
   getAdminOverview,
   getHealthStatus,
   getSystemConfig,
@@ -81,7 +83,7 @@ function HealthBadge({ value }: { value: string | boolean }) {
 }
 
 export default function Admin() {
-  const { user } = useAuth();
+  const { user: currentUser } = useAuth();
   const { notify } = useNotice();
   const { confirm } = useOverlayDialog();
   const [overview, setOverview] = useState<AdminOverviewRecord | null>(null);
@@ -101,6 +103,7 @@ export default function Admin() {
   const [isCreatingTemplate, setIsCreatingTemplate] = useState(false);
   const [isCreatingUser, setIsCreatingUser] = useState(false);
   const [activeUserId, setActiveUserId] = useState<string | null>(null);
+  const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
   const [createdUserResult, setCreatedUserResult] = useState<CreatedUserResult | null>(null);
   const [resetPasswordResult, setResetPasswordResult] = useState<ResetUserPasswordResult | null>(null);
   const [smtpTestResult, setSmtpTestResult] = useState<SmtpTestResult | null>(null);
@@ -212,8 +215,8 @@ export default function Admin() {
 
   const canManageTemplate = useCallback(
     (template: WorkflowTemplateRecord) =>
-      Boolean(user?.isSuperAdmin || (template.publisherId && template.publisherId === user?.id)),
-    [user?.id, user?.isSuperAdmin],
+      Boolean(currentUser?.isSuperAdmin || (template.publisherId && template.publisherId === currentUser?.id)),
+    [currentUser?.id, currentUser?.isSuperAdmin],
   );
 
   const systemConfigPayload = {
@@ -423,6 +426,52 @@ export default function Admin() {
                             <Button variant="outline" size="sm" disabled={activeUserId === user.id} onClick={async () => { const confirmed = await confirm({ title: "重置用户密码", description: `确认重置 ${user.name} 的登录密码吗？系统将生成新的临时密码。`, confirmText: "确认重置", cancelText: "取消", tone: "danger" }); if (!confirmed) { return; } try { setActiveUserId(user.id); setCreatedUserResult(null); const result = await resetAdminUserPassword(user.id); setResetPasswordResult(result); notify({ tone: result.emailSent ? "success" : "warning", title: "密码已重置", description: result.emailSent ? `${user.name} 的重置邮件已自动发送。` : `${user.name} 的临时密码已经生成，请手动通知用户。` }); } catch (error) { notify({ tone: "error", title: "重置密码失败", description: error instanceof Error ? error.message : "请稍后重试。" }); } finally { setActiveUserId(null); } }}>
                               重置密码
                             </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={activeUserId === user.id || user.isSuperAdmin || currentUser?.id === user.id}
+                              title={
+                                user.isSuperAdmin
+                                  ? "超级管理员账号不允许删除"
+                                  : currentUser?.id === user.id
+                                    ? "不能删除当前登录账号"
+                                    : undefined
+                              }
+                              onClick={async () => {
+                                const confirmed = await confirm({
+                                  title: "删除用户",
+                                  description: `确认删除 ${user.name} 吗？若该用户仍有关联工作流、任务或数据资产，系统会拒绝删除并提示改用停用。`,
+                                  confirmText: "确认删除",
+                                  cancelText: "取消",
+                                  tone: "danger",
+                                });
+                                if (!confirmed) {
+                                  return;
+                                }
+                                try {
+                                  setActiveUserId(user.id);
+                                  await deleteAdminUser(user.id);
+                                  setCreatedUserResult(null);
+                                  setResetPasswordResult(null);
+                                  await loadOverviewSection();
+                                  notify({
+                                    tone: "success",
+                                    title: "用户已删除",
+                                    description: `${user.name} 已从平台中移除。`,
+                                  });
+                                } catch (error) {
+                                  notify({
+                                    tone: "error",
+                                    title: "删除用户失败",
+                                    description: error instanceof Error ? error.message : "请稍后重试。",
+                                  });
+                                } finally {
+                                  setActiveUserId(null);
+                                }
+                              }}
+                            >
+                              删除用户
+                            </Button>
                           </div>
                         </div>
                       ))}
@@ -520,7 +569,7 @@ export default function Admin() {
                   </CardHeader>
                   <CardContent className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
                     {templates.map((template) => {
-                      const isMine = Boolean(template.publisherId && template.publisherId === user?.id);
+                      const isMine = Boolean(template.publisherId && template.publisherId === currentUser?.id);
 
                       return (
                         <div key={template.id} className="rounded-xl border border-white/[0.05] bg-white/[0.02] p-4 flex items-center justify-between gap-4">
@@ -543,11 +592,14 @@ export default function Admin() {
                             </div>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
-                            <Button variant="outline" size="sm" disabled={!canManageTemplate(template)} title={!canManageTemplate(template) ? "仅模板发布者或超级管理员可更新该模板" : undefined} onClick={async () => { const confirmed = await confirm({ title: template.published ? "下架模板" : "发布模板", description: template.published ? `确认下架模板“${template.title}”吗？` : `确认发布模板“${template.title}”吗？`, confirmText: template.published ? "确认下架" : "确认发布", cancelText: "取消" }); if (!confirmed) { return; } try { await updateAdminTemplate(template.id, { published: !template.published }); await loadTemplateSection(); notify({ tone: "success", title: template.published ? "模板已下架" : "模板已发布", description: `“${template.title}”的发布状态已更新。` }); } catch (error) { notify({ tone: "error", title: "更新模板状态失败", description: error instanceof Error ? error.message : "请稍后重试。" }); } }}>
+                            <Button variant="outline" size="sm" disabled={!canManageTemplate(template) || activeTemplateId === template.id} title={!canManageTemplate(template) ? "仅模板发布者或超级管理员可更新该模板" : undefined} onClick={async () => { const confirmed = await confirm({ title: template.published ? "下架模板" : "发布模板", description: template.published ? `确认下架模板“${template.title}”吗？` : `确认发布模板“${template.title}”吗？`, confirmText: template.published ? "确认下架" : "确认发布", cancelText: "取消" }); if (!confirmed) { return; } try { setActiveTemplateId(template.id); await updateAdminTemplate(template.id, { published: !template.published }); await loadTemplateSection(); notify({ tone: "success", title: template.published ? "模板已下架" : "模板已发布", description: `“${template.title}”的发布状态已更新。` }); } catch (error) { notify({ tone: "error", title: "更新模板状态失败", description: error instanceof Error ? error.message : "请稍后重试。" }); } finally { setActiveTemplateId(null); } }}>
                               {template.published ? "下架" : "发布"}
                             </Button>
-                            <Button variant="outline" size="sm" disabled={!canManageTemplate(template)} title={!canManageTemplate(template) ? "仅模板发布者或超级管理员可更新该模板" : undefined} onClick={async () => { const confirmed = await confirm({ title: template.featured ? "取消推荐" : "设为推荐", description: template.featured ? `确认取消模板“${template.title}”的推荐位吗？` : `确认将模板“${template.title}”设为推荐吗？`, confirmText: template.featured ? "确认取消" : "确认推荐", cancelText: "取消" }); if (!confirmed) { return; } try { await updateAdminTemplate(template.id, { featured: !template.featured }); await loadTemplateSection(); notify({ tone: "success", title: template.featured ? "已取消推荐" : "已设为推荐", description: `“${template.title}”的推荐位已更新。` }); } catch (error) { notify({ tone: "error", title: "更新模板推荐状态失败", description: error instanceof Error ? error.message : "请稍后重试。" }); } }}>
+                            <Button variant="outline" size="sm" disabled={!canManageTemplate(template) || activeTemplateId === template.id} title={!canManageTemplate(template) ? "仅模板发布者或超级管理员可更新该模板" : undefined} onClick={async () => { const confirmed = await confirm({ title: template.featured ? "取消推荐" : "设为推荐", description: template.featured ? `确认取消模板“${template.title}”的推荐位吗？` : `确认将模板“${template.title}”设为推荐吗？`, confirmText: template.featured ? "确认取消" : "确认推荐", cancelText: "取消" }); if (!confirmed) { return; } try { setActiveTemplateId(template.id); await updateAdminTemplate(template.id, { featured: !template.featured }); await loadTemplateSection(); notify({ tone: "success", title: template.featured ? "已取消推荐" : "已设为推荐", description: `“${template.title}”的推荐位已更新。` }); } catch (error) { notify({ tone: "error", title: "更新模板推荐状态失败", description: error instanceof Error ? error.message : "请稍后重试。" }); } finally { setActiveTemplateId(null); } }}>
                               {template.featured ? "取消推荐" : "设为推荐"}
+                            </Button>
+                            <Button variant="outline" size="sm" disabled={!canManageTemplate(template) || activeTemplateId === template.id} title={!canManageTemplate(template) ? "仅模板发布者或超级管理员可删除该模板" : undefined} onClick={async () => { const confirmed = await confirm({ title: "删除模板", description: `确认删除模板“${template.title}”吗？删除后会从模板后台隐藏，已安装到工作流的副本不会受影响。`, confirmText: "确认删除", cancelText: "取消", tone: "danger" }); if (!confirmed) { return; } try { setActiveTemplateId(template.id); await deleteAdminTemplate(template.id); await loadTemplateSection(); notify({ tone: "success", title: "模板已删除", description: `“${template.title}”已从模板后台移除。` }); } catch (error) { notify({ tone: "error", title: "删除模板失败", description: error instanceof Error ? error.message : "请稍后重试。" }); } finally { setActiveTemplateId(null); } }}>
+                              删除模板
                             </Button>
                           </div>
                         </div>

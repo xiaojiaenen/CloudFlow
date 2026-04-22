@@ -379,9 +379,9 @@ function formatTimeLabel(value?: string | null) {
 
 function CompactMetric({ label, value, colorClass }: { label: string; value: number; colorClass?: string }) {
   return (
-    <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] px-4 py-3">
+    <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] px-4 py-2.5">
       <div className="text-[11px] text-zinc-500">{label}</div>
-      <div className={cn("mt-1 text-xl font-semibold text-zinc-100", colorClass)}>{value}</div>
+      <div className={cn("mt-1 text-lg font-semibold text-zinc-100", colorClass)}>{value}</div>
     </div>
   );
 }
@@ -393,6 +393,12 @@ export function MonitorCenter() {
   const { notify } = useNotice();
   const [activeView, setActiveView] = useState<"tasks" | "alerts">(() =>
     viewFromQuery === "alerts" ? "alerts" : "tasks",
+  );
+  const [isTaskOverviewCollapsed, setIsTaskOverviewCollapsed] = useState(
+    () => localStorage.getItem("monitorTaskOverviewCollapsed") === "true",
+  );
+  const [isTaskDensityCompact, setIsTaskDensityCompact] = useState(
+    () => localStorage.getItem("monitorTaskDensityCompact") === "true",
   );
 
   const [search, setSearch] = useState("");
@@ -585,6 +591,14 @@ export function MonitorCenter() {
   useEffect(() => {
     setAlertPage(1);
   }, [alertLevelFilter]);
+
+  useEffect(() => {
+    localStorage.setItem("monitorTaskOverviewCollapsed", String(isTaskOverviewCollapsed));
+  }, [isTaskOverviewCollapsed]);
+
+  useEffect(() => {
+    localStorage.setItem("monitorTaskDensityCompact", String(isTaskDensityCompact));
+  }, [isTaskDensityCompact]);
 
   useEffect(() => {
     const nextView = viewFromQuery === "alerts" ? "alerts" : "tasks";
@@ -1141,8 +1155,8 @@ export function MonitorCenter() {
           }
         />
 
-        <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-y-auto p-6 xl:overflow-hidden xl:p-8">
-          <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 xl:min-h-0 xl:flex-1">
+        <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-y-auto p-4 xl:overflow-hidden xl:p-6 2xl:px-8">
+          <div className="mx-auto flex w-full max-w-none flex-col gap-6 xl:min-h-0 xl:flex-1">
             <div className="flex items-center justify-between gap-4">
               <Tabs value={activeView} onValueChange={(value) => setActiveView(value as "tasks" | "alerts")}>
                 <TabsList className="h-auto bg-zinc-950/70">
@@ -1162,49 +1176,90 @@ export function MonitorCenter() {
             </div>
 
             {activeView === "tasks" ? (
-              <div className="contents">
-            <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.35fr_1fr_1fr]">
-              <div className="rounded-xl border border-white/[0.05] bg-zinc-950/50 p-4 backdrop-blur-md">
-                <div className="mb-3 flex items-center gap-2 text-sm font-medium text-zinc-100">
-                  <BarChart3 className="h-4 w-4 text-sky-400" />
-                  监控总览
+              <div className="flex min-h-0 flex-1 flex-col gap-4 xl:gap-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-zinc-100">概览与趋势</div>
+                    <div className="text-xs text-zinc-500">收起后可把更多高度让给任务列表和任务详情。</div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-2"
+                    onClick={() => setIsTaskOverviewCollapsed((value) => !value)}
+                  >
+                    <ChevronRight
+                      className={cn("h-4 w-4 transition-transform", !isTaskOverviewCollapsed && "rotate-90")}
+                    />
+                    {isTaskOverviewCollapsed ? "展开概览" : "收起概览"}
+                  </Button>
                 </div>
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-                  <CompactMetric label="任务总数" value={metrics.total} />
-                  <CompactMetric label="等待中" value={metrics.pending} />
-                  <CompactMetric label="运行中" value={metrics.running} colorClass="text-sky-400" />
-                  <CompactMetric label="成功" value={metrics.success} colorClass="text-emerald-400" />
-                  <CompactMetric label="失败" value={metrics.failed} colorClass="text-red-400" />
-                  <CompactMetric label="已取消" value={metrics.cancelled} colorClass="text-amber-400" />
-                </div>
-              </div>
-              <div className="rounded-xl border border-white/[0.05] bg-zinc-950/50 p-4 backdrop-blur-md">
-                <div className="mb-3 flex items-center gap-2 text-sm font-medium text-zinc-100">
-                  <BarChart3 className="h-4 w-4 text-sky-400" />
-                  状态分布图
-                </div>
-                <Chart option={statusChartOption} className="h-[168px]" notMerge lazyUpdate />
-              </div>
-              <div className="rounded-xl border border-white/[0.05] bg-zinc-950/50 p-4 backdrop-blur-md">
-                <div className="mb-3 flex items-center gap-2 text-sm font-medium text-zinc-100">
-                  <Activity className="h-4 w-4 text-violet-300" />
-                  触发来源分布
-                </div>
-                <Chart option={triggerChartOption} className="h-[168px]" notMerge lazyUpdate />
-              </div>
-            </div>
 
-            <div className="grid grid-cols-1 gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[1.05fr_0.95fr]">
-              <div className="bg-zinc-950/50 border border-white/[0.05] rounded-xl backdrop-blur-md overflow-hidden xl:flex xl:min-h-0 xl:flex-col">
+                {isTaskOverviewCollapsed ? (
+                  <div className="rounded-xl border border-white/[0.05] bg-zinc-950/45 px-4 py-3 backdrop-blur-md">
+                    <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3 xl:grid-cols-6">
+                      <CompactMetric label="任务总数" value={metrics.total} />
+                      <CompactMetric label="等待中" value={metrics.pending} />
+                      <CompactMetric label="运行中" value={metrics.running} colorClass="text-sky-400" />
+                      <CompactMetric label="成功" value={metrics.success} colorClass="text-emerald-400" />
+                      <CompactMetric label="失败" value={metrics.failed} colorClass="text-red-400" />
+                      <CompactMetric label="已取消" value={metrics.cancelled} colorClass="text-amber-400" />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.35fr_1fr_1fr]">
+                    <div className="rounded-xl border border-white/[0.05] bg-zinc-950/50 p-3.5 backdrop-blur-md">
+                      <div className="mb-2.5 flex items-center gap-2 text-sm font-medium text-zinc-100">
+                        <BarChart3 className="h-4 w-4 text-sky-400" />
+                        监控总览
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+                        <CompactMetric label="任务总数" value={metrics.total} />
+                        <CompactMetric label="等待中" value={metrics.pending} />
+                        <CompactMetric label="运行中" value={metrics.running} colorClass="text-sky-400" />
+                        <CompactMetric label="成功" value={metrics.success} colorClass="text-emerald-400" />
+                        <CompactMetric label="失败" value={metrics.failed} colorClass="text-red-400" />
+                        <CompactMetric label="已取消" value={metrics.cancelled} colorClass="text-amber-400" />
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-white/[0.05] bg-zinc-950/50 p-3.5 backdrop-blur-md">
+                      <div className="mb-2.5 flex items-center gap-2 text-sm font-medium text-zinc-100">
+                        <BarChart3 className="h-4 w-4 text-sky-400" />
+                        状态分布图
+                      </div>
+                      <Chart option={statusChartOption} className="h-[136px] xl:h-[128px]" notMerge lazyUpdate />
+                    </div>
+                    <div className="rounded-xl border border-white/[0.05] bg-zinc-950/50 p-3.5 backdrop-blur-md">
+                      <div className="mb-2.5 flex items-center gap-2 text-sm font-medium text-zinc-100">
+                        <Activity className="h-4 w-4 text-violet-300" />
+                        触发来源分布
+                      </div>
+                      <Chart option={triggerChartOption} className="h-[136px] xl:h-[128px]" notMerge lazyUpdate />
+                    </div>
+                  </div>
+                )}
+
+            <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 xl:grid-cols-[minmax(620px,1.02fr)_minmax(760px,1.28fr)] 2xl:grid-cols-[minmax(700px,1fr)_minmax(920px,1.34fr)]">
+              <div className="min-w-0 bg-zinc-950/50 border border-white/[0.05] rounded-xl backdrop-blur-md overflow-hidden xl:flex xl:min-h-0 xl:flex-col">
                 <div className="px-5 py-4 border-b border-white/[0.05] flex items-center justify-between">
                 <div className="text-sm font-medium text-zinc-100">任务列表</div>
-                <div className="text-xs text-zinc-500">
-                  {isLoadingTasks ? "正在同步..." : `第 ${taskPage} / ${taskTotalPages} 页 · 共 ${taskTotal} 条`}
+                <div className="flex items-center gap-3">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8"
+                    onClick={() => setIsTaskDensityCompact((value) => !value)}
+                  >
+                    {isTaskDensityCompact ? "标准模式" : "紧凑模式"}
+                  </Button>
+                  <div className="text-xs text-zinc-500">
+                    {isLoadingTasks ? "正在同步..." : `第 ${taskPage} / ${taskTotalPages} 页 · 共 ${taskTotal} 条`}
+                  </div>
                 </div>
               </div>
 
                 <div className="px-5 py-4 border-b border-white/[0.05] space-y-3">
-                <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_160px_160px] gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1.25fr)_180px_180px] gap-3">
                   <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索任务 ID 或工作流名称" />
                   <Select
                     value={statusFilter}
@@ -1229,7 +1284,11 @@ export function MonitorCenter() {
                   />
                 </div>
                 <div className="text-xs text-zinc-500">
-                  {search !== debouncedSearch ? "正在应用搜索条件..." : "点击任务卡片即可查看详情，支持分页与筛选。"}
+                  {search !== debouncedSearch
+                    ? "正在应用搜索条件..."
+                    : isTaskDensityCompact
+                      ? "紧凑模式已开启，同屏显示更多任务。"
+                      : "点击任务卡片即可查看详情，支持分页与筛选。"}
                 </div>
               </div>
 
@@ -1259,14 +1318,22 @@ export function MonitorCenter() {
                         }
                       }}
                       className={cn(
-                        "group relative overflow-hidden border-l-2 border-transparent px-5 py-4 cursor-pointer transition-all duration-200 hover:bg-white/[0.04]",
+                        "group relative overflow-hidden border-l-2 border-transparent cursor-pointer transition-all duration-200 hover:bg-white/[0.04]",
+                        isTaskDensityCompact ? "px-4 py-3" : "px-5 py-4",
                         selectedTaskId === task.id
                           ? "bg-sky-500/[0.08] border-l-sky-400 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
                           : "hover:border-l-white/15",
                       )}
                     >
-                      <div className={cn("absolute left-0 top-3 bottom-3 w-1 rounded-r-full opacity-45 transition-opacity duration-200 group-hover:opacity-80", getStatusStripeClass(task.status), selectedTaskId === task.id && "opacity-100")} />
-                      <div className="flex items-start justify-between gap-4">
+                      <div
+                        className={cn(
+                          "absolute left-0 w-1 rounded-r-full opacity-45 transition-opacity duration-200 group-hover:opacity-80",
+                          isTaskDensityCompact ? "top-2.5 bottom-2.5" : "top-3 bottom-3",
+                          getStatusStripeClass(task.status),
+                          selectedTaskId === task.id && "opacity-100",
+                        )}
+                      />
+                      <div className={cn("flex items-start justify-between", isTaskDensityCompact ? "gap-3" : "gap-4")}>
                         <div className="min-w-0 text-left">
                           <div className="text-sm font-medium text-zinc-100 truncate">{task.workflow?.name || "未命名工作流"}</div>
                           <div className="mt-1 flex items-center gap-2 flex-wrap">
@@ -1347,24 +1414,45 @@ export function MonitorCenter() {
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4 text-xs">
-                        <div>
-                          <div className="text-zinc-500">创建时间</div>
-                          <div className="text-zinc-300 mt-1">{formatDateTime(task.createdAt)}</div>
+                      {isTaskDensityCompact ? (
+                        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
+                          <div className="text-zinc-500">
+                            创建：
+                            <span className="ml-1 text-zinc-300">{formatDateTime(task.createdAt)}</span>
+                          </div>
+                          <div className="text-zinc-500">
+                            开始：
+                            <span className="ml-1 text-zinc-300">{formatDateTime(task.startedAt)}</span>
+                          </div>
+                          <div className="text-zinc-500">
+                            结束：
+                            <span className="ml-1 text-zinc-300">{formatDateTime(task.completedAt)}</span>
+                          </div>
+                          <div className="text-zinc-500">
+                            耗时：
+                            <span className="ml-1 font-mono text-zinc-300">{formatDuration(task.startedAt, task.completedAt)}</span>
+                          </div>
                         </div>
-                        <div>
-                          <div className="text-zinc-500">开始时间</div>
-                          <div className="text-zinc-300 mt-1">{formatDateTime(task.startedAt)}</div>
+                      ) : (
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4 text-xs">
+                          <div>
+                            <div className="text-zinc-500">创建时间</div>
+                            <div className="text-zinc-300 mt-1">{formatDateTime(task.createdAt)}</div>
+                          </div>
+                          <div>
+                            <div className="text-zinc-500">开始时间</div>
+                            <div className="text-zinc-300 mt-1">{formatDateTime(task.startedAt)}</div>
+                          </div>
+                          <div>
+                            <div className="text-zinc-500">结束时间</div>
+                            <div className="text-zinc-300 mt-1">{formatDateTime(task.completedAt)}</div>
+                          </div>
+                          <div>
+                            <div className="text-zinc-500">耗时</div>
+                            <div className="text-zinc-300 mt-1 font-mono">{formatDuration(task.startedAt, task.completedAt)}</div>
+                          </div>
                         </div>
-                        <div>
-                          <div className="text-zinc-500">结束时间</div>
-                          <div className="text-zinc-300 mt-1">{formatDateTime(task.completedAt)}</div>
-                        </div>
-                        <div>
-                          <div className="text-zinc-500">耗时</div>
-                          <div className="text-zinc-300 mt-1 font-mono">{formatDuration(task.startedAt, task.completedAt)}</div>
-                        </div>
-                      </div>
+                      )}
                     </div>
                   );
                 })}
@@ -1383,7 +1471,7 @@ export function MonitorCenter() {
               </div>
             </div>
 
-              <div className="bg-zinc-950/50 border border-white/[0.05] rounded-xl backdrop-blur-md overflow-hidden xl:flex xl:min-h-0 xl:flex-col">
+              <div className="min-w-0 bg-zinc-950/50 border border-white/[0.05] rounded-xl backdrop-blur-md overflow-hidden xl:flex xl:min-h-0 xl:flex-col">
               <div className="px-5 py-4 border-b border-white/[0.05] flex items-center justify-between">
                 <div className="text-sm font-medium text-zinc-100">任务详情</div>
                 {isLoadingDetail && <div className="text-xs text-zinc-500">正在加载...</div>}
@@ -1396,7 +1484,7 @@ export function MonitorCenter() {
               {!selectedTask && !isLoadingDetail && !detailError ? (
                 <div className="px-5 py-12 text-center text-sm text-zinc-500">请选择左侧任务查看详细信息。</div>
               ) : (
-                  <div className="p-5 space-y-6 xl:min-h-0 xl:flex-1 xl:overflow-y-auto">
+                  <div className="p-6 space-y-6 xl:min-h-0 xl:flex-1 xl:overflow-y-auto">
                   <div className="space-y-3">
                     <div className="flex items-center justify-between gap-4">
                       <div className="flex items-center gap-2 text-zinc-400 min-w-0">
@@ -1418,21 +1506,21 @@ export function MonitorCenter() {
 
                   {selectedTask && (
                     <>
-                      <div className="grid grid-cols-2 gap-4 text-sm">
-                        <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4">
-                          <div className="text-zinc-500 mb-2">节点数量</div>
+                      <div className={cn("grid text-sm", isTaskDensityCompact ? "grid-cols-2 gap-3 xl:grid-cols-4" : "grid-cols-2 gap-4")}>
+                        <div className={cn("rounded-lg border border-white/[0.05] bg-white/[0.02]", isTaskDensityCompact ? "p-3" : "p-4")}>
+                          <div className={cn("text-zinc-500", isTaskDensityCompact ? "mb-1 text-xs" : "mb-2")}>节点数量</div>
                           <div className="text-zinc-100">{selectedTask.workflowSnapshot?.nodes?.length ?? selectedTask.workflow?.definition?.nodes?.length ?? 0}</div>
                         </div>
-                        <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4">
-                          <div className="text-zinc-500 mb-2">执行事件数</div>
+                        <div className={cn("rounded-lg border border-white/[0.05] bg-white/[0.02]", isTaskDensityCompact ? "p-3" : "p-4")}>
+                          <div className={cn("text-zinc-500", isTaskDensityCompact ? "mb-1 text-xs" : "mb-2")}>执行事件数</div>
                           <div className="text-zinc-100">{executionEvents.length}</div>
                         </div>
-                        <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4">
-                          <div className="text-zinc-500 mb-2">运行耗时</div>
+                        <div className={cn("rounded-lg border border-white/[0.05] bg-white/[0.02]", isTaskDensityCompact ? "p-3" : "p-4")}>
+                          <div className={cn("text-zinc-500", isTaskDensityCompact ? "mb-1 text-xs" : "mb-2")}>运行耗时</div>
                           <div className="text-zinc-100 font-mono">{formatDuration(selectedTask.startedAt, selectedTask.completedAt)}</div>
                         </div>
-                        <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] p-4">
-                          <div className="text-zinc-500 mb-2">持久化截图</div>
+                        <div className={cn("rounded-lg border border-white/[0.05] bg-white/[0.02]", isTaskDensityCompact ? "p-3" : "p-4")}>
+                          <div className={cn("text-zinc-500", isTaskDensityCompact ? "mb-1 text-xs" : "mb-2")}>持久化截图</div>
                           <div className="text-zinc-100">{screenshotEvents.length}</div>
                         </div>
                       </div>
@@ -1526,15 +1614,15 @@ export function MonitorCenter() {
                                     className="w-full h-[420px] object-contain bg-black transition-transform duration-200 group-hover:scale-[1.01]"
                                   />
                                 </button>
-                              <div className="flex items-center justify-between gap-3 text-xs text-zinc-500">
-                                <span>截图时间：{formatDateTime(activeScreenshot.createdAt)}</span>
-                                <div className="flex items-center gap-3">
-                                  <span className="hidden md:inline text-zinc-500">支持左右方向键切换上一张 / 下一张</span>
-                                  <button type="button" onClick={() => setIsScreenshotDialogOpen(true)} className="text-sky-300 transition-colors hover:text-sky-200">
-                                    点击放大查看
-                                  </button>
+                                <div className="flex items-center justify-between gap-3 text-xs text-zinc-500">
+                                  <span>截图时间：{formatDateTime(activeScreenshot.createdAt)}</span>
+                                  <div className="flex items-center gap-3">
+                                    <span className="hidden md:inline text-zinc-500">支持左右方向键切换上一张 / 下一张</span>
+                                    <button type="button" onClick={() => setIsScreenshotDialogOpen(true)} className="text-sky-300 transition-colors hover:text-sky-200">
+                                      点击放大查看
+                                    </button>
+                                  </div>
                                 </div>
-                              </div>
                                 <div className="grid grid-cols-3 gap-3 max-h-[260px] overflow-auto pr-1">
                                   {screenshotEvents.map((event) => (
                                     <button

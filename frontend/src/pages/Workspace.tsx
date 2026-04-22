@@ -1,14 +1,11 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Edge, Node } from "@xyflow/react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { io, Socket } from "socket.io-client";
 import { ArrowRight, Save, Settings, UploadCloud, Video } from "lucide-react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useBeforeUnload, useBlocker, useNavigate, useSearchParams } from "react-router-dom";
 import { Sidebar } from "@/src/components/Sidebar";
 import { Header } from "@/src/components/Header";
 import { WorkflowCanvas } from "@/src/components/WorkflowCanvas";
 import { ExecutionPanel } from "@/src/components/ExecutionPanel";
-import { LogEntry } from "@/src/components/LogPanel";
 import { NodeConfigPanel } from "@/src/components/NodeConfigPanel";
 import { NodePalette } from "@/src/components/NodePalette";
 import { RecorderDialog } from "@/src/components/RecorderDialog";
@@ -21,21 +18,17 @@ import { Button } from "@/src/components/ui/Button";
 import { Input } from "@/src/components/ui/Input";
 import { Select } from "@/src/components/ui/Select";
 import { useAuth } from "@/src/context/AuthContext";
+import { useOverlayDialog } from "@/src/context/OverlayDialogContext";
 import { cn } from "@/src/lib/utils";
 import {
   buildWorkflowDefinition,
   cancelTask,
-  CanvasNodeData,
   formatWorkflowBuildErrorMessage,
-  getTaskExecutionScreenshotSrc,
   createEmptyCanvasGraph,
   createWorkflow,
   CredentialRecord,
-  ExecutionNodeStatus,
-  getAuthToken,
   getTask,
   getWorkflow,
-  getWsBaseUrl,
   hydrateCanvasFromWorkflow,
   listCredentials,
   listTasks,
@@ -45,8 +38,6 @@ import {
   sanitizeCanvasNodes,
   SanitizedCanvasEdge,
   SanitizedCanvasNode,
-  TaskEvent,
-  TaskExecutionRecord,
   updateWorkflow,
   validateWorkflowSchema,
   WorkflowCredentialRequirement,
@@ -59,65 +50,15 @@ import {
   WORKFLOW_OPEN_BLANK_EVENT,
   WORKFLOW_SAVED_EVENT,
 } from "@/src/lib/cloudflow";
+import {
+  buildIdleNodeStatuses,
+  buildRestoredLogs,
+  getLatestPersistedScreenshot,
+  getPrimaryPageUrl,
+} from "@/src/pages/workspace/utils";
+import { useTaskExecutionStream } from "@/src/pages/workspace/useTaskExecutionStream";
 
-type ScreenshotBinaryPayload =
-  | ArrayBuffer
-  | Uint8Array
-  | Blob
-  | {
-      type: "Buffer";
-      data: number[];
-    };
-
-type ScreenshotTaskEventPayload = Extract<TaskEvent["data"], { mimeType: string; timestamp: string }>;
-
-function toLogTimestamp(timestamp?: string) {
-  if (!timestamp) {
-    return new Date().toLocaleTimeString([], {
-      hour12: false,
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-  }
-
-  return new Date(timestamp).toLocaleTimeString([], {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
-
-function buildIdleNodeStatuses(nodes: Array<Node<CanvasNodeData> | SanitizedCanvasNode>) {
-  return nodes.reduce<Record<string, ExecutionNodeStatus>>((acc, node) => {
-    acc[node.id] = "idle";
-    return acc;
-  }, {});
-}
-
-function getPrimaryPageUrl(nodes: Array<Node<CanvasNodeData> | SanitizedCanvasNode>) {
-  const pageNode = nodes.find((node) => node.data.type === "open_page");
-  return typeof pageNode?.data.url === "string" ? pageNode.data.url : "";
-}
-
-function buildRestoredLogs(events: TaskExecutionRecord[]): LogEntry[] {
-  return events
-    .filter((event) => event.type === "log" && event.message)
-    .map((event) => ({
-      id: event.id,
-      timestamp: toLogTimestamp(event.createdAt),
-      level: (event.level ?? "info") as LogEntry["level"],
-      message: event.message ?? "",
-    }));
-}
-
-function getLatestPersistedScreenshot(taskId: string, events: TaskExecutionRecord[]) {
-  const screenshots = events.filter((event) => event.type === "screenshot");
-  return screenshots.length > 0
-    ? getTaskExecutionScreenshotSrc(taskId, screenshots[screenshots.length - 1])
-    : null;
-}
+const AUTO_SAVE_DELAY_MS = 60_000;
 
 function normalizeSelectInputValue(field: WorkflowInputField, value?: string) {
   if (field.type !== "select") {
@@ -248,6 +189,26 @@ function buildWorkflowDraftSnapshot(params: {
   });
 }
 
+function buildWorkflowDraftSnapshotFromRecord(workflow?: WorkflowRecord | null) {
+  const graph = workflow ? hydrateCanvasFromWorkflow(workflow.definition) : createEmptyCanvasGraph();
+
+  return buildWorkflowDraftSnapshot({
+    name: workflow?.name ?? "未命名工作流",
+    description: workflow?.description ?? "由前端画布编辑的工作流",
+    status: workflow?.status ?? "draft",
+    scheduleEnabled: workflow?.scheduleEnabled ?? false,
+    scheduleCron: workflow?.scheduleCron ?? "0 0 * * *",
+    scheduleTimezone: workflow?.scheduleTimezone ?? "Asia/Shanghai",
+    alertEmail: workflow?.alertEmail ?? "",
+    alertOnFailure: workflow?.alertOnFailure ?? false,
+    alertOnSuccess: workflow?.alertOnSuccess ?? false,
+    inputSchema: workflow?.definition.inputSchema ?? [],
+    credentialRequirements: workflow?.definition.credentialRequirements ?? [],
+    flowNodes: graph.nodes,
+    flowEdges: graph.edges,
+  });
+}
+
 function formatWorkflowOwner(owner?: WorkflowOwnerSummary | null) {
   if (!owner) {
     return "";
@@ -264,53 +225,22 @@ function isWorkflowOwnedByCurrentUser(owner?: WorkflowOwnerSummary | null, userI
   return Boolean(userId && owner?.id && owner.id === userId);
 }
 
-function normalizeScreenshotBinaryPayload(payload?: ScreenshotBinaryPayload | null) {
-  if (!payload) {
-    return null;
-  }
-
-  if (payload instanceof Blob) {
-    return payload;
-  }
-
-  if (payload instanceof Uint8Array) {
-    return payload;
-  }
-
-  if (payload instanceof ArrayBuffer) {
-    return new Uint8Array(payload);
-  }
-
-  if (
-    typeof payload === "object" &&
-    payload.type === "Buffer" &&
-    Array.isArray(payload.data)
-  ) {
-    return new Uint8Array(payload.data);
-  }
-
-  return null;
-}
-
 export default function Workspace() {
   const { user } = useAuth();
+  const { confirm } = useOverlayDialog();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const workflowId = searchParams.get("workflowId");
 
-  const [isRunning, setIsRunning] = useState(false);
-  const [isCancelling, setIsCancelling] = useState(false);
   const [isSavingWorkflow, setIsSavingWorkflow] = useState(false);
-  const [isLoadingWorkflow, setIsLoadingWorkflow] = useState(false);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [isLoadingWorkflow, setIsLoadingWorkflow] = useState(() => Boolean(workflowId));
+  const [isWorkflowHydrated, setIsWorkflowHydrated] = useState(() => !workflowId);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [taskId, setTaskId] = useState<string | null>(null);
-  const [screenshot, setScreenshot] = useState<string | null>(null);
   const [taskRuntimeContext, setTaskRuntimeContext] = useState<WorkflowRuntimeContext | null>(null);
   const [flowNodes, setFlowNodes] = useState<SanitizedCanvasNode[]>([]);
   const [flowEdges, setFlowEdges] = useState<SanitizedCanvasEdge[]>([]);
-  const [nodeStatuses, setNodeStatuses] = useState<Record<string, ExecutionNodeStatus>>({});
   const [workflowName, setWorkflowName] = useState("未命名工作流");
   const [workflowDescription, setWorkflowDescription] = useState("由前端画布编辑的工作流");
   const [workflowStatus, setWorkflowStatus] = useState<WorkflowStatus>("draft");
@@ -343,61 +273,33 @@ export default function Workspace() {
     tags: "",
   });
 
-  const socketRef = useRef<Socket | null>(null);
-  const activeNodeIdRef = useRef<string | null>(null);
+  const {
+    addLog,
+    isRunning,
+    isCancelling,
+    logs,
+    screenshot,
+    nodeStatuses,
+    setIsRunning,
+    setIsCancelling,
+    setLogs,
+    setNodeStatuses,
+    replaceScreenshot,
+    resetTaskStreamState,
+  } = useTaskExecutionStream(taskId);
   const lastFlowSnapshotRef = useRef<string>("");
   const persistedWorkflowSnapshotRef = useRef<string>("");
   const autoSaveTimerRef = useRef<number | null>(null);
   const autoSaveSnapshotRef = useRef<string | null>(null);
-  const liveScreenshotUrlRef = useRef<string | null>(null);
-
-  const revokeLiveScreenshotUrl = useCallback(() => {
-    if (liveScreenshotUrlRef.current) {
-      URL.revokeObjectURL(liveScreenshotUrlRef.current);
-      liveScreenshotUrlRef.current = null;
-    }
-  }, []);
-
-  const replaceScreenshot = useCallback(
-    (nextScreenshot: string | null) => {
-      revokeLiveScreenshotUrl();
-      setScreenshot(nextScreenshot);
-    },
-    [revokeLiveScreenshotUrl],
-  );
-
-  const updateScreenshotFromTaskEvent = useCallback(
-    (payload: ScreenshotTaskEventPayload) => {
-      const binaryPayload = normalizeScreenshotBinaryPayload(
-        "imageBuffer" in payload ? payload.imageBuffer : undefined,
-      );
-
-      if (binaryPayload instanceof Blob) {
-        const blobUrl = URL.createObjectURL(binaryPayload);
-        revokeLiveScreenshotUrl();
-        liveScreenshotUrlRef.current = blobUrl;
-        setScreenshot(blobUrl);
-        return;
-      }
-
-      if (binaryPayload instanceof Uint8Array) {
-        const blobUrl = URL.createObjectURL(
-          new Blob([binaryPayload], {
-            type: payload.mimeType || "image/jpeg",
-          }),
-        );
-        revokeLiveScreenshotUrl();
-        liveScreenshotUrlRef.current = blobUrl;
-        setScreenshot(blobUrl);
-        return;
-      }
-
-      if ("imageBase64" in payload && payload.imageBase64) {
-        replaceScreenshot(`data:${payload.mimeType || "image/jpeg"};base64,${payload.imageBase64}`);
-      }
-    },
-    [replaceScreenshot, revokeLiveScreenshotUrl],
-  );
+  const skipNavigationBlockRef = useRef(false);
+  const navigationConfirmOpenRef = useRef(false);
+  const latestCanvasGraphRef = useRef<{
+    nodes: SanitizedCanvasNode[];
+    edges: SanitizedCanvasEdge[];
+  }>({
+    nodes: [],
+    edges: [],
+  });
 
   const pageUrl = useMemo(() => getPrimaryPageUrl(flowNodes), [flowNodes]);
   const scheduleSummary = useMemo(() => {
@@ -488,6 +390,50 @@ export default function Workspace() {
     ],
   );
   const hasUnsavedWorkflowChanges = workflowDraftSnapshot !== persistedWorkflowSnapshotRef.current;
+  const hasMeaningfulWorkflowChanges = useMemo(
+    () =>
+      Boolean(workflowId) ||
+      flowNodes.length > 0 ||
+      flowEdges.length > 0 ||
+      inputSchema.length > 0 ||
+      credentialRequirements.length > 0 ||
+      workflowName.trim() !== "未命名工作流" ||
+      workflowDescription.trim() !== "由前端画布编辑的工作流" ||
+      workflowStatus !== "draft" ||
+      scheduleEnabled ||
+      Boolean(alertEmail.trim()) ||
+      alertOnFailure ||
+      alertOnSuccess,
+    [
+      alertEmail,
+      alertOnFailure,
+      alertOnSuccess,
+      credentialRequirements.length,
+      flowEdges.length,
+      flowNodes.length,
+      inputSchema.length,
+      scheduleEnabled,
+      workflowDescription,
+      workflowId,
+      workflowName,
+      workflowStatus,
+    ],
+  );
+  const hasPendingSaveReminder =
+    isWorkflowHydrated &&
+    hasMeaningfulWorkflowChanges &&
+    hasUnsavedWorkflowChanges &&
+    !isSavingWorkflow;
+  const saveButtonDisabledReason = !isWorkflowHydrated
+    ? "工作流正在加载，加载完成前暂不可保存，避免覆盖原始内容。"
+    : isLoadingWorkflow
+      ? "工作流正在加载，请稍候再保存。"
+      : isSavingWorkflow
+        ? "当前正在保存工作流，请稍候。"
+        : undefined;
+  const navigationBlocker = useBlocker(
+    useCallback(() => hasPendingSaveReminder && !skipNavigationBlockRef.current, [hasPendingSaveReminder]),
+  );
   const resetCanvasWithWorkflow = useCallback((workflow?: WorkflowRecord | null) => {
     const graph = workflow ? hydrateCanvasFromWorkflow(workflow.definition) : createEmptyCanvasGraph();
     const snapshot = JSON.stringify({
@@ -513,32 +459,71 @@ export default function Workspace() {
     setTaskRuntimeContext(workflow?.definition.runtime ?? null);
     setFlowNodes(graph.nodes);
     setFlowEdges(graph.edges);
+    latestCanvasGraphRef.current = {
+      nodes: graph.nodes,
+      edges: graph.edges,
+    };
     setNodeStatuses(buildIdleNodeStatuses(graph.nodes));
     setSelectedNodeId(null);
-    activeNodeIdRef.current = null;
     lastFlowSnapshotRef.current = snapshot;
     autoSaveSnapshotRef.current = null;
     if (autoSaveTimerRef.current !== null) {
       window.clearTimeout(autoSaveTimerRef.current);
       autoSaveTimerRef.current = null;
     }
-    persistedWorkflowSnapshotRef.current = buildWorkflowDraftSnapshot({
-      name: workflow?.name ?? "未命名工作流",
-      description: workflow?.description ?? "由前端画布编辑的工作流",
-      status: workflow?.status ?? "draft",
-      scheduleEnabled: workflow?.scheduleEnabled ?? false,
-      scheduleCron: workflow?.scheduleCron ?? "0 0 * * *",
-      scheduleTimezone: workflow?.scheduleTimezone ?? "Asia/Shanghai",
-      alertEmail: workflow?.alertEmail ?? "",
-      alertOnFailure: workflow?.alertOnFailure ?? false,
-      alertOnSuccess: workflow?.alertOnSuccess ?? false,
-      inputSchema: workflow?.definition.inputSchema ?? [],
-      credentialRequirements: workflow?.definition.credentialRequirements ?? [],
-      flowNodes: graph.nodes,
-      flowEdges: graph.edges,
-    });
+    persistedWorkflowSnapshotRef.current = buildWorkflowDraftSnapshotFromRecord(workflow);
+    setIsWorkflowHydrated(true);
     setCanvasVersion((value) => value + 1);
-  }, []);
+  }, [setNodeStatuses]);
+
+  useBeforeUnload(
+    useCallback(
+      (event) => {
+        if (!hasPendingSaveReminder) {
+          return;
+        }
+
+        event.preventDefault();
+        event.returnValue = "";
+      },
+      [hasPendingSaveReminder],
+    ),
+  );
+
+  useEffect(() => {
+    if (navigationBlocker.state !== "blocked" || navigationConfirmOpenRef.current) {
+      return;
+    }
+
+    navigationConfirmOpenRef.current = true;
+    let cancelled = false;
+
+    void confirm({
+      title: "当前工作流还没有保存",
+      description: "你有未保存的工作流变更。建议先保存后再离开，确认仍要离开当前页面吗？",
+      confirmText: "仍要离开",
+      cancelText: "继续编辑",
+      tone: "danger",
+    }).then((shouldLeave) => {
+      if (cancelled) {
+        return;
+      }
+
+      navigationConfirmOpenRef.current = false;
+
+      if (shouldLeave) {
+        navigationBlocker.proceed?.();
+        return;
+      }
+
+      navigationBlocker.reset?.();
+    });
+
+    return () => {
+      cancelled = true;
+      navigationConfirmOpenRef.current = false;
+    };
+  }, [confirm, navigationBlocker]);
 
   const loadCredentials = useCallback(async () => {
     try {
@@ -554,43 +539,6 @@ export default function Workspace() {
       console.error(error);
     });
   }, [loadCredentials]);
-
-  const addLog = useCallback(
-    (
-      level: LogEntry["level"],
-      message: string,
-      options?: {
-        timestamp?: string;
-        nodeId?: string;
-      },
-    ) => {
-      setLogs((prev) => [
-        ...prev,
-        {
-          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          timestamp: toLogTimestamp(options?.timestamp),
-          level,
-          message,
-        },
-      ]);
-
-      if (options?.nodeId) {
-        setNodeStatuses((prev) => {
-          const next = { ...prev };
-          const previousNodeId = activeNodeIdRef.current;
-
-          if (previousNodeId && previousNodeId !== options.nodeId && next[previousNodeId] === "running") {
-            next[previousNodeId] = "success";
-          }
-
-          next[options.nodeId] = "running";
-          activeNodeIdRef.current = options.nodeId;
-          return next;
-        });
-      }
-    },
-    [],
-  );
 
   const ensureWorkflowSchemaReady = useCallback(
     (purpose: "run" | "publish") => {
@@ -611,8 +559,15 @@ export default function Workspace() {
   );
 
   const persistWorkflow = useCallback(
-    async (options?: { silent?: boolean; snapshot?: string }) => {
-      const definition = buildWorkflowDefinition(flowNodes, flowEdges, {
+    async (options?: {
+      silent?: boolean;
+      snapshot?: string;
+      flowNodes?: SanitizedCanvasNode[];
+      flowEdges?: SanitizedCanvasEdge[];
+    }) => {
+      const nodesToPersist = options?.flowNodes ?? latestCanvasGraphRef.current.nodes;
+      const edgesToPersist = options?.flowEdges ?? latestCanvasGraphRef.current.edges;
+      const definition = buildWorkflowDefinition(nodesToPersist, edgesToPersist, {
         inputSchema,
         credentialRequirements,
       });
@@ -633,7 +588,23 @@ export default function Workspace() {
         },
       };
 
-      const snapshotToPersist = options?.snapshot ?? workflowDraftSnapshot;
+      const snapshotToPersist =
+        options?.snapshot ??
+        buildWorkflowDraftSnapshot({
+          name: workflowName,
+          description: workflowDescription,
+          status: workflowStatus,
+          scheduleEnabled,
+          scheduleCron,
+          scheduleTimezone,
+          alertEmail,
+          alertOnFailure,
+          alertOnSuccess,
+          inputSchema,
+          credentialRequirements,
+          flowNodes: nodesToPersist,
+          flowEdges: edgesToPersist,
+        });
 
       setIsSavingWorkflow(true);
 
@@ -641,20 +612,26 @@ export default function Workspace() {
         const workflow = workflowId
           ? await updateWorkflow(workflowId, payload)
           : await createWorkflow(payload);
+        persistedWorkflowSnapshotRef.current = snapshotToPersist;
+        if (autoSaveSnapshotRef.current === snapshotToPersist) {
+          autoSaveSnapshotRef.current = null;
+        }
+
+        setWorkflowOwner(workflow.owner ?? null);
+        setPublishedTemplate(workflow.publishedTemplate ?? null);
 
         if (!workflowId) {
+          skipNavigationBlockRef.current = true;
           navigate(`/?workflowId=${workflow.id}`, { replace: true });
+          window.setTimeout(() => {
+            skipNavigationBlockRef.current = false;
+          }, 0);
         }
 
         window.dispatchEvent(new CustomEvent(WORKFLOW_SAVED_EVENT, { detail: workflow }));
 
         if (!options?.silent) {
           addLog("success", `工作流“${workflow.name}”已保存。`);
-        }
-
-        persistedWorkflowSnapshotRef.current = snapshotToPersist;
-        if (autoSaveSnapshotRef.current === snapshotToPersist) {
-          autoSaveSnapshotRef.current = null;
         }
 
         return workflow;
@@ -670,8 +647,6 @@ export default function Workspace() {
     },
     [
       addLog,
-      flowEdges,
-      flowNodes,
       navigate,
       alertEmail,
       alertOnFailure,
@@ -685,131 +660,17 @@ export default function Workspace() {
       workflowName,
       inputSchema,
       credentialRequirements,
-      workflowDraftSnapshot,
     ],
   );
 
   useEffect(() => {
-    if (!socketRef.current) {
-      socketRef.current = io(`${getWsBaseUrl()}/tasks`, {
-        transports: ["websocket"],
-        auth: {
-          token: getAuthToken(),
-        },
-      });
-    }
-
-    const socket = socketRef.current;
-
-    socket.on("task:event", (event: TaskEvent) => {
-      if (event.type === "log") {
-        const payload = event.data as Extract<TaskEvent["data"], { message: string }>;
-        addLog(payload.level, payload.message, {
-          timestamp: payload.timestamp,
-          nodeId: payload.nodeId,
-        });
-        return;
-      }
-
-      if (event.type === "screenshot") {
-        const payload = event.data as ScreenshotTaskEventPayload;
-        updateScreenshotFromTaskEvent(payload);
-        return;
-      }
-
-      if (event.type === "status") {
-        const payload = event.data as Extract<
-          TaskEvent["data"],
-          { status: "pending" | "running" | "success" | "failed" | "cancelled" }
-        >;
-
-        if (payload.status === "running") {
-          setIsRunning(true);
-          setIsCancelling(false);
-          return;
-        }
-
-        if (payload.status === "success") {
-          const activeNodeId = activeNodeIdRef.current;
-          if (activeNodeId) {
-            setNodeStatuses((prev) => ({
-              ...prev,
-              [activeNodeId]: "success",
-            }));
-          }
-          setIsRunning(false);
-          setIsCancelling(false);
-          activeNodeIdRef.current = null;
-          return;
-        }
-
-        if (payload.status === "failed") {
-          const activeNodeId = activeNodeIdRef.current;
-          if (activeNodeId) {
-            setNodeStatuses((prev) => ({
-              ...prev,
-              [activeNodeId]: "error",
-            }));
-          }
-          setIsRunning(false);
-          setIsCancelling(false);
-          activeNodeIdRef.current = null;
-
-          if (payload.errorMessage) {
-            addLog("error", payload.errorMessage, {
-              timestamp: payload.timestamp,
-            });
-          }
-          return;
-        }
-
-        if (payload.status === "cancelled") {
-          const activeNodeId = activeNodeIdRef.current;
-          if (activeNodeId) {
-            setNodeStatuses((prev) => ({
-              ...prev,
-              [activeNodeId]: "cancelled",
-            }));
-          }
-          setIsRunning(false);
-          setIsCancelling(false);
-          activeNodeIdRef.current = null;
-        }
-      }
-    });
-
-    socket.on("connect_error", () => {
-      addLog("error", "WebSocket 连接失败，请确认后端服务已经启动。");
-    });
-
-    return () => {
-      socket.off("task:event");
-      socket.off("connect_error");
-    };
-  }, [addLog, updateScreenshotFromTaskEvent]);
-
-  useEffect(() => () => revokeLiveScreenshotUrl(), [revokeLiveScreenshotUrl]);
-
-  useEffect(() => {
-    if (taskId) {
-      socketRef.current?.emit("task:subscribe", { taskId });
-
-      return () => {
-        socketRef.current?.emit("task:unsubscribe", { taskId });
-      };
-    }
-  }, [taskId]);
-
-  useEffect(() => {
     const loadWorkflow = async () => {
       setIsLoadingWorkflow(true);
+      setIsWorkflowHydrated(false);
       setTaskId(null);
-      setIsRunning(false);
-      setIsCancelling(false);
+      resetTaskStreamState();
       setRunDialogOpen(false);
       setPendingRunWorkflowId(null);
-      setLogs([]);
-      replaceScreenshot(null);
       setTaskRuntimeContext(null);
       setRunCredentialBindings({});
 
@@ -844,29 +705,27 @@ export default function Workspace() {
       } catch (error) {
         addLog("error", error instanceof Error ? error.message : "读取工作流失败。");
         setTaskId(null);
-        setIsRunning(false);
-        setIsCancelling(false);
+        resetTaskStreamState();
         setTaskRuntimeContext(null);
         setRunCredentialBindings({});
         resetCanvasWithWorkflow(null);
+        setIsWorkflowHydrated(false);
       } finally {
         setIsLoadingWorkflow(false);
       }
     };
 
     void loadWorkflow();
-  }, [addLog, replaceScreenshot, resetCanvasWithWorkflow, workflowId]);
+  }, [addLog, resetCanvasWithWorkflow, resetTaskStreamState, workflowId]);
 
   useEffect(() => {
     const handleOpenBlankWorkflow = () => {
-      setLogs([]);
-      replaceScreenshot(null);
       setTaskId(null);
-      setIsRunning(false);
-      setIsCancelling(false);
+      resetTaskStreamState();
       setRunDialogOpen(false);
       setPendingRunWorkflowId(null);
       setIsLoadingWorkflow(false);
+      setIsWorkflowHydrated(true);
       setTaskRuntimeContext(null);
       setRunCredentialBindings({});
       resetCanvasWithWorkflow(null);
@@ -874,7 +733,7 @@ export default function Workspace() {
 
     window.addEventListener(WORKFLOW_OPEN_BLANK_EVENT, handleOpenBlankWorkflow);
     return () => window.removeEventListener(WORKFLOW_OPEN_BLANK_EVENT, handleOpenBlankWorkflow);
-  }, [replaceScreenshot, resetCanvasWithWorkflow]);
+  }, [resetCanvasWithWorkflow, resetTaskStreamState]);
 
   useEffect(() => {
     setNodeStatuses((prev) => {
@@ -935,21 +794,7 @@ export default function Workspace() {
   }, [credentials]);
 
   useEffect(() => {
-    const hasMeaningfulChanges =
-      Boolean(workflowId) ||
-      flowNodes.length > 0 ||
-      flowEdges.length > 0 ||
-      inputSchema.length > 0 ||
-      credentialRequirements.length > 0 ||
-      workflowName.trim() !== "未命名工作流" ||
-      workflowDescription.trim() !== "由前端画布编辑的工作流" ||
-      workflowStatus !== "draft" ||
-      scheduleEnabled ||
-      Boolean(alertEmail.trim()) ||
-      alertOnFailure ||
-      alertOnSuccess;
-
-    if (!hasMeaningfulChanges || !hasUnsavedWorkflowChanges || isLoadingWorkflow || isSavingWorkflow) {
+    if (!hasPendingSaveReminder || isLoadingWorkflow || isSavingWorkflow) {
       if (!isSavingWorkflow && autoSaveTimerRef.current !== null) {
         window.clearTimeout(autoSaveTimerRef.current);
         autoSaveTimerRef.current = null;
@@ -972,12 +817,15 @@ export default function Workspace() {
         return;
       }
 
+      const canvasGraph = latestCanvasGraphRef.current;
       autoSaveSnapshotRef.current = workflowDraftSnapshot;
       void persistWorkflow({
         silent: true,
         snapshot: workflowDraftSnapshot,
+        flowNodes: canvasGraph.nodes,
+        flowEdges: canvasGraph.edges,
       }).catch(() => undefined);
-    }, 1200);
+    }, AUTO_SAVE_DELAY_MS);
 
     return () => {
       if (autoSaveTimerRef.current !== null) {
@@ -986,23 +834,11 @@ export default function Workspace() {
       }
     };
   }, [
-    alertEmail,
-    alertOnFailure,
-    alertOnSuccess,
-    credentialRequirements.length,
-    flowEdges.length,
-    flowNodes.length,
-    hasUnsavedWorkflowChanges,
-    inputSchema.length,
+    hasPendingSaveReminder,
     isLoadingWorkflow,
     isSavingWorkflow,
     persistWorkflow,
-    scheduleEnabled,
-    workflowDescription,
     workflowDraftSnapshot,
-    workflowId,
-    workflowName,
-    workflowStatus,
   ]);
 
   const handlePublishTemplate = useCallback(async () => {
@@ -1119,12 +955,10 @@ export default function Workspace() {
     }
 
     setSelectedNodeId(null);
-    setLogs([]);
-    replaceScreenshot(null);
+    resetTaskStreamState();
     setTaskId(null);
     setTaskRuntimeContext(null);
     setIsCancelling(false);
-    activeNodeIdRef.current = null;
     setNodeStatuses(buildIdleNodeStatuses(flowNodes));
 
     try {
@@ -1170,7 +1004,7 @@ export default function Workspace() {
     isCancelling,
     isRunning,
     persistWorkflow,
-    replaceScreenshot,
+    resetTaskStreamState,
     runCredentialBindings,
     runFormValues,
     taskId,
@@ -1197,20 +1031,28 @@ export default function Workspace() {
                   placeholder="输入工作流名称"
                 />
                 <div className="min-w-[88px] text-right text-xs text-zinc-500">
-                  {isSavingWorkflow ? "自动保存中..." : hasUnsavedWorkflowChanges ? "等待自动保存" : "已自动保存"}
+                  {!isWorkflowHydrated
+                    ? "等待工作流加载"
+                    : isSavingWorkflow
+                    ? "保存中..."
+                    : hasPendingSaveReminder
+                      ? "未保存 · 1 分钟后自动保存"
+                      : "已保存"}
                 </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    void persistWorkflow().catch(() => undefined);
-                  }}
-                  disabled={isSavingWorkflow || isLoadingWorkflow}
-                  className="h-8 gap-2"
-                >
-                  <Save className="w-3.5 h-3.5" />
-                  {isSavingWorkflow ? "保存中..." : "保存"}
-                </Button>
+                <span title={saveButtonDisabledReason}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      void persistWorkflow().catch(() => undefined);
+                    }}
+                    disabled={Boolean(saveButtonDisabledReason)}
+                    className="h-8 gap-2"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    {isSavingWorkflow ? "保存中..." : "保存"}
+                  </Button>
+                </span>
                 {user?.role === "admin" && (
                   <Button
                     variant="outline"
@@ -1268,7 +1110,11 @@ export default function Workspace() {
             {workflowId ? `当前工作流 ID: ${workflowId}` : "当前为未保存工作流"}
           </div>
           <div className="text-xs text-zinc-500">
-            {isLoadingWorkflow ? "正在加载工作流..." : `${workflowDescription} · 状态：${workflowStatusLabel} · ${parameterSummary} · ${scheduleSummary} · ${alertSummary}`}
+            {isLoadingWorkflow
+              ? "正在加载工作流..."
+              : !isWorkflowHydrated
+                ? "工作流尚未加载完成，已暂停自动保存，避免覆盖原始内容。"
+                : `${workflowDescription} · 状态：${workflowStatusLabel} · ${parameterSummary} · ${scheduleSummary} · ${alertSummary}`}
           </div>
         </div>
         {user?.role === "admin" && workflowId && workflowOwnerLabel ? (
@@ -1324,6 +1170,10 @@ export default function Workspace() {
                   }
 
                   lastFlowSnapshotRef.current = snapshot;
+                  latestCanvasGraphRef.current = {
+                    nodes: sanitizedNodes,
+                    edges: sanitizedEdges,
+                  };
                   setFlowNodes(sanitizedNodes);
                   setFlowEdges(sanitizedEdges);
                 }}

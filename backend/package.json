@@ -40,6 +40,7 @@
     "minio": "^8.0.7",
     "mysql2": "^3.20.0",
     "nodemailer": "^8.0.4",
+    "pinyin-pro": "^3.28.1",
     "playwright": "^1.58.2",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",

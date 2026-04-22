@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import {
   RECORDER_CONTROL_CHANNEL,
+  RECORDER_IMAGE_KEY_PREFIX,
   RECORDER_RESPONSE_KEY_PREFIX,
   RECORDER_SNAPSHOT_KEY_PREFIX,
 } from 'src/common/constants/redis.constants';
@@ -284,31 +285,33 @@ export class RecorderService implements OnModuleDestroy {
   }
 
   private async dispatchCommand(command: RecorderCommandPayload, timeoutMs = 10_000) {
+    const responseKey = `${RECORDER_RESPONSE_KEY_PREFIX}${command.requestId}`;
     await this.redisConnection.publish(
       RECORDER_CONTROL_CHANNEL,
       JSON.stringify(command),
     );
 
-    const responseKey = `${RECORDER_RESPONSE_KEY_PREFIX}${command.requestId}`;
-    const deadline = Date.now() + timeoutMs;
+    const blockingTimeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+    const rawResponse = await this.redisConnection.brpop(
+      responseKey,
+      blockingTimeoutSeconds,
+    );
 
-    while (Date.now() < deadline) {
-      const raw = await this.redisConnection.get(responseKey);
+    await this.redisConnection.del(responseKey).catch(() => undefined);
 
-      if (raw?.trim()) {
-        await this.redisConnection.del(responseKey).catch(() => undefined);
-        const result = JSON.parse(raw) as RecorderCommandResult;
+    const raw =
+      Array.isArray(rawResponse) && rawResponse.length > 1 ? rawResponse[1] : null;
 
-        if (!result.ok) {
-          throw new BadRequestException(
-            result.error || '录制器命令执行失败。',
-          );
-        }
+    if (raw?.trim()) {
+      const result = JSON.parse(raw) as RecorderCommandResult;
 
-        return result;
+      if (!result.ok) {
+        throw new BadRequestException(
+          result.error || '录制器命令执行失败。',
+        );
       }
 
-      await sleep(120);
+      return result;
     }
 
     throw new RequestTimeoutException('录制器响应超时，请稍后重试。');
@@ -338,12 +341,19 @@ export class RecorderService implements OnModuleDestroy {
       throw new NotFoundException(`Recorder session ${sessionId} not found`);
     }
 
-    return JSON.parse(raw) as RecorderSessionSnapshot;
-  }
-}
+    const snapshot = JSON.parse(raw) as Omit<RecorderSessionSnapshot, 'imageBase64'> & {
+      imageBase64?: string;
+    };
+    const imageBuffer = await this.redisConnection.getBuffer(
+      `${RECORDER_IMAGE_KEY_PREFIX}${sessionId}`,
+    );
 
-function sleep(durationMs: number) {
-  return new Promise<void>((resolve) => {
-    setTimeout(resolve, durationMs);
-  });
+    return {
+      ...snapshot,
+      imageBase64:
+        imageBuffer && imageBuffer.length > 0
+          ? imageBuffer.toString('base64')
+          : snapshot.imageBase64 ?? '',
+    } as RecorderSessionSnapshot;
+  }
 }

@@ -244,6 +244,7 @@ export interface SaveDataNode extends BaseWorkflowNode {
   recordMode?: 'single' | 'array';
   sourceVariable: string;
   writeMode?: 'insert' | 'upsert' | 'skip_duplicates';
+  primaryKeyField?: string;
   recordKeyTemplate?: string;
   fieldMappings?: string;
   resultVariable?: string;

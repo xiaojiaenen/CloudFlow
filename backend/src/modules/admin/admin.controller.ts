@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -59,6 +60,14 @@ export class AdminController {
     @Body() payload: ResetUserPasswordDto,
   ) {
     return this.adminService.resetUserPassword(id, payload);
+  }
+
+  @Delete('users/:id')
+  deleteUser(
+    @Param('id') id: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.adminService.deleteUser(id, request.user);
   }
 
   @Get('health')
@@ -125,5 +134,13 @@ export class AdminController {
     @Req() request: AuthenticatedRequest,
   ) {
     return this.adminService.updateTemplate(id, payload, request.user);
+  }
+
+  @Delete('templates/:id')
+  deleteTemplate(
+    @Param('id') id: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.adminService.deleteTemplate(id, request.user);
   }
 }

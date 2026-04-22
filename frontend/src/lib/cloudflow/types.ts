@@ -557,6 +557,8 @@ export interface DataCollectionRecord {
   description?: string | null;
   schemaJson?: Record<string, unknown> | null;
   schemaFields: string[];
+  schemaFieldComments?: Record<string, string>;
+  primaryKeyField?: string | null;
   recordCount: number;
   batchCount: number;
   createdAt: string;

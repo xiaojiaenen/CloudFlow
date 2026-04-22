@@ -403,6 +403,7 @@ export function buildWorkflowDefinition(
         baseNode.recordMode = String(nodeData.recordMode ?? "single");
         baseNode.sourceVariable = String(nodeData.sourceVariable ?? "");
         baseNode.writeMode = String(nodeData.writeMode ?? "upsert");
+        baseNode.primaryKeyField = String(nodeData.primaryKeyField ?? "");
         baseNode.recordKeyTemplate = String(nodeData.recordKeyTemplate ?? "");
         baseNode.fieldMappings = String(nodeData.fieldMappings ?? "");
         baseNode.resultVariable = String(nodeData.resultVariable ?? "");

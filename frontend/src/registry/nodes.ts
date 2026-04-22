@@ -568,6 +568,13 @@ export const nodeRegistry: NodeDefinition[] = [
         ],
       },
       {
+        name: "primaryKeyField",
+        label: "Primary Key",
+        type: "text",
+        placeholder: "orderNo",
+        description: "Use this field as the row primary key for auto update.",
+      },
+      {
         name: "recordKeyTemplate",
         label: "记录键模板",
         type: "text",

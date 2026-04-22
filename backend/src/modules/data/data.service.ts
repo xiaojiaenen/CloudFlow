@@ -33,6 +33,35 @@ function normalizeSchemaFields(value: Prisma.JsonValue | null | undefined) {
     .filter(Boolean);
 }
 
+function normalizeSchemaFieldComments(value: Prisma.JsonValue | null | undefined) {
+  const schema = toObjectRecord(value);
+  const fieldComments = schema.fieldComments;
+
+  if (!fieldComments || typeof fieldComments !== 'object' || Array.isArray(fieldComments)) {
+    return {} as Record<string, string>;
+  }
+
+  return Object.entries(fieldComments as Record<string, unknown>).reduce<Record<string, string>>(
+    (acc, [key, item]) => {
+      const normalizedKey = String(key ?? '').trim();
+      const normalizedValue = String(item ?? '').trim();
+
+      if (normalizedKey && normalizedValue) {
+        acc[normalizedKey] = normalizedValue;
+      }
+
+      return acc;
+    },
+    {},
+  );
+}
+
+function normalizePrimaryKeyField(value: Prisma.JsonValue | null | undefined) {
+  const schema = toObjectRecord(value);
+  const primaryKeyField = String(schema.primaryKeyField ?? '').trim();
+  return primaryKeyField || null;
+}
+
 function collectJsonKeys(values: Array<Prisma.JsonValue | null | undefined>) {
   const keys = new Set<string>();
 
@@ -115,6 +144,8 @@ export class DataService {
       items: items.map((item) => ({
         ...item,
         schemaFields: normalizeSchemaFields(item.schemaJson),
+        schemaFieldComments: normalizeSchemaFieldComments(item.schemaJson),
+        primaryKeyField: normalizePrimaryKeyField(item.schemaJson),
         recordCount: item._count.records,
         batchCount: item._count.batches,
       })),
@@ -155,6 +186,8 @@ export class DataService {
     return {
       ...collection,
       schemaFields: normalizeSchemaFields(collection.schemaJson),
+      schemaFieldComments: normalizeSchemaFieldComments(collection.schemaJson),
+      primaryKeyField: normalizePrimaryKeyField(collection.schemaJson),
       recordCount: collection._count.records,
       batchCount: collection._count.batches,
     };
@@ -314,6 +347,8 @@ export class DataService {
         collection: {
           ...batch.collection,
           schemaFields: normalizeSchemaFields(batch.collection.schemaJson),
+          schemaFieldComments: normalizeSchemaFieldComments(batch.collection.schemaJson),
+          primaryKeyField: normalizePrimaryKeyField(batch.collection.schemaJson),
         },
         totalCount:
           batch.insertedCount + batch.updatedCount + batch.skippedCount + batch.failedCount,

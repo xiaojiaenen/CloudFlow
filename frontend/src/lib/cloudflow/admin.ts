@@ -195,6 +195,17 @@ export async function updateAdminTemplate(
   );
 }
 
+export async function deleteAdminTemplate(id: string) {
+  return requestJson<{ id: string; deletedAt: string }>(
+    `/admin/templates/${id}`,
+    {
+      method: "DELETE",
+      headers: buildAuthHeaders(),
+    },
+    "删除模板失败。",
+  );
+}
+
 export async function listUsers() {
   return requestJson<UserRecord[]>(
     "/admin/users",
@@ -260,5 +271,16 @@ export async function resetAdminUserPassword(id: string, newPassword?: string) {
       body: JSON.stringify(newPassword ? { newPassword } : {}),
     },
     "重置密码失败。",
+  );
+}
+
+export async function deleteAdminUser(id: string) {
+  return requestJson<{ id: string; deleted: true }>(
+    `/admin/users/${id}`,
+    {
+      method: "DELETE",
+      headers: buildAuthHeaders(),
+    },
+    "删除用户失败。",
   );
 }
