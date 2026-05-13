@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
 import { AuthenticatedRequest } from '../auth/auth.types';
 import { DataService } from './data.service';
@@ -27,6 +27,11 @@ export class DataController {
     return this.dataService.getCollection(id, request.user);
   }
 
+  @Delete('collections/:id')
+  deleteCollection(@Param('id') id: string, @Req() request: AuthenticatedRequest) {
+    return this.dataService.deleteCollection(id, request.user);
+  }
+
   @Get('collections/:id/records')
   listCollectionRecords(
     @Param('id') id: string,
@@ -35,13 +40,44 @@ export class DataController {
     @Query('search') search: string | undefined,
     @Query('workflowId') workflowId: string | undefined,
     @Query('taskId') taskId: string | undefined,
+    @Query('sortBy') sortBy: string | undefined,
+    @Query('sortOrder') sortOrder: string | undefined,
+    @Query('fieldFilters') fieldFilters: string | undefined,
     @Req() request: AuthenticatedRequest,
   ) {
     return this.dataService.listCollectionRecords(
       id,
-      { page, pageSize, search, workflowId, taskId },
+      { page, pageSize, search, workflowId, taskId, sortBy, sortOrder, fieldFilters },
       request.user,
     );
+  }
+
+  @Get('collections/:id/export')
+  exportAllRecords(@Param('id') id: string, @Req() request: AuthenticatedRequest) {
+    return this.dataService.exportAllRecords(id, request.user);
+  }
+
+  @Delete('records/:id')
+  deleteRecord(@Param('id') id: string, @Req() request: AuthenticatedRequest) {
+    return this.dataService.deleteRecord(id, request.user);
+  }
+
+  @Patch('records/:id')
+  updateRecord(
+    @Param('id') id: string,
+    @Body() body: { dataJson: Record<string, unknown> },
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.dataService.updateRecord(id, body.dataJson, request.user);
+  }
+
+  @Post('collections/:id/records/batch-delete')
+  batchDeleteRecords(
+    @Param('id') id: string,
+    @Body() body: { recordIds: string[] },
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.dataService.batchDeleteRecords(id, body.recordIds, request.user);
   }
 
   @Get('tasks/:taskId/batches')

@@ -3,6 +3,7 @@ import type {
   DataBatchRowsResponse,
   DataCollectionRecord,
   DataCollectionRecordsResponse,
+  DataRecordRow,
   DataWriteBatchRecord,
   PaginatedResponse,
 } from "./types";
@@ -47,6 +48,17 @@ export async function getDataCollection(id: string) {
   );
 }
 
+export async function deleteDataCollection(id: string) {
+  return requestJson<{ success: boolean }>(
+    `/data/collections/${id}`,
+    {
+      method: "DELETE",
+      headers: buildAuthHeaders(),
+    },
+    "删除数据集失败。",
+  );
+}
+
 export async function listDataCollectionRecords(
   id: string,
   params?: {
@@ -55,6 +67,9 @@ export async function listDataCollectionRecords(
     search?: string;
     workflowId?: string;
     taskId?: string;
+    sortBy?: string;
+    sortOrder?: "asc" | "desc";
+    fieldFilters?: Record<string, string>;
   },
 ) {
   const query = new URLSearchParams();
@@ -74,6 +89,15 @@ export async function listDataCollectionRecords(
   if (params?.taskId?.trim()) {
     query.set("taskId", params.taskId.trim());
   }
+  if (params?.sortBy?.trim()) {
+    query.set("sortBy", params.sortBy.trim());
+  }
+  if (params?.sortOrder) {
+    query.set("sortOrder", params.sortOrder);
+  }
+  if (params?.fieldFilters && Object.keys(params.fieldFilters).length > 0) {
+    query.set("fieldFilters", JSON.stringify(params.fieldFilters));
+  }
 
   return requestJson<DataCollectionRecordsResponse>(
     `/data/collections/${id}/records${query.toString() ? `?${query.toString()}` : ""}`,
@@ -81,6 +105,62 @@ export async function listDataCollectionRecords(
       headers: buildAuthHeaders(),
     },
     "加载数据记录失败。",
+  );
+}
+
+export async function exportAllCollectionRecords(id: string) {
+  return requestJson<{
+    collection: DataCollectionRecord;
+    columns: string[];
+    items: DataRecordRow[];
+    total: number;
+  }>(
+    `/data/collections/${id}/export`,
+    {
+      headers: buildAuthHeaders(),
+    },
+    "导出数据失败。",
+  );
+}
+
+export async function deleteDataRecord(recordId: string) {
+  return requestJson<{ success: boolean }>(
+    `/data/records/${recordId}`,
+    {
+      method: "DELETE",
+      headers: buildAuthHeaders(),
+    },
+    "删除记录失败。",
+  );
+}
+
+export async function updateDataRecord(
+  recordId: string,
+  dataJson: Record<string, unknown>,
+) {
+  return requestJson<DataRecordRow>(
+    `/data/records/${recordId}`,
+    {
+      method: "PATCH",
+      headers: buildAuthHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ dataJson }),
+    },
+    "更新记录失败。",
+  );
+}
+
+export async function batchDeleteDataRecords(
+  collectionId: string,
+  recordIds: string[],
+) {
+  return requestJson<{ deletedCount: number }>(
+    `/data/collections/${collectionId}/records/batch-delete`,
+    {
+      method: "POST",
+      headers: buildAuthHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ recordIds }),
+    },
+    "批量删除记录失败。",
   );
 }
 

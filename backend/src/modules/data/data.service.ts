@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { DataWriteOperation, Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { AuthenticatedUser } from '../auth/auth.types';
@@ -201,6 +201,9 @@ export class DataService {
       search?: string;
       workflowId?: string;
       taskId?: string;
+      sortBy?: string;
+      sortOrder?: string;
+      fieldFilters?: string;
     },
     currentUser?: AuthenticatedUser,
   ) {
@@ -208,30 +211,106 @@ export class DataService {
     const page = parsePositiveInt(filters.page, 1, 10_000);
     const pageSize = parsePositiveInt(filters.pageSize, 20, 500);
     const search = filters.search?.trim();
+
+    // Parse field-level filters
+    let fieldFilterEntries: Array<[string, string]> = [];
+    if (filters.fieldFilters?.trim()) {
+      try {
+        const parsed = JSON.parse(filters.fieldFilters.trim()) as Record<string, unknown>;
+        fieldFilterEntries = Object.entries(parsed)
+          .filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== '')
+          .map(([k, v]) => [k, String(v).trim()]);
+      } catch {
+        // ignore invalid JSON
+      }
+    }
+
+    const hasFieldFilters = fieldFilterEntries.length > 0;
+    const sortBy = filters.sortBy?.trim();
+    const sortOrder = filters.sortOrder === 'asc' ? 'asc' as const : 'desc' as const;
+    const isJsonSort = sortBy && sortBy !== 'recordKey' && sortBy !== 'updatedAt' && sortBy !== 'createdAt';
+
+    // Database-level WHERE (recordKey search, workflowId, taskId)
     const where: Prisma.DataRecordWhereInput = {
       collectionId,
-      ...(search
-        ? {
-            recordKey: {
-              contains: search,
-            },
-          }
-        : {}),
+      ...(search ? { recordKey: { contains: search } } : {}),
       ...(filters.workflowId ? { sourceWorkflowId: filters.workflowId } : {}),
       ...(filters.taskId ? { lastTaskId: filters.taskId } : {}),
     };
 
+    // Database-level ORDER BY (only for non-JSON fields)
+    let orderBy: Prisma.DataRecordOrderByWithRelationInput[];
+    if (sortBy === 'recordKey') {
+      orderBy = [{ recordKey: sortOrder }, { updatedAt: 'desc' }];
+    } else if (sortBy === 'updatedAt' || sortBy === 'createdAt') {
+      orderBy = [{ [sortBy]: sortOrder }];
+    } else {
+      orderBy = [{ updatedAt: 'desc' }, { createdAt: 'desc' }];
+    }
+
+    if (hasFieldFilters || isJsonSort) {
+      // Fetch ALL matching records (without field filters / JSON sort), then filter + sort + paginate in memory
+      const allItems = await this.prismaService.dataRecord.findMany({
+        where,
+        orderBy: isJsonSort ? [{ updatedAt: 'desc' }] : orderBy,
+      });
+
+      // Apply field-level filters in memory
+      let filtered = allItems;
+      if (hasFieldFilters) {
+        filtered = allItems.filter((record) => {
+          const data = (record.dataJson ?? {}) as Record<string, unknown>;
+          return fieldFilterEntries.every(([field, text]) => {
+            const value = data[field];
+            if (value === null || value === undefined) return false;
+            return String(value).toLowerCase().includes(text.toLowerCase());
+          });
+        });
+      }
+
+      // Apply JSON field sort in memory
+      if (isJsonSort && sortBy) {
+        filtered.sort((a, b) => {
+          const aVal = String(((a.dataJson ?? {}) as Record<string, unknown>)[sortBy] ?? '');
+          const bVal = String(((b.dataJson ?? {}) as Record<string, unknown>)[sortBy] ?? '');
+          return sortOrder === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+        });
+      }
+
+      const total = filtered.length;
+      const items = filtered.slice((page - 1) * pageSize, page * pageSize);
+
+      const columns = this.buildColumns(
+        collection.schemaFields,
+        allItems.map((item) => item.dataJson),
+      );
+
+      return {
+        collection,
+        columns,
+        items,
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      };
+    }
+
+    // Simple path: no field filters, no JSON sort — use database pagination
     const [items, total] = await Promise.all([
       this.prismaService.dataRecord.findMany({
         where,
-        orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+        orderBy,
         skip: (page - 1) * pageSize,
         take: pageSize,
       }),
       this.prismaService.dataRecord.count({ where }),
     ]);
 
-    const columns = this.buildColumns(collection.schemaFields, items.map((item) => item.dataJson));
+    const columns = this.buildColumns(
+      collection.schemaFields,
+      items.map((item) => item.dataJson),
+    );
 
     return {
       collection,
@@ -359,6 +438,110 @@ export class DataService {
       pageSize,
       total,
       totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    };
+  }
+
+  async deleteCollection(id: string, currentUser?: AuthenticatedUser) {
+    const collection = await this.prismaService.dataCollection.findFirst({
+      where: { id, ...this.buildAccessWhere(currentUser) },
+      select: { id: true },
+    });
+
+    if (!collection) {
+      throw new NotFoundException(`Data collection ${id} not found`);
+    }
+
+    // Cascade delete: records, batch rows, batches, then collection
+    await this.prismaService.$transaction([
+      this.prismaService.dataWriteBatchRow.deleteMany({ where: { collectionId: id } }),
+      this.prismaService.dataRecord.deleteMany({ where: { collectionId: id } }),
+      this.prismaService.dataWriteBatch.deleteMany({ where: { collectionId: id } }),
+      this.prismaService.dataCollection.delete({ where: { id } }),
+    ]);
+
+    return { success: true };
+  }
+
+  async deleteRecord(recordId: string, currentUser?: AuthenticatedUser) {
+    const record = await this.prismaService.dataRecord.findFirst({
+      where: { id: recordId, ...this.buildAccessWhere(currentUser) },
+      select: { id: true, collectionId: true },
+    });
+
+    if (!record) {
+      throw new NotFoundException(`Data record ${recordId} not found`);
+    }
+
+    await this.prismaService.dataRecord.delete({ where: { id: recordId } });
+    return { success: true };
+  }
+
+  async updateRecord(
+    recordId: string,
+    dataJson: Record<string, unknown>,
+    currentUser?: AuthenticatedUser,
+  ) {
+    const record = await this.prismaService.dataRecord.findFirst({
+      where: { id: recordId, ...this.buildAccessWhere(currentUser) },
+      select: { id: true, collectionId: true },
+    });
+
+    if (!record) {
+      throw new NotFoundException(`Data record ${recordId} not found`);
+    }
+
+    const updated = await this.prismaService.dataRecord.update({
+      where: { id: recordId },
+      data: { dataJson: dataJson as Prisma.InputJsonValue },
+    });
+
+    return updated;
+  }
+
+  async batchDeleteRecords(
+    collectionId: string,
+    recordIds: string[],
+    currentUser?: AuthenticatedUser,
+  ) {
+    if (!recordIds || recordIds.length === 0) {
+      return { deletedCount: 0 };
+    }
+
+    // Verify access to the collection
+    const collection = await this.prismaService.dataCollection.findFirst({
+      where: { id: collectionId, ...this.buildAccessWhere(currentUser) },
+      select: { id: true },
+    });
+
+    if (!collection) {
+      throw new NotFoundException(`Data collection ${collectionId} not found`);
+    }
+
+    const result = await this.prismaService.dataRecord.deleteMany({
+      where: {
+        id: { in: recordIds },
+        collectionId,
+      },
+    });
+
+    return { deletedCount: result.count };
+  }
+
+  async exportAllRecords(collectionId: string, currentUser?: AuthenticatedUser) {
+    const collection = await this.getCollection(collectionId, currentUser);
+
+    const allRecords = await this.prismaService.dataRecord.findMany({
+      where: { collectionId },
+      orderBy: [{ updatedAt: 'desc' }],
+    });
+
+    const columns = this.buildColumns(collection.schemaFields, allRecords.map((r) => r.dataJson));
+
+    return {
+      collection,
+      columns,
+      items: allRecords,
+      total: allRecords.length,
     };
   }
 
