@@ -2827,36 +2827,17 @@ function resolveNode(
           variables,
           credentials,
         ),
-        recordMode: resolveTemplateValue(
-          String(node.recordMode ?? 'single'),
-          runtimeInputs,
-          variables,
-          credentials,
-        ) as 'single' | 'array',
         sourceVariable: resolveTemplateValue(
           String(node.sourceVariable ?? ''),
           runtimeInputs,
           variables,
           credentials,
         ),
-        writeMode: resolveTemplateValue(
-          String(node.writeMode ?? 'upsert'),
-          runtimeInputs,
-          variables,
-          credentials,
-        ) as 'insert' | 'upsert' | 'skip_duplicates',
         primaryKeyField: resolveTemplateValue(
           String(node.primaryKeyField ?? ''),
           runtimeInputs,
           variables,
           credentials,
-        ),
-        recordKeyTemplate: resolveTemplateValue(
-          String(node.recordKeyTemplate ?? ''),
-          runtimeInputs,
-          variables,
-          credentials,
-          true,
         ),
         fieldMappings: resolveTemplateValue(
           String(node.fieldMappings ?? ''),
@@ -2871,6 +2852,37 @@ function resolveNode(
           variables,
           credentials,
         ),
+        ...(node.recordMode !== undefined
+          ? {
+              recordMode: resolveTemplateValue(
+                String(node.recordMode ?? 'single'),
+                runtimeInputs,
+                variables,
+                credentials,
+              ) as 'single' | 'array',
+            }
+          : {}),
+        ...(node.writeMode !== undefined
+          ? {
+              writeMode: resolveTemplateValue(
+                String(node.writeMode ?? 'upsert'),
+                runtimeInputs,
+                variables,
+                credentials,
+              ) as 'insert' | 'upsert' | 'skip_duplicates',
+            }
+          : {}),
+        ...(node.recordKeyTemplate !== undefined
+          ? {
+              recordKeyTemplate: resolveTemplateValue(
+                String(node.recordKeyTemplate ?? ''),
+                runtimeInputs,
+                variables,
+                credentials,
+                true,
+              ),
+            }
+          : {}),
       };
     default:
       return node;

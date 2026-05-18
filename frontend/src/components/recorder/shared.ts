@@ -146,11 +146,26 @@ export function inferSuggestionFieldMappings(suggestion: RecorderExtractSuggesti
   }
 
   return JSON.stringify(
-    {
-      value: "{{item}}",
-      source: suggestion.label,
-      collectedAt: "{{index}}",
-    },
+    [
+      {
+        key: "value",
+        sourceType: "item",
+        value: "",
+        comment: "提取值",
+      },
+      {
+        key: "source",
+        sourceType: "text",
+        value: suggestion.label,
+        comment: "来源",
+      },
+      {
+        key: "capturedAt",
+        sourceType: "current_datetime",
+        value: "",
+        comment: "采集时间",
+      },
+    ],
     null,
     2,
   );
@@ -230,9 +245,7 @@ export function appendSuggestionNodes(
         label: `${suggestion.label}入库`,
         collectionKey: suggestion.collectionKey ?? suggestion.saveKey,
         collectionName: suggestion.collectionName ?? suggestion.label,
-        recordMode: suggestion.recommendedRecordMode ?? "array",
         sourceVariable: `{{variables.${suggestion.saveKey}}}`,
-        writeMode: "upsert",
         fieldMappings: inferSuggestionFieldMappings(suggestion),
       };
 

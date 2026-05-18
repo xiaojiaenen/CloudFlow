@@ -487,6 +487,7 @@ function asJsonInput(value: unknown) {
 function resolveRecordIdentity(params: {
   primaryKeyField: string;
   legacyRecordKeyTemplate: string;
+  enableLegacyIdentityFallback: boolean;
   requestedWriteMode: DataWriteMode;
   mappedData: Record<string, unknown>;
   item: unknown;
@@ -502,6 +503,13 @@ function resolveRecordIdentity(params: {
       };
     }
 
+    return {
+      recordKey: randomUUID(),
+      writeMode: 'insert' as DataWriteMode,
+    };
+  }
+
+  if (!params.enableLegacyIdentityFallback) {
     return {
       recordKey: randomUUID(),
       writeMode: 'insert' as DataWriteMode,
@@ -544,6 +552,9 @@ export async function executeSaveDataNode(
   const requestedWriteMode = (node.writeMode ?? 'upsert') as DataWriteMode;
   const primaryKeyField = String(node.primaryKeyField ?? '').trim();
   const legacyRecordKeyTemplate = String(node.recordKeyTemplate ?? '').trim();
+  const enableLegacyIdentityFallback = Boolean(
+    legacyRecordKeyTemplate || String(node.writeMode ?? '').trim(),
+  );
   const nodeId = node.clientNodeId;
   const sourceReference = String(node.sourceVariable ?? '').trim();
   const sourceValue =
@@ -559,7 +570,9 @@ export async function executeSaveDataNode(
   const parsedFieldMappings = parseFieldMappings(node.fieldMappings);
   const batchWriteMode = primaryKeyField
     ? ('upsert' as DataWriteMode)
-    : requestedWriteMode;
+    : enableLegacyIdentityFallback
+      ? requestedWriteMode
+      : ('insert' as DataWriteMode);
 
   await context.publishLog(
     context.taskId,
@@ -586,6 +599,7 @@ export async function executeSaveDataNode(
     const recordIdentity = resolveRecordIdentity({
       primaryKeyField,
       legacyRecordKeyTemplate,
+      enableLegacyIdentityFallback,
       requestedWriteMode,
       mappedData: structuredData,
       item,
