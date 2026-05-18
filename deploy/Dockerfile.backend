@@ -1,27 +1,19 @@
-FROM node:20-alpine AS builder
+FROM node:20-alpine
 
 ARG NPM_REGISTRY=https://registry.npmjs.org
 RUN npm config set registry ${NPM_REGISTRY}
 
 WORKDIR /app
-COPY backend/package.json backend/package-lock.json ./
-COPY backend/prisma ./prisma
-RUN npm ci
-
-COPY backend/ ./
-RUN npm run build
-
-
-FROM node:20-alpine
-
-WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3001
 
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./package.json
-COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/dist ./dist
+# 只复制 package.json，仅装生产依赖
+COPY backend/package.json backend/package-lock.json ./
+RUN npm ci --omit=dev
+
+# 复制预构建产物 + prisma schema
+COPY backend/dist ./dist
+COPY backend/prisma ./prisma
 
 RUN mkdir -p /app/runtime/tasks
 

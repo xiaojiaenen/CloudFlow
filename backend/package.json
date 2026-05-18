@@ -42,6 +42,7 @@
     "nodemailer": "^8.0.4",
     "pinyin-pro": "^3.28.1",
     "playwright": "^1.58.2",
+    "prisma": "^6.17.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
     "socket.io": "^4.8.3"
@@ -49,7 +50,6 @@
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^25.5.0",
-    "prisma": "^6.17.1",
     "ts-node": "^10.9.2",
     "tsc-alias": "^1.8.16",
     "tsconfig-paths": "^4.2.0",
