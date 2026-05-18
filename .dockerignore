@@ -1,0 +1,11 @@
+artifacts/
+exports/
+.logs/
+.run-logs/
+node_modules/
+dist/
+.git/
+.vscode/
+.vite/
+*.zip
+*.tar
