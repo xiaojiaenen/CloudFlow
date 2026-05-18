@@ -21,7 +21,9 @@ Write-Host "[2/4] Prepare deploy files..." -ForegroundColor Cyan
 Remove-Item -Recurse -Force $outputDir -ErrorAction SilentlyContinue
 
 # Directory structure
-New-Item -ItemType Directory -Force "$outputDir\deploy\nginx" | Out-Null
+New-Item -ItemType Directory -Force "$outputDir\deploy\nginx"  | Out-Null
+New-Item -ItemType Directory -Force "$outputDir\backend"       | Out-Null
+New-Item -ItemType Directory -Force "$outputDir\frontend\dist" | Out-Null
 
 # Deploy configs
 Copy-Item deploy\docker-compose.yml   "$outputDir\deploy\"
