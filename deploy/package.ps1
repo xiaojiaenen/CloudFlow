@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Stop"
-Set-Location (Split-Path (Split-Path $PSScriptRoot))
+Set-Location (Split-Path $PSScriptRoot)
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $outputDir  = "cloudflow-deploy-$timestamp"
